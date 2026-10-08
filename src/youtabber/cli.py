@@ -39,6 +39,8 @@ def main() -> None:
     parser.add_argument("--title", help="song name for the PDF, when the one taken from the video title is wrong")
     parser.add_argument("--region", type=parse_region,
                         help="tab area as x,y,w,h in video pixels, when detection gets it wrong")
+    parser.add_argument("--enhance", action="store_true",
+                        help="upscale and sharpen the tab images in the PDF; makes the file about 3x larger")
     args = parser.parse_args()
     pdf_dir = pdf_dir_setting()
 
@@ -78,7 +80,7 @@ def main() -> None:
     cv2.imwrite(str(out / "strip.png"), strip)
     scale = layout.scale_for(strip, tab_region.w)
     row_ranges = layout.rows(strip, placed, int(layout.USABLE_WIDTH / scale))
-    layout.write_pdf(strip, row_ranges, scale, pdf_path, src)
+    layout.write_pdf(strip, row_ranges, scale, pdf_path, src, sharpen=args.enhance)
     overlaps = sum(1 for p in placed if p.new_from)
     print(f"  {overlaps} overlapping views joined, {len(row_ranges)} rows")
     guessed = [p for p in placed if p.ambiguous]

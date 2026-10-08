@@ -5,6 +5,7 @@ import numpy as np
 from fpdf import FPDF
 from PIL import Image
 
+from youtabber.enhance import enhance
 from youtabber.source import Source
 from youtabber.stitch import Placed
 
@@ -157,8 +158,9 @@ def _latin1(text: str) -> str:
     return text.encode("latin-1", "replace").decode("latin-1")
 
 
-def write_pdf(strip: np.ndarray, row_ranges: list[tuple[int, int]], scale: float, out: Path, source: Source) -> None:
-    """Lay the rows out on Letter pages at `scale` points per strip pixel."""
+def write_pdf(strip: np.ndarray, row_ranges: list[tuple[int, int]], scale: float, out: Path, source: Source,
+              sharpen: bool = False) -> None:
+    """Lay the rows out on Letter pages at `scale` points per strip pixel, upscaled and sharpened if asked."""
     y0, y1 = content_rows(strip)
     strip = whiten(strip[y0:y1])
     pdf = _TabPDF(source)
@@ -168,6 +170,9 @@ def write_pdf(strip: np.ndarray, row_ranges: list[tuple[int, int]], scale: float
     for start, end in row_ranges:
         if pdf.get_y() + row_h > pdf.h - MARGIN - FOOTER:
             pdf.add_page()
-        pdf.image(Image.fromarray(strip[:, start:end]), x=MARGIN, y=pdf.get_y(), w=(end - start) * scale)
+        row = strip[:, start:end]
+        if sharpen:
+            row = enhance(row)
+        pdf.image(Image.fromarray(row), x=MARGIN, y=pdf.get_y(), w=(end - start) * scale)
         pdf.set_y(pdf.get_y() + row_h + ROW_GAP)
     pdf.output(str(out))
