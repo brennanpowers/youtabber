@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from tabrip.views import View
+from youtabber.views import View
 
 # A real overlap must be at least this share of the view width
 MIN_OVERLAP = 0.1

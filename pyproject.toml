@@ -1,5 +1,5 @@
 [project]
-name = "tabrip"
+name = "youtabber"
 version = "0.1.0"
 description = "Rip the tab from YouTube play-along videos into a clean PDF"
 readme = "README.md"
@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-tabrip = "tabrip.cli:main"
+youtabber = "youtabber.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.10.4,<0.11.0"]

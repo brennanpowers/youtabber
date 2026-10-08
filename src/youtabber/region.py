@@ -4,7 +4,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from tabrip.video import frames, probe
+from youtabber.video import frames, probe
 
 SCALE = 0.5
 MAX_SAMPLES = 150

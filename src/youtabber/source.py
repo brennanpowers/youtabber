@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yt_dlp
 
-CACHE = Path.home() / ".cache" / "tabrip"
+CACHE = Path.home() / ".cache" / "youtabber"
 
 # Words that describe the video rather than the song, as in "Bass Guitar Cover (Play Along Tabs)"
 _NOISE = {"solo", "bass", "guitar", "cover", "with", "tab", "tabs", "play", "along", "playalong",

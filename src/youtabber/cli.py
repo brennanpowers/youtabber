@@ -7,9 +7,9 @@ from pathlib import Path
 
 import cv2
 
-from tabrip import layout, region, source, stitch, views
+from youtabber import layout, region, source, stitch, views
 
-CONFIG = Path.home() / ".config" / "tabrip" / "config.toml"
+CONFIG = Path.home() / ".config" / "youtabber" / "config.toml"
 
 
 def pdf_dir_setting() -> Path | None:

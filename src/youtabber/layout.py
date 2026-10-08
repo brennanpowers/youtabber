@@ -5,8 +5,8 @@ import numpy as np
 from fpdf import FPDF
 from PIL import Image
 
-from tabrip.source import Source
-from tabrip.stitch import Placed
+from youtabber.source import Source
+from youtabber.stitch import Placed
 
 # Page measurements in points (1/72 inch), on US Letter
 MARGIN = 36

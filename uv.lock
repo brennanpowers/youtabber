@@ -541,27 +541,6 @@ wheels = [
 ]
 
 [[package]]
-name = "tabrip"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "fpdf2" },
-    { name = "numpy" },
-    { name = "opencv-python-headless" },
-    { name = "pillow" },
-    { name = "yt-dlp", extra = ["default"] },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "fpdf2", specifier = ">=2.8.9" },
-    { name = "numpy", specifier = ">=2.5.3" },
-    { name = "opencv-python-headless", specifier = ">=5.0.0.93" },
-    { name = "pillow", specifier = ">=12.3.0" },
-    { name = "yt-dlp", extras = ["default"], specifier = ">=2026.8.19" },
-]
-
-[[package]]
 name = "urllib3"
 version = "2.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -677,6 +656,27 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/2b/bf/3d7c33b8d5e7712a60e0149c017ed50394ec5e8cf72e5cb6a1ffaf11a42d/websockets-17.2-cp315-cp315t-win_amd64.whl", hash = "sha256:315551f4ccedbbf9fd4f7e8bf037a5948c976ade0e919ba5d8f581d465f6f725", size = 218169, upload-time = "2026-10-03T14:56:37.79Z" },
     { url = "https://files.pythonhosted.org/packages/27/57/ab34cc6460c5322e6932750fa5c6c64be89e6ee4e2707d13c4e9d3312b25/websockets-17.2-cp315-cp315t-win_arm64.whl", hash = "sha256:0a6220bdf8d5f11af71251a599092d89ac1d6bfac691c7f5951c5b07953947a0", size = 218089, upload-time = "2026-10-03T14:56:39.427Z" },
     { url = "https://files.pythonhosted.org/packages/8a/58/835cd51934d6780fa586f275b5d9901eead6d81569b4343b3767cdbaae4c/websockets-17.2-py3-none-any.whl", hash = "sha256:6aa59f0ef92e796b2db6f5f26550c4713c0e4036899fadf02f55e2ed4db0b7ae", size = 211883, upload-time = "2026-10-03T14:56:51.898Z" },
+]
+
+[[package]]
+name = "youtabber"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "fpdf2" },
+    { name = "numpy" },
+    { name = "opencv-python-headless" },
+    { name = "pillow" },
+    { name = "yt-dlp", extra = ["default"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fpdf2", specifier = ">=2.8.9" },
+    { name = "numpy", specifier = ">=2.5.3" },
+    { name = "opencv-python-headless", specifier = ">=5.0.0.93" },
+    { name = "pillow", specifier = ">=12.3.0" },
+    { name = "yt-dlp", extras = ["default"], specifier = ">=2026.8.19" },
 ]
 
 [[package]]

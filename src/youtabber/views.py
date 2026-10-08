@@ -5,8 +5,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from tabrip.region import Region
-from tabrip.video import frames
+from youtabber.region import Region
+from youtabber.video import frames
 
 FPS = 4
 # Fraction of ink that must differ from the view's first frame to start a new view
