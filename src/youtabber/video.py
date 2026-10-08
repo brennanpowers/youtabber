@@ -14,15 +14,25 @@ class VideoInfo:
     duration: float
 
 
+class VideoError(Exception):
+    pass
+
+
 def probe(path: Path) -> VideoInfo:
-    out = subprocess.run(
+    result = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0",
          "-show_entries", "stream=width,height:format=duration", "-of", "json", str(path)],
-        check=True, capture_output=True, text=True,
-    ).stdout
-    data = json.loads(out)
-    stream = data["streams"][0]
-    return VideoInfo(stream["width"], stream["height"], float(data["format"]["duration"]))
+        capture_output=True, text=True,
+    )
+    try:
+        data = json.loads(result.stdout)
+        stream = data["streams"][0]
+        info = VideoInfo(stream["width"], stream["height"], float(data["format"]["duration"]))
+    except (json.JSONDecodeError, KeyError, IndexError, ValueError):
+        raise VideoError(f"Can't read {path} as a video: {result.stderr.strip() or 'no video stream'}")
+    if info.duration <= 0:
+        raise VideoError(f"{path} has no length")
+    return info
 
 
 def frames(path: Path, fps: float, scale: float = 1.0,
@@ -37,9 +47,8 @@ def frames(path: Path, fps: float, scale: float = 1.0,
     if crop:
         x, y, src_w, src_h = crop
         filters.append(f"crop={src_w}:{src_h}:{x}:{y}")
-    # Round to even sizes because some ffmpeg pixel formats require them
-    w = int(src_w * scale) // 2 * 2
-    h = int(src_h * scale) // 2 * 2
+    w = int(src_w * scale)
+    h = int(src_h * scale)
     filters.append(f"scale={w}:{h}")
     cmd = ["ffmpeg", "-v", "error", "-i", str(path),
            "-vf", ",".join(filters), "-f", "rawvideo", "-pix_fmt", "bgr24", "-"]
@@ -54,6 +63,11 @@ def frames(path: Path, fps: float, scale: float = 1.0,
                     break
                 yield i / fps, np.frombuffer(buf, np.uint8).reshape(h, w, 3)
                 i += 1
+            # A cut-off file still reports its full length, and ffmpeg stops at the cut without
+            # an error, so compare the frames read with the length the file claims
+            if proc.wait() != 0 or i < info.duration * fps - max(2, 2 * fps):
+                raise VideoError(f"ffmpeg couldn't read all of {path}. If it's an incomplete download, "
+                                 f"delete it and run again.")
         finally:
             # Stop ffmpeg quietly when the caller stops reading early
             proc.kill()

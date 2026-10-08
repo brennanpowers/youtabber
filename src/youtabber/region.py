@@ -4,6 +4,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from youtabber import ink
 from youtabber.video import frames, probe
 
 SCALE = 0.5
@@ -21,7 +22,7 @@ class Region:
 
 @dataclass
 class RegionAnalysis:
-    region: Region
+    region: Region | None  # None when no staff lines were found
     median: np.ndarray  # median frame at SCALE, for the debug image
 
 
@@ -41,17 +42,16 @@ def detect(path: Path) -> RegionAnalysis:
     # Notes break staff lines in any one frame, but they move while the lines stay put,
     # so averaging over the samples fills the gaps before looking for long horizontal runs
     line_rate = np.mean([thin_dark_mask(g) for g in gray], axis=0)
-    long_runs = cv2.getStructuringElement(cv2.MORPH_RECT, (w // 8, 1))
-    staff = cv2.morphologyEx((line_rate > 0.3).astype(np.uint8), cv2.MORPH_OPEN, long_runs).astype(bool)
+    staff = ink.horizontal_lines(line_rate > 0.3, w // 8)
     rows = np.flatnonzero(staff.sum(axis=1) > w // 8)
+    median = np.median(np.stack(sampled), axis=0).astype(np.uint8)
     if rows.size == 0:
-        raise RuntimeError(f"No staff lines found in {path.name}; pass --region x,y,w,h to set the tab area")
+        return RegionAnalysis(None, median)
     cols = np.flatnonzero(staff[rows].any(axis=0))
     x0, x1 = cols.min(), cols.max() + 1
     y0, y1 = rows.min(), rows.max() + 1
 
     # Paper is bright in the median frame and rarely changes between samples
-    median = np.median(np.stack(sampled), axis=0).astype(np.uint8)
     change = (np.abs(np.diff(gray.astype(np.int16), axis=0)) > 25).mean(axis=0)
     paper = (cv2.cvtColor(median, cv2.COLOR_BGR2GRAY) > 190) & (change < 0.2)
     paper_rows = paper[:, x0:x1].mean(axis=1) > 0.9
@@ -62,7 +62,7 @@ def detect(path: Path) -> RegionAnalysis:
     while y1 < h and paper_rows[y1]:
         y1 += 1
 
-    # Then sideways, to take in clefs and brackets left of where the staff lines start
+    # Then sideways over any paper beside the staff lines
     paper_cols = paper[y0:y1].mean(axis=0) > 0.9
     while x0 > 0 and paper_cols[x0 - 1]:
         x0 -= 1
@@ -80,6 +80,9 @@ def debug_image(analysis: RegionAnalysis, out: Path, override: Region | None = N
     """Save the median frame with the tab area outlined: red when detected, green when set by hand."""
     img = analysis.median.copy()
     r = override or analysis.region
+    if r is None:
+        cv2.imwrite(str(out), img)
+        return
     pt0 = (int(r.x * SCALE), int(r.y * SCALE))
     pt1 = (int((r.x + r.w) * SCALE) - 1, int((r.y + r.h) * SCALE) - 1)
     cv2.rectangle(img, pt0, pt1, (0, 255, 0) if override else (0, 0, 255), 2)

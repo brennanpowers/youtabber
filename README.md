@@ -46,7 +46,7 @@ Videos are cached in `~/.cache/youtabber`, so a second run doesn't download agai
 ```toml
 pdf_dir = "~/Documents/tabs"   # also copy every PDF here
 model = "realesrgan-anime"     # sharper output, see below
-enhance = false                # skip sharpening unless --enhance is passed
+enhance = false                # skip sharpening unless --enhance or --model is passed
 ```
 
 ## Sharper output
@@ -60,9 +60,10 @@ uv tool install --editable './youtabber[ai]'
 youtabber URL --model realesrgan-anime
 ```
 
-It adds a few seconds to a minute per song. The model downloads on first use, and `--model` also
-takes a path to any model file [spandrel](https://github.com/chaiNNer-org/spandrel) can load. These
-models can invent detail, so check a new one against the video before trusting it.
+It adds a few seconds to a minute per song. The model downloads on first use. `--model` also takes
+a path to any model file [spandrel](https://github.com/chaiNNer-org/spandrel) can load, or `classic`
+to skip the model your config names. These models can invent detail, so check a new one against the
+video before trusting it.
 
 ## How it works
 
@@ -75,7 +76,7 @@ rows and scaled so the notation prints the same size no matter how big it was on
 ## Known gaps
 
 - Videos that scroll smoothly, instead of jumping, aren't supported yet.
-- Dark-themed tab won't be found.
+- Dark-themed tab won't be found, and colored notation, like red X notes, prints as blank.
 - A video that shows one page of tab the whole time may need `--region`.
 - If downloads start failing, YouTube probably changed something. `uv tool upgrade youtabber` pulls
   the latest [yt-dlp](https://github.com/yt-dlp/yt-dlp).

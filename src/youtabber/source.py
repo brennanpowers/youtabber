@@ -16,6 +16,7 @@ _NOISE_CORE = {"cover", "tab", "tabs", "playalong", "play-along", "lesson", "tut
 @dataclass(frozen=True)
 class Source:
     path: Path
+    id: str  # YouTube video id, or the file name for a local video
     title: str
     credit: str | None  # channel that made the video, usually the tab's transcriber
     url: str | None
@@ -23,7 +24,9 @@ class Source:
 
 def clean_title(raw: str) -> str:
     """Song name from a video title, dropping words like "Bass Cover (Play Along Tabs)"."""
-    text = re.sub(r"[(\[]([^)\]]*)[)\]]", lambda m: "" if _is_noise(m.group(1)) else m.group(0), raw)
+    # Joined so "play along" counts as noise without making "Along" alone count, as in "Along Came Mary"
+    text = re.sub(r"\bplay[\s-]+along\b", "play-along", raw, flags=re.IGNORECASE)
+    text = re.sub(r"[(\[]([^)\]]*)[)\]]", lambda m: "" if _is_noise(m.group(1)) else m.group(0), text)
     words = re.findall(r"[^\s|:]+|[|:]", text)
     kept: list[str] = []
     i = 0
@@ -46,15 +49,15 @@ def _is_noise(text: str) -> bool:
     return bool(words) and all(w in _NOISE for w in words) and any(w in _NOISE_CORE for w in words)
 
 
-def slug(title: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-") or "tab"
+def slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
 
 def fetch(source: str) -> Source:
     """Resolve a local file or a YouTube URL, downloading the video into the cache when needed."""
-    path = Path(source)
-    if path.exists():
-        return Source(path, path.stem, None, None)
+    path = Path(source).expanduser()
+    if path.is_file():
+        return Source(path, path.stem, clean_title(path.stem), None, None)
     opts = {
         "format": "bv*[height<=1080][ext=mp4]/bv*[height<=1080]",
         "outtmpl": str(CACHE / "%(id)s.%(ext)s"),
@@ -62,11 +65,14 @@ def fetch(source: str) -> Source:
         "quiet": True,
         "no_warnings": True,
     }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(source, download=False)
-        cached = next(CACHE.glob(f"{info['id']}.*"), None)
-        if cached is None:
-            print(f"Downloading {info['title']}")
-            ydl.download([source])
-            cached = next(CACHE.glob(f"{info['id']}.*"))
-    return Source(cached, clean_title(info["title"]), info.get("uploader"), info.get("webpage_url"))
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(source, download=False)
+            # The exact name yt-dlp writes, so a leftover partial download never counts as cached
+            cached = Path(ydl.prepare_filename(info))
+            if not cached.exists():
+                print(f"Downloading {info['title']}")
+                ydl.process_ie_result(info, download=True)
+    except yt_dlp.utils.DownloadError as e:
+        raise SystemExit(f"{source} isn't a file here, and yt-dlp couldn't download it:\n  {e}")
+    return Source(cached, info["id"], clean_title(info["title"]), info.get("uploader"), info.get("webpage_url"))

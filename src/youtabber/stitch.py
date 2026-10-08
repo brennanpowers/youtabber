@@ -1,17 +1,19 @@
 from dataclasses import dataclass
 
-import cv2
 import numpy as np
 
+from youtabber import ink
 from youtabber.views import View
 
 # A real overlap must be at least this share of the view width
 MIN_OVERLAP = 0.1
+# A real scroll moves at least this share of the view width. A closer match is the same image shown
+# twice, such as a repeated line, and both copies are kept.
+MIN_SCROLL = 0.1
 # Share of overlapping ink allowed to disagree at a real overlap
 MAX_MISMATCH = 0.04
 # Overlaps with less ink than this are too blank to prove anything
 MIN_OVERLAP_INK = 300
-_NEAR = np.ones((3, 3), np.uint8)
 
 
 @dataclass
@@ -19,18 +21,8 @@ class Placed:
     view: View
     x: int  # left edge of the view in strip coordinates
     new_from: int  # first column of the view that the strip didn't already have
-    ambiguous: bool = False  # more than one overlap matched, so the usual scroll distance decided
-
-
-def _ink(image: np.ndarray) -> np.ndarray:
-    """Ink to compare between views: everything darker than paper, minus the staff lines.
-
-    Staff lines look the same at every shift, so they add nothing but compression flicker.
-    The loose threshold keeps light gray measure numbers, which help tell repeated measures apart.
-    """
-    ink = (image < 200).astype(np.uint8)
-    lines = cv2.morphologyEx(ink, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (51, 1)))
-    return (ink & ~lines).astype(bool)
+    ambiguous: bool = False  # more than one overlap matched, so one had to be picked
+    unjoined: bool = False  # the video scrolls, but this view matched nothing and was added whole
 
 
 def candidate_shifts(prev: np.ndarray, cur: np.ndarray) -> list[int]:
@@ -39,17 +31,17 @@ def candidate_shifts(prev: np.ndarray, cur: np.ndarray) -> list[int]:
     More than one candidate means the overlap holds repeated measures.
     """
     w = prev.shape[1]
-    a, b = _ink(prev), _ink(cur)
-    near_a = cv2.dilate(a.astype(np.uint8), _NEAR).astype(bool)
-    near_b = cv2.dilate(b.astype(np.uint8), _NEAR).astype(bool)
+    # Staff lines match at every shift, so compare everything else, light gray measure numbers included
+    a, b = ink.without_staff_lines(prev), ink.without_staff_lines(cur)
+    near_a, near_b = ink.near(a), ink.near(b)
     scores = np.full(w, np.inf)
-    for shift in range(1, int(w * (1 - MIN_OVERLAP))):
+    for shift in range(int(w * MIN_SCROLL), int(w * (1 - MIN_OVERLAP))):
         pa, pb = a[:, shift:], b[:, :w - shift]
-        ink = pa.sum() + pb.sum()
-        if ink < MIN_OVERLAP_INK:
+        total = pa.sum() + pb.sum()
+        if total < MIN_OVERLAP_INK:
             continue
         missing = (pa & ~near_b[:, :w - shift]).sum() + (pb & ~near_a[:, shift:]).sum()
-        scores[shift] = missing / ink
+        scores[shift] = missing / total
     # Keep only the best shift within each cluster of neighbors, which differ by a pixel or two
     found = []
     for shift in np.argsort(scores):
@@ -73,13 +65,14 @@ def stitch(views: list[View]) -> tuple[np.ndarray, list[Placed]]:
     for view, found in zip(views[1:], candidates):
         if not found:
             x += w
-            placed.append(Placed(view, x, 0))
+            placed.append(Placed(view, x, 0, unjoined=typical is not None))
             continue
         if len(found) == 1:
             shift = found[0]
         elif typical is not None:
             shift = min(found, key=lambda s: abs(s - typical))
         else:
+            # With no clear-cut pair to learn the scroll distance from, take the largest overlap
             shift = min(found)
         x += shift
         placed.append(Placed(view, x, w - shift, ambiguous=len(found) > 1))

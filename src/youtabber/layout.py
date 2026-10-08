@@ -6,6 +6,7 @@ import numpy as np
 from fpdf import FPDF
 from PIL import Image
 
+from youtabber import ink
 from youtabber.enhance import Upscaler
 from youtabber.source import Source
 from youtabber.stitch import Placed
@@ -25,13 +26,14 @@ GRAY_INK = 100
 FAINT_INK = 235
 # Blank strip pixels kept above and below the music
 TRIM_PAD = 8
-# Darker than paper; loose enough to catch light gray staff lines
-INK = 200
+# Largest and smallest title size, in points; long titles shrink to fit the page
+TITLE_SIZE = 20
+MIN_TITLE_SIZE = 10
 
 
 def staff_lines(strip: np.ndarray) -> list[int]:
     """Rows of the strip holding staff lines, which run nearly its whole length."""
-    rows = np.flatnonzero((strip < INK).mean(axis=1) > 0.5)
+    rows = np.flatnonzero((strip < ink.FAINT).mean(axis=1) > 0.5)
     lines: list[int] = []
     prev = None
     for r in rows:
@@ -71,7 +73,7 @@ def scale_for(strip: np.ndarray, region_width: int) -> float:
 
 def content_rows(strip: np.ndarray) -> tuple[int, int]:
     """First and last strip rows holding any ink, padded, so blank paper above and below is dropped."""
-    ink_rows = np.flatnonzero((strip < INK).sum(axis=1) > 20)
+    ink_rows = np.flatnonzero((strip < ink.FAINT).sum(axis=1) > 20)
     if ink_rows.size == 0:
         return 0, strip.shape[0]
     return max(ink_rows[0] - TRIM_PAD, 0), min(ink_rows[-1] + 1 + TRIM_PAD, strip.shape[0])
@@ -83,7 +85,7 @@ def barlines(strip: np.ndarray, lines: list[int]) -> list[tuple[int, int]]:
     if not tab:
         return []
     y0, y1 = tab[0], tab[-1]
-    full = (strip[y0:y1 + 1] < INK).mean(axis=0) > 0.95
+    full = (strip[y0:y1 + 1] < ink.FAINT).mean(axis=0) > 0.95
     bars: list[tuple[int, int]] = []
     for x in np.flatnonzero(full):
         # Columns close together belong to one thick or double barline
@@ -112,7 +114,7 @@ def rows(strip: np.ndarray, placed: list[Placed], width: int) -> list[tuple[int,
             target = start + (seg_end - start) / rows_left
             fits = [b for b in bars if start < b[0] and b[1] < start + width]
             if fits:
-                # End the row after the barline and start the next one on it, so measure numbers stay whole
+                # End the row after the barline and start the next one on it, so both rows show it
                 first, last = min(fits, key=lambda b: abs(b[1] - target))
                 out.append((start, last + 1))
                 start = first
@@ -140,8 +142,13 @@ class _TabPDF(FPDF):
 
     def header(self) -> None:
         if self.page_no() == 1:
-            self.set_font("Helvetica", "B", 20)
-            self.cell(0, 26, _latin1(self.source.title), new_x="LMARGIN", new_y="NEXT")
+            title = _latin1(self.source.title)
+            size = TITLE_SIZE
+            self.set_font("Helvetica", "B", size)
+            while size > MIN_TITLE_SIZE and self.get_string_width(title) > USABLE_WIDTH:
+                size -= 1
+                self.set_font("Helvetica", "B", size)
+            self.cell(0, 26, title, new_x="LMARGIN", new_y="NEXT")
             if self.source.credit or self.source.url:
                 self.set_font("Helvetica", "", 9)
                 self.set_text_color(110)
@@ -174,27 +181,41 @@ def _latin1(text: str) -> str:
     return text.encode("latin-1", "replace").decode("latin-1")
 
 
-def clear_edge_fragments(row: np.ndarray, top_line: int, bottom_line: int, near: int) -> np.ndarray:
-    """Erase marks the row's edges cut in half, leaving everything on and between the staves alone.
+def clear_edge_fragments(strip: np.ndarray, start: int, end: int, view_edges: set[int],
+                         top_line: int, bottom_line: int, near: int) -> np.ndarray:
+    """The row strip[:, start:end] with marks its edges cut through erased, staves left alone.
 
-    Measure numbers sit centered over barlines, so cutting at a barline leaves part of a number on each
-    side, and part of "17" reads as "7". Players draw measure numbers in gray and the music in black, so
-    gray numbers above the staff that come within `near` pixels of an edge are erased. So is any ink
-    above or below the staves that the edge cuts through, such as the ends of a system bracket.
+    A row edge is either a cut at a barline or the edge of what the video showed (`view_edges`).
+    At a barline, a black mark such as a boxed section label is kept by whichever row holds most of
+    it. At the video's edge, anything cut is erased, such as the ends of a system bracket. Measure
+    numbers sit over or just after barlines and are drawn in gray, so gray marks above the staff
+    within `near` pixels of an edge are erased: a cut leaves part of a number, and part of "17"
+    reads as "7".
     """
-    out = row.copy()
-    w = row.shape[1]
-    staves = slice(max(top_line - 1, 0), bottom_line + 2)
+    row = strip[:, start:end].copy()
+    w = end - start
+    # Look a little past each barline cut to see how much of a cut mark lies outside the row
+    left = start if start in view_edges else max(start - near, 0)
+    right = end if end in view_edges else min(end + near, strip.shape[1])
+    window = strip[:, left:right]
+    staves = slice(max(top_line - 1, 0), bottom_line + 4)
 
     # A loose threshold so faint marks come out as whole shapes, not scattered specks.
     # Blanking the staves keeps a mark that touches a barline from joining it.
-    ink = (row < FAINT_INK).astype(np.uint8)
-    ink[staves] = 0
-    count, labels, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
+    marks = (window < FAINT_INK).astype(np.uint8)
+    marks[staves] = 0
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(marks, connectivity=8)
+    inside = labels[:, start - left:end - left]
     for i in range(1, count):
-        x, _, cw, _, _ = stats[i]
-        if x == 0 or x + cw == w:
-            out[labels == i] = 255
+        x, _, cw, _, total = stats[i]
+        x -= start - left
+        in_row = inside == i
+        cut_left, cut_right = x <= 0 < x + cw, x < w <= x + cw
+        if not in_row.any() or not (cut_left or cut_right):
+            continue
+        at_video_edge = (cut_left and start in view_edges) or (cut_right and end in view_edges)
+        if at_video_edge or in_row.sum() < total / 2 or row[in_row].min() > GRAY_INK:
+            row[in_row] = 255
 
     # Gray pixels above the staff, minus the soft edges of black marks such as section labels
     black = cv2.dilate((row <= GRAY_INK).astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
@@ -206,12 +227,12 @@ def clear_edge_fragments(row: np.ndarray, top_line: int, bottom_line: int, near:
     for i in range(1, count):
         x, _, cw, _, _ = stats[i]
         if x < near or x + cw > w - near:
-            out[gray & (labels == i)] = 255
-    return out
+            row[gray & (labels == i)] = 255
+    return row
 
 
 def write_pdf(strip: np.ndarray, row_ranges: list[tuple[int, int]], scale: float, out: Path, source: Source,
-              upscale: Upscaler | None = None) -> None:
+              placed: list[Placed], upscale: Upscaler | None = None) -> None:
     """Lay the rows out on Letter pages at `scale` points per strip pixel, running `upscale` on each row if given."""
     lines = staff_lines(strip)
     y0, y1 = content_rows(strip)
@@ -220,6 +241,7 @@ def write_pdf(strip: np.ndarray, row_ranges: list[tuple[int, int]], scale: float
     # About the width of a two-digit measure number
     tab = tab_staff(lines)
     near = int(2 * np.median(np.diff(tab))) if len(tab) > 1 else 0
+    view_edges = {p.x for p in placed if p.new_from == 0} | {strip.shape[1]}
     pdf = _TabPDF(source)
     pdf.set_title(_latin1(source.title))
     row_h = strip.shape[0] * scale
@@ -233,7 +255,7 @@ def write_pdf(strip: np.ndarray, row_ranges: list[tuple[int, int]], scale: float
             gap = min(ROW_GAP + spare / (len(rows_on_page) - 1), ROW_GAP * MAX_GAP_STRETCH)
         y = top
         for start, end in rows_on_page:
-            row = clear_edge_fragments(strip[:, start:end], top_line, bottom_line, near)
+            row = clear_edge_fragments(strip, start, end, view_edges, top_line, bottom_line, near)
             if upscale:
                 row = upscale(row)
             pdf.image(Image.fromarray(row), x=MARGIN, y=y, w=(end - start) * scale)
