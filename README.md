@@ -6,7 +6,11 @@ Rips the tab from a YouTube play-along video into a clean PDF.
 uv run tabrip "https://www.youtube.com/watch?v=..."
 uv run tabrip video.mp4 -o out/song
 uv run tabrip video.mp4 --region 370,712,1546,364   # set the tab area by hand
+uv run tabrip "https://..." --title "Song - Artist" # when the name taken from the video title is wrong
 ```
+
+Output goes to `out/<song-name>/`, where the song name comes from the video title with words like
+"Bass Cover (Play Along Tabs)" dropped.
 
 Requires `ffmpeg` on the PATH. Downloads are cached in `~/.cache/tabrip`.
 
@@ -14,7 +18,7 @@ Requires `ffmpeg` on the PATH. Downloads are cached in `~/.cache/tabrip`.
 
 | File | What it holds |
 |---|---|
-| `tab.pdf` | The tab, laid out in rows that break at barlines |
+| `<song-name>.pdf` | The tab on Letter pages, headed with the song name and the channel that made it |
 | `region.png` | A frame with the tab area outlined; check this first when the PDF looks wrong |
 | `views/` | Each distinct tab image the video showed, with the cursor removed |
 | `strip.png` | Every view joined into one long line of music |
@@ -30,4 +34,6 @@ Requires `ffmpeg` on the PATH. Downloads are cached in `~/.cache/tabrip`.
 3. **Stitch.** Players that scroll keep part of the previous view on screen. Each new view is slid
    across the previous one to find where they overlap, and only the new part is appended. When
    repeated measures match in more than one place, the player's usual scroll distance decides.
-4. **Lay out.** The strip is cut at barlines into rows that fit the page.
+4. **Lay out.** Every song is scaled so its tab lines sit the same distance apart on paper, so
+   notation prints the same size whatever the video looked like. The strip is then cut at barlines
+   into rows of even width, and blank paper above and below the music is trimmed.
