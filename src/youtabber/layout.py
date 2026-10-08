@@ -31,40 +31,9 @@ TITLE_SIZE = 20
 MIN_TITLE_SIZE = 10
 
 
-def staff_lines(strip: np.ndarray) -> list[int]:
-    """Rows of the strip holding staff lines, which run nearly its whole length."""
-    rows = np.flatnonzero((strip < ink.FAINT).mean(axis=1) > 0.5)
-    lines: list[int] = []
-    prev = None
-    for r in rows:
-        # Rows next to each other, allowing a one-row gap, are one thick line
-        if prev is None or r > prev + 2:
-            lines.append(int(r))
-        prev = r
-    return lines
-
-
-def tab_staff(lines: list[int]) -> list[int]:
-    """Lines of the bottom staff, which is the tab: the last run of at least three evenly spaced lines.
-
-    Needing three skips lone long lines below the tab, such as the bar of a rhythm bracket.
-    """
-    if len(lines) < 3:
-        return []
-    spacing = np.median(np.diff(lines))
-    runs = [[lines[0]]]
-    for prev, line in zip(lines, lines[1:]):
-        if line - prev <= spacing * 1.5:
-            runs[-1].append(line)
-        else:
-            runs.append([line])
-    staffs = [run for run in runs if len(run) >= 3]
-    return staffs[-1] if staffs else []
-
-
 def scale_for(strip: np.ndarray, region_width: int) -> float:
     """Points per strip pixel that give every song the same tab line spacing on paper."""
-    tab = tab_staff(staff_lines(strip))
+    tab = ink.tab_staff(ink.staff_lines(strip))
     if len(tab) < 2:
         # Without a staff to measure, fit the video's tab area to the page width
         return USABLE_WIDTH / region_width
@@ -81,7 +50,7 @@ def content_rows(strip: np.ndarray) -> tuple[int, int]:
 
 def barlines(strip: np.ndarray, lines: list[int]) -> list[tuple[int, int]]:
     """(first, last) columns of each barline, found where ink spans the tab staff top to bottom."""
-    tab = tab_staff(lines)
+    tab = ink.tab_staff(lines)
     if not tab:
         return []
     y0, y1 = tab[0], tab[-1]
@@ -98,7 +67,7 @@ def barlines(strip: np.ndarray, lines: list[int]) -> list[tuple[int, int]]:
 
 def rows(strip: np.ndarray, placed: list[Placed], width: int) -> list[tuple[int, int]]:
     """Split the strip into (start, end) column ranges no wider than `width`, as even in width as barlines allow."""
-    bars = barlines(strip, staff_lines(strip))
+    bars = barlines(strip, ink.staff_lines(strip))
     # Each page turn starts a new line of music with its own clef, so always cut there
     turns = [p.x for p in placed if p.new_from == 0] + [strip.shape[1]]
     out = []
@@ -234,12 +203,18 @@ def clear_edge_fragments(strip: np.ndarray, start: int, end: int, view_edges: se
 def write_pdf(strip: np.ndarray, row_ranges: list[tuple[int, int]], scale: float, out: Path, source: Source,
               placed: list[Placed], upscale: Upscaler | None = None) -> None:
     """Lay the rows out on Letter pages at `scale` points per strip pixel, running `upscale` on each row if given."""
-    lines = staff_lines(strip)
+    lines = ink.staff_lines(strip)
     y0, y1 = content_rows(strip)
-    strip = whiten(strip[y0:y1])
-    top_line, bottom_line = (lines[0] - y0, lines[-1] - y0) if lines else (0, strip.shape[0])
+    trimmed = strip[y0:y1]
+    strip = whiten(trimmed)
+
+    def staves(start: int, end: int) -> tuple[int, int]:
+        """Top and bottom staff lines of one row. Pages of a video can place the staffs differently."""
+        found = ink.staff_lines(trimmed[:, start:end]) or [line - y0 for line in lines]
+        return (found[0], found[-1]) if found else (0, strip.shape[0])
+
     # About the width of a two-digit measure number
-    tab = tab_staff(lines)
+    tab = ink.tab_staff(lines)
     near = int(2 * np.median(np.diff(tab))) if len(tab) > 1 else 0
     view_edges = {p.x for p in placed if p.new_from == 0} | {strip.shape[1]}
     pdf = _TabPDF(source)
@@ -255,7 +230,7 @@ def write_pdf(strip: np.ndarray, row_ranges: list[tuple[int, int]], scale: float
             gap = min(ROW_GAP + spare / (len(rows_on_page) - 1), ROW_GAP * MAX_GAP_STRETCH)
         y = top
         for start, end in rows_on_page:
-            row = clear_edge_fragments(strip, start, end, view_edges, top_line, bottom_line, near)
+            row = clear_edge_fragments(strip, start, end, view_edges, *staves(start, end), near)
             if upscale:
                 row = upscale(row)
             pdf.image(Image.fromarray(row), x=MARGIN, y=y, w=(end - start) * scale)

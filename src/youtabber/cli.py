@@ -7,7 +7,7 @@ from pathlib import Path
 
 import cv2
 
-from youtabber import enhance, layout, region, source, stitch, views
+from youtabber import enhance, ink, layout, region, source, stitch, views
 from youtabber.video import VideoError
 
 CONFIG = Path.home() / ".config" / "youtabber" / "config.toml"
@@ -122,7 +122,7 @@ def run(args: argparse.Namespace, config: dict) -> None:
         "region": asdict(tab_region),
         "views": [{"start": p.view.start, "end": p.view.end, "strip_x": p.x, "new_from": p.new_from,
                    "ambiguous": p.ambiguous, "unjoined": p.unjoined} for p in placed],
-        "staff_lines": layout.staff_lines(strip),
+        "staff_lines": ink.staff_lines(strip),
         "rows": row_ranges,
     }
     (out / "meta.json").write_text(json.dumps(meta, indent=2))

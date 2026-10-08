@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -52,8 +53,34 @@ def candidate_shifts(prev: np.ndarray, cur: np.ndarray) -> list[int]:
     return found
 
 
+def align(views: list[View]) -> list[View]:
+    """Views moved up or down so their tab staffs sit at the same height.
+
+    Some videos draw each page with the staffs a few pixels higher or lower. Views are padded rather
+    than cropped, and a view whose tab staff has an unusual number of lines is left where it is.
+    """
+    tabs = [ink.tab_staff(ink.staff_lines(v.image)) for v in views]
+    usual = Counter(len(t) for t in tabs if t).most_common(1)
+    if not usual:
+        return views
+    tops = [t[0] for t in tabs if len(t) == usual[0][0]]
+    target = int(np.median(tops))
+    moves = [target - t[0] if len(t) == usual[0][0] else 0 for t in tabs]
+    if not any(moves):
+        return views
+    h, w = views[0].image.shape
+    up, down = -min(moves + [0]), max(moves + [0])
+    out = []
+    for view, move in zip(views, moves):
+        image = np.full((h + up + down, w), 255, np.uint8)
+        image[up + move:up + move + h] = view.image
+        out.append(replace(view, image=image))
+    return out
+
+
 def stitch(views: list[View]) -> tuple[np.ndarray, list[Placed]]:
     """Join views into one long strip, keeping each overlapping part once."""
+    views = align(views)
     h, w = views[0].image.shape
     candidates = [candidate_shifts(p.image, c.image) for p, c in zip(views, views[1:])]
     # Players scroll by the same amount each time, so clear-cut pairs settle the repeated-measure ones
