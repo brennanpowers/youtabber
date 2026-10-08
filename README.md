@@ -160,5 +160,4 @@ whose work you learn from.
 
 ## License
 
-The code is under the [MIT License](LICENSE). That covers youtabber itself, not the videos or tabs
-you use it with.
+The code is under the [MIT License](LICENSE).
