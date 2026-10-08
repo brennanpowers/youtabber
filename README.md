@@ -1,163 +1,91 @@
 # youtabber
 
-Turns a YouTube play-along video into a clean, printable PDF of its tab.
+Turns a YouTube play-along video into a printable PDF of the tab.
 
-## TL;DR
-
-```sh
-git clone https://github.com/brennanpowers/youtabber.git
-uv tool install --editable ./youtabber              # needs uv and ffmpeg
-youtabber "https://www.youtube.com/watch?v=..."     # writes out/<song-name>/<song-name>.pdf
-```
-
-Play-along videos usually show someone playing on one part of the screen and the tab on another,
-with a cursor moving through it. youtabber finds the tab, removes the cursor, joins the pieces the
-video shows over time into one continuous piece of music, and lays it out on Letter pages.
-
-| A play-along video... | ...becomes a printable PDF |
+| Video | PDF |
 |---|---|
 | ![A play-along video frame with a guitarist above and tab below](docs/example-frame.jpg) | ![The PDF youtabber made from it](docs/example-pdf.png) |
 
-<sub>The frame is a made-up example, not from a real video.</sub>
+```sh
+youtabber "https://www.youtube.com/watch?v=..."
+```
 
-It handles the common layouts:
-
-- Tab along the bottom or top of the frame, or in a box that covers only part of it
-- Videos that show one line of tab at a time and swap in the next
-- Videos that jump forward while keeping part of the previous view on screen
-- Light colored highlight boxes and cursor lines, such as yellow, blue, or red
-
-## Requirements
-
-- [uv](https://docs.astral.sh/uv/)
-- [ffmpeg](https://ffmpeg.org/) on your `PATH` (`brew install ffmpeg` on macOS)
+It finds the tab on screen, wipes out the moving cursor, and pieces the whole song together, whether
+the video shows one line at a time or scrolls forward. Tab at the bottom, at the top, or in a box all
+work. (The frame above is made up, not from a real video.)
 
 ## Install
+
+You'll need [uv](https://docs.astral.sh/uv/) and [ffmpeg](https://ffmpeg.org/) (`brew install ffmpeg`).
 
 ```sh
 git clone https://github.com/brennanpowers/youtabber.git
 uv tool install --editable ./youtabber
 ```
 
-This puts a `youtabber` command on your `PATH`. `--editable` runs the code straight from the clone,
-so changes take effect without reinstalling. To run it without installing, use
-`uv run youtabber ...` from inside the clone.
-
 ## Usage
 
 ```sh
-youtabber "https://www.youtube.com/watch?v=..."
+youtabber URL                          # writes out/<song-name>/<song-name>.pdf
+youtabber song.mp4                     # a local video works too
+youtabber URL --title "Song - Artist"  # when the name pulled from the video title is wrong
+youtabber URL --region 370,712,1546,364  # when it grabs the wrong part of the screen
+youtabber URL --no-enhance             # skip sharpening, for a smaller file
 ```
 
-| Option | What it does |
-|---|---|
-| `SOURCE` | A YouTube URL or a local video file |
-| `--title "Song - Artist"` | Sets the song name, when the one taken from the video title is wrong |
-| `--region x,y,w,h` | Sets the tab area by hand, in video pixels, when detection gets it wrong |
-| `--no-enhance` | Skips upscaling and sharpening, for a PDF about a third the size |
-| `--model NAME` | Enhances with a super-resolution model instead; see [Models](#models) |
-| `-o FOLDER` | Writes output somewhere other than `out/<song-name>/` |
+If a PDF looks wrong, open `region.png` in the output folder. It shows the area youtabber read the
+tab from, and the run prints that area as `Region(x=…, y=…, w=…, h=…)` so you can adjust it and pass
+it back with `--region`.
 
-The song name comes from the video title with phrases like "Bass Cover (Play Along Tabs)" removed.
-Downloads are cached in `~/.cache/youtabber`, so running the same video again doesn't download it again.
+Videos are cached in `~/.cache/youtabber`, so a second run doesn't download again.
 
-### Output
+## Config
 
-Each run writes a folder, `out/<song-name>/` under the current directory by default:
-
-| File | What it holds |
-|---|---|
-| `<song-name>.pdf` | The tab, headed with the song name and the channel that made the video |
-| `region.png` | A frame with the detected tab area outlined; check this first when the PDF looks wrong |
-| `views/` | Each distinct tab image the video showed, with the cursor removed |
-| `strip.png` | Every view joined into one long line of music |
-| `meta.json` | When each view was on screen, where it sits in the strip, and where rows were cut |
-
-### Config
-
-To also copy every finished PDF into one folder, create `~/.config/youtabber/config.toml`:
+`~/.config/youtabber/config.toml`:
 
 ```toml
-pdf_dir = "~/Documents/tabs"
-enhance = false   # optional: skip upscaling and sharpening unless --enhance is passed
-model = "realesrgan-anime"   # optional: enhance with a model; see Models
+pdf_dir = "~/Documents/tabs"   # also copy every PDF here
+model = "realesrgan-anime"     # sharper output, see below
+enhance = false                # skip sharpening unless --enhance is passed
 ```
 
-### Models
+## Sharper output
 
-By default, enhancement upscales with Lanczos interpolation and sharpens with an unsharp mask. For
-cleaner results, set `model` in the config or pass `--model` to run a super-resolution model instead.
-Models need PyTorch, which is a large download, so they're an optional extra:
+By default the tab is upscaled and sharpened with ordinary image filters. For cleaner notes, it can
+use [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN)'s line-art model instead. That needs
+PyTorch, which is a big download, so it's an optional extra:
 
 ```sh
 uv tool install --editable './youtabber[ai]'
-youtabber "https://www.youtube.com/watch?v=..." --model realesrgan-anime
+youtabber URL --model realesrgan-anime
 ```
 
-`realesrgan-anime` is [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN)'s line-art model, which
-suits engraved notation better than the photo models. It downloads to `~/.cache/youtabber/models` on
-first use. `model` also takes a path to any model file [spandrel](https://github.com/chaiNNer-org/spandrel)
-can load, such as the ones on [OpenModelDB](https://openmodeldb.info). The model runs on the GPU when
-one is available (Apple Silicon or CUDA).
-
-Super-resolution models can invent detail. On the songs this was tested with, the line-art model
-kept every fret number, notehead, ledger line, and beam, and differed from the source only in stroke
-thickness. Check a new model against the video before trusting it.
-
-### Fixing a wrong tab area
-
-Run once, open `region.png`, and compare the outline with the tab. The run prints the detected area as
-`Region(x=…, y=…, w=…, h=…)`; adjust those numbers and pass them back with `--region x,y,w,h`.
+It adds a few seconds to a minute per song. The model downloads on first use, and `--model` also
+takes a path to any model file [spandrel](https://github.com/chaiNNer-org/spandrel) can load. These
+models can invent detail, so check a new one against the video before trusting it.
 
 ## How it works
 
-1. **Find the tab area.** Staff lines are thin, dark, horizontal, and stay in the same place for the
-   whole video. Averaging a thin-line mask over frames sampled across the video finds them, even
-   though notes cover parts of them in any single frame. The area then grows over the surrounding
-   paper to take in chord names and measure numbers.
-2. **Find stable views.** Frames are compared by their ink only: pixels where every color channel is
-   dark. Colored cursors and highlights aren't ink, so they don't count as changes. Each run of
-   matching frames becomes one view, and taking the median of each pixel across the run erases the
-   cursor.
-3. **Stitch.** When a video jumps forward but keeps part of the previous view on screen, each new
-   view is slid across the previous one to find where they overlap, and only the new part is kept.
-   Bass lines often repeat a measure exactly, which can make several overlaps match. Players scroll
-   the same distance every time, so the usual distance decides between them.
-4. **Lay out.** Every song is scaled so its tab lines sit the same distance apart on paper, which
-   makes notation print the same size whatever the video looked like. The music is cut at barlines
-   into rows of even width, and blank paper above and below it is trimmed.
-5. **Clean up.** Cutting at barlines splits the gray measure numbers that sit over them, so gray
-   marks near a row's edges are erased, along with anything above or below the staves that an edge
-   cuts through. Nothing on or between the staves is touched. Full pages spread their rows evenly.
-6. **Enhance.** Unless turned off, each row's resolution is doubled, its edges are sharpened with an
-   unsharp mask, and near-black is pushed to black and near-white to white. Light gray staff lines and measure
-   numbers stay gray instead of being thresholded away.
+Staff lines stay put for the whole video while everything else moves, so averaging frames finds the
+tab. Frames are compared by their dark ink only, which ignores colored cursors, and each stretch of
+matching frames is merged into one clean image. When a video scrolls forward with some overlap, each
+new image is slid across the last one to find where they line up. The result is cut at barlines into
+rows and scaled so the notation prints the same size no matter how big it was on screen.
 
-## Limitations
+## Known gaps
 
-- Videos that scroll smoothly instead of jumping aren't supported yet.
-- The tab area is found partly from how notes move over time, so a video that shows one unchanging
-  page of tab may need `--region`.
-- Detection expects dark notation on light paper. Dark-themed tab won't be found.
-- A video that shows standard notation above the tab produces taller rows, so its PDF runs longer.
+- Videos that scroll smoothly, instead of jumping, aren't supported yet.
+- Dark-themed tab won't be found.
+- A video that shows one page of tab the whole time may need `--region`.
+- If downloads start failing, YouTube probably changed something. `uv tool upgrade youtabber` pulls
+  the latest [yt-dlp](https://github.com/yt-dlp/yt-dlp).
 
-## Keeping downloads working
+## Please be nice
 
-YouTube changes often enough to break [yt-dlp](https://github.com/yt-dlp/yt-dlp) a few times a year.
-If downloads start failing, update it:
-
-```sh
-uv tool upgrade youtabber
-```
-
-## Use
-
-youtabber is for practicing with videos you have the right to use: your own, ones under a Creative
-Commons license, or ones whose creator allows it. Tabs belong to the people who transcribe them and
-the songs to their publishers, so keep the PDFs for your own practice and don't share them. YouTube's
-terms of service also limit downloading, and following them is up to you. Please support the channels
-whose work you learn from.
+Use it with videos you have the right to use: your own, Creative Commons ones, or ones whose creator
+is fine with it. The tabs belong to whoever transcribed them, so keep the PDFs for your own practice,
+and follow YouTube's terms. Support the channels you learn from.
 
 ## License
 
-The code is under the [MIT License](LICENSE).
+[MIT](LICENSE)
