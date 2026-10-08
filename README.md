@@ -14,6 +14,12 @@ Play-along videos usually show someone playing on one part of the screen and the
 with a cursor moving through it. youtabber finds the tab, removes the cursor, joins the pieces the
 video shows over time into one continuous piece of music, and lays it out on Letter pages.
 
+| A play-along video... | ...becomes a printable PDF |
+|---|---|
+| ![A play-along video frame with a guitarist above and tab below](docs/example-frame.jpg) | ![The PDF youtabber made from it](docs/example-pdf.png) |
+
+<sub>The frame is a made-up example, not from a real video.</sub>
+
 It handles the common layouts:
 
 - Tab along the bottom or top of the frame, or in a box that covers only part of it
@@ -130,6 +136,8 @@ Run once, open `region.png`, and compare the outline with the tab. The run print
 ## Limitations
 
 - Videos that scroll smoothly instead of jumping aren't supported yet.
+- The tab area is found partly from how notes move over time, so a video that shows one unchanging
+  page of tab may need `--region`.
 - Detection expects dark notation on light paper. Dark-themed tab won't be found.
 - A video that shows standard notation above the tab produces taller rows, so its PDF runs longer.
 
