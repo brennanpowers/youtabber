@@ -152,5 +152,13 @@ uv tool upgrade youtabber
 
 ## Use
 
-Tabs belong to the people who transcribe them. youtabber is for practicing with videos you already
-follow along with. Please don't redistribute the PDFs, and support the channels whose work you use.
+youtabber is for practicing with videos you have the right to use: your own, ones under a Creative
+Commons license, or ones whose creator allows it. Tabs belong to the people who transcribe them and
+the songs to their publishers, so keep the PDFs for your own practice and don't share them. YouTube's
+terms of service also limit downloading, and following them is up to you. Please support the channels
+whose work you learn from.
+
+## License
+
+The code is under the [MIT License](LICENSE). That covers youtabber itself, not the videos or tabs
+you use it with.

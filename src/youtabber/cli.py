@@ -30,7 +30,7 @@ def parse_region(text: str) -> region.Region:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Rip the tab from a play-along video into a PDF.")
+    parser = argparse.ArgumentParser(description="Turn a play-along video into a printable PDF of its tab.")
     parser.add_argument("source", help="YouTube URL or local video file")
     parser.add_argument("-o", "--out", type=Path, help="output folder (default: out/<song name>)")
     parser.add_argument("--title", help="song name for the PDF, when the one taken from the video title is wrong")

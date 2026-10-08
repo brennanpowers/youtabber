@@ -1,7 +1,9 @@
 [project]
 name = "youtabber"
 version = "0.1.0"
-description = "Rip the tab from YouTube play-along videos into a clean PDF"
+description = "Turn a play-along video into a clean, printable PDF of its tab"
+license = "MIT"
+license-files = ["LICENSE"]
 readme = "README.md"
 authors = [
     { name = "brennanpowers", email = "brennanpowers@gmail.com" }
