@@ -6,7 +6,7 @@ import numpy as np
 from fpdf import FPDF
 from PIL import Image
 
-from youtabber.enhance import enhance
+from youtabber.enhance import Upscaler
 from youtabber.source import Source
 from youtabber.stitch import Placed
 
@@ -202,8 +202,8 @@ def clear_edge_fragments(row: np.ndarray, top_line: int, bottom_line: int, near:
 
 
 def write_pdf(strip: np.ndarray, row_ranges: list[tuple[int, int]], scale: float, out: Path, source: Source,
-              sharpen: bool = False) -> None:
-    """Lay the rows out on Letter pages at `scale` points per strip pixel, upscaled and sharpened if asked."""
+              upscale: Upscaler | None = None) -> None:
+    """Lay the rows out on Letter pages at `scale` points per strip pixel, running `upscale` on each row if given."""
     lines = staff_lines(strip)
     y0, y1 = content_rows(strip)
     strip = whiten(strip[y0:y1])
@@ -225,8 +225,8 @@ def write_pdf(strip: np.ndarray, row_ranges: list[tuple[int, int]], scale: float
         y = top
         for start, end in rows_on_page:
             row = clear_edge_fragments(strip[:, start:end], top_line, bottom_line, near)
-            if sharpen:
-                row = enhance(row)
+            if upscale:
+                row = upscale(row)
             pdf.image(Image.fromarray(row), x=MARGIN, y=y, w=(end - start) * scale)
             y += row_h + gap
 

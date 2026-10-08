@@ -49,6 +49,7 @@ youtabber "https://www.youtube.com/watch?v=..."
 | `--title "Song - Artist"` | Sets the song name, when the one taken from the video title is wrong |
 | `--region x,y,w,h` | Sets the tab area by hand, in video pixels, when detection gets it wrong |
 | `--no-enhance` | Skips upscaling and sharpening, for a PDF about a third the size |
+| `--model NAME` | Enhances with a super-resolution model instead; see [Models](#models) |
 | `-o FOLDER` | Writes output somewhere other than `out/<song-name>/` |
 
 The song name comes from the video title with phrases like "Bass Cover (Play Along Tabs)" removed.
@@ -73,7 +74,29 @@ To also copy every finished PDF into one folder, create `~/.config/youtabber/con
 ```toml
 pdf_dir = "~/Documents/tabs"
 enhance = false   # optional: skip upscaling and sharpening unless --enhance is passed
+model = "realesrgan-anime"   # optional: enhance with a model; see Models
 ```
+
+### Models
+
+By default, enhancement upscales with Lanczos interpolation and sharpens with an unsharp mask. For
+cleaner results, set `model` in the config or pass `--model` to run a super-resolution model instead.
+Models need PyTorch, which is a large download, so they're an optional extra:
+
+```sh
+uv tool install --editable './youtabber[ai]'
+youtabber "https://www.youtube.com/watch?v=..." --model realesrgan-anime
+```
+
+`realesrgan-anime` is [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN)'s line-art model, which
+suits engraved notation better than the photo models. It downloads to `~/.cache/youtabber/models` on
+first use. `model` also takes a path to any model file [spandrel](https://github.com/chaiNNer-org/spandrel)
+can load, such as the ones on [OpenModelDB](https://openmodeldb.info). The model runs on the GPU when
+one is available (Apple Silicon or CUDA).
+
+Super-resolution models can invent detail. On the songs this was tested with, the line-art model
+kept every fret number, notehead, ledger line, and beam, and differed from the source only in stroke
+thickness. Check a new model against the video before trusting it.
 
 ### Fixing a wrong tab area
 

@@ -18,6 +18,12 @@ dependencies = [
 [project.scripts]
 youtabber = "youtabber.cli:main"
 
+[project.optional-dependencies]
+ai = [
+    "spandrel>=0.4.2",
+    "torch>=2.14.1",
+]
+
 [build-system]
 requires = ["uv_build>=0.10.4,<0.11.0"]
 build-backend = "uv_build"

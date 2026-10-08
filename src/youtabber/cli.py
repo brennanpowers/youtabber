@@ -7,7 +7,7 @@ from pathlib import Path
 
 import cv2
 
-from youtabber import layout, region, source, stitch, views
+from youtabber import enhance, layout, region, source, stitch, views
 
 CONFIG = Path.home() / ".config" / "youtabber" / "config.toml"
 
@@ -38,11 +38,16 @@ def main() -> None:
                         help="tab area as x,y,w,h in video pixels, when detection gets it wrong")
     parser.add_argument("--enhance", action=argparse.BooleanOptionalAction, default=None,
                         help="upscale and sharpen the tab images in the PDF (on unless the config says otherwise)")
+    parser.add_argument("--model", help=f"super-resolution model for enhancing: {', '.join(enhance.MODELS)} "
+                                        "or a path to a model file (needs the ai extra)")
     args = parser.parse_args()
     config = load_config()
     pdf_dir = Path(config["pdf_dir"]).expanduser() if config.get("pdf_dir") else None
     # The command line wins over the config file, and enhancing is on when neither says
-    enhance = args.enhance if args.enhance is not None else config.get("enhance", True)
+    enhanced = args.enhance if args.enhance is not None else config.get("enhance", True)
+    model = args.model or config.get("model")
+    # Load the model before the slow video work so a bad name or missing extra fails right away
+    upscale = (enhance.model_upscaler(model) if model else enhance.classic) if enhanced else None
 
     src = source.fetch(args.source)
     if args.title:
@@ -80,7 +85,7 @@ def main() -> None:
     cv2.imwrite(str(out / "strip.png"), strip)
     scale = layout.scale_for(strip, tab_region.w)
     row_ranges = layout.rows(strip, placed, int(layout.USABLE_WIDTH / scale))
-    layout.write_pdf(strip, row_ranges, scale, pdf_path, src, sharpen=enhance)
+    layout.write_pdf(strip, row_ranges, scale, pdf_path, src, upscale)
     overlaps = sum(1 for p in placed if p.new_from)
     print(f"  {overlaps} overlapping views joined, {len(row_ranges)} rows")
     guessed = [p for p in placed if p.ambiguous]
