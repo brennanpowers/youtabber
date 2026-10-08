@@ -14,6 +14,14 @@ Output goes to `out/<song-name>/`, where the song name comes from the video titl
 
 Requires `ffmpeg` on the PATH. Downloads are cached in `~/.cache/tabrip`.
 
+## Config
+
+To also copy each finished PDF to a folder of your tabs, create `~/.config/tabrip/config.toml`:
+
+```toml
+pdf_dir = "~/Documents/tabs"
+```
+
 ## Output
 
 | File | What it holds |

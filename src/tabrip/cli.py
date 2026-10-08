@@ -1,11 +1,28 @@
 import argparse
 import json
+import shutil
+import tomllib
 from dataclasses import asdict, replace
 from pathlib import Path
 
 import cv2
 
 from tabrip import layout, region, source, stitch, views
+
+CONFIG = Path.home() / ".config" / "tabrip" / "config.toml"
+
+
+def pdf_dir_setting() -> Path | None:
+    """Folder from the config file's `pdf_dir` that also receives each PDF, if set."""
+    if not CONFIG.exists():
+        return None
+    try:
+        config = tomllib.loads(CONFIG.read_text())
+    except tomllib.TOMLDecodeError as e:
+        raise SystemExit(f"Can't read {CONFIG}: {e}")
+    pdf_dir = config.get("pdf_dir")
+    return Path(pdf_dir).expanduser() if pdf_dir else None
+
 
 def parse_region(text: str) -> region.Region:
     try:
@@ -23,6 +40,7 @@ def main() -> None:
     parser.add_argument("--region", type=parse_region,
                         help="tab area as x,y,w,h in video pixels, when detection gets it wrong")
     args = parser.parse_args()
+    pdf_dir = pdf_dir_setting()
 
     src = source.fetch(args.source)
     if args.title:
@@ -81,3 +99,7 @@ def main() -> None:
     }
     (out / "meta.json").write_text(json.dumps(meta, indent=2))
     print(f"Wrote {pdf_path}")
+    if pdf_dir:
+        pdf_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(pdf_path, pdf_dir / pdf_path.name)
+        print(f"Copied to {pdf_dir / pdf_path.name}")
