@@ -1,6 +1,7 @@
 import math
 from pathlib import Path
 
+import cv2
 import numpy as np
 from fpdf import FPDF
 from PIL import Image
@@ -14,8 +15,14 @@ MARGIN = 36
 USABLE_WIDTH = 612 - 2 * MARGIN
 FOOTER = 14
 ROW_GAP = 14
+# Spreading leftover space never makes a gap more than this many times ROW_GAP
+MAX_GAP_STRETCH = 4
 # Distance between tab lines on paper; every song is scaled to match so notation prints the same size
 TAB_LINE_SPACING = 6.5
+# Measure numbers are drawn in gray; music in black prints darker than this
+GRAY_INK = 100
+# Lightest mark that still counts as ink when looking for cut-off fragments
+FAINT_INK = 235
 # Blank strip pixels kept above and below the music
 TRIM_PAD = 8
 # Darker than paper; loose enough to catch light gray staff lines
@@ -158,21 +165,81 @@ def _latin1(text: str) -> str:
     return text.encode("latin-1", "replace").decode("latin-1")
 
 
+def clear_edge_fragments(row: np.ndarray, top_line: int, bottom_line: int, near: int) -> np.ndarray:
+    """Erase marks the row's edges cut in half, leaving everything on and between the staves alone.
+
+    Measure numbers sit centered over barlines, so cutting at a barline leaves part of a number on each
+    side, and part of "17" reads as "7". Players draw measure numbers in gray and the music in black, so
+    gray numbers above the staff that come within `near` pixels of an edge are erased. So is any ink
+    above or below the staves that the edge cuts through, such as the ends of a system bracket.
+    """
+    out = row.copy()
+    w = row.shape[1]
+    staves = slice(max(top_line - 1, 0), bottom_line + 2)
+
+    # A loose threshold so faint marks come out as whole shapes, not scattered specks.
+    # Blanking the staves keeps a mark that touches a barline from joining it.
+    ink = (row < FAINT_INK).astype(np.uint8)
+    ink[staves] = 0
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
+    for i in range(1, count):
+        x, _, cw, _, _ = stats[i]
+        if x == 0 or x + cw == w:
+            out[labels == i] = 255
+
+    # Gray pixels above the staff, minus the soft edges of black marks such as section labels
+    black = cv2.dilate((row <= GRAY_INK).astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+    gray = (row < FAINT_INK) & ~black
+    gray[max(top_line - 1, 0):] = False
+    # Join the digits of one measure number so the whole number goes, not just the digit nearest the edge
+    joined = cv2.dilate(gray.astype(np.uint8), np.ones((1, near // 3 + 1), np.uint8))
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(joined, connectivity=8)
+    for i in range(1, count):
+        x, _, cw, _, _ = stats[i]
+        if x < near or x + cw > w - near:
+            out[gray & (labels == i)] = 255
+    return out
+
+
 def write_pdf(strip: np.ndarray, row_ranges: list[tuple[int, int]], scale: float, out: Path, source: Source,
               sharpen: bool = False) -> None:
     """Lay the rows out on Letter pages at `scale` points per strip pixel, upscaled and sharpened if asked."""
+    lines = staff_lines(strip)
     y0, y1 = content_rows(strip)
     strip = whiten(strip[y0:y1])
+    top_line, bottom_line = (lines[0] - y0, lines[-1] - y0) if lines else (0, strip.shape[0])
+    # About the width of a two-digit measure number
+    tab = tab_staff(lines)
+    near = int(2 * np.median(np.diff(tab))) if len(tab) > 1 else 0
     pdf = _TabPDF(source)
     pdf.set_title(_latin1(source.title))
     row_h = strip.shape[0] * scale
+    bottom = pdf.h - MARGIN - FOOTER
+
+    def draw_page(rows_on_page: list[tuple[int, int]], top: float, spread: bool) -> None:
+        gap = ROW_GAP
+        if spread and len(rows_on_page) > 1:
+            # Share the leftover space between rows so full pages end at the same place
+            spare = bottom - top - len(rows_on_page) * row_h - (len(rows_on_page) - 1) * ROW_GAP
+            gap = min(ROW_GAP + spare / (len(rows_on_page) - 1), ROW_GAP * MAX_GAP_STRETCH)
+        y = top
+        for start, end in rows_on_page:
+            row = clear_edge_fragments(strip[:, start:end], top_line, bottom_line, near)
+            if sharpen:
+                row = enhance(row)
+            pdf.image(Image.fromarray(row), x=MARGIN, y=y, w=(end - start) * scale)
+            y += row_h + gap
+
     pdf.add_page()
-    for start, end in row_ranges:
-        if pdf.get_y() + row_h > pdf.h - MARGIN - FOOTER:
+    top = y = pdf.get_y()
+    page_rows: list[tuple[int, int]] = []
+    for r in row_ranges:
+        if page_rows and y + row_h > bottom:
+            draw_page(page_rows, top, spread=True)
             pdf.add_page()
-        row = strip[:, start:end]
-        if sharpen:
-            row = enhance(row)
-        pdf.image(Image.fromarray(row), x=MARGIN, y=pdf.get_y(), w=(end - start) * scale)
-        pdf.set_y(pdf.get_y() + row_h + ROW_GAP)
+            top = y = pdf.get_y()
+            page_rows = []
+        page_rows.append(r)
+        y += row_h + ROW_GAP
+    draw_page(page_rows, top, spread=False)
     pdf.output(str(out))

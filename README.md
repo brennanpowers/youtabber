@@ -8,7 +8,6 @@ Turns a YouTube play-along video into a clean, printable PDF of its tab.
 git clone https://github.com/brennanpowers/youtabber.git
 uv tool install --editable ./youtabber              # needs uv and ffmpeg
 youtabber "https://www.youtube.com/watch?v=..."     # writes out/<song-name>/<song-name>.pdf
-youtabber "https://www.youtube.com/watch?v=..." --enhance   # sharper print, larger file
 ```
 
 Play-along videos usually show someone playing on one part of the screen and the tab on another,
@@ -49,7 +48,7 @@ youtabber "https://www.youtube.com/watch?v=..."
 | `SOURCE` | A YouTube URL or a local video file |
 | `--title "Song - Artist"` | Sets the song name, when the one taken from the video title is wrong |
 | `--region x,y,w,h` | Sets the tab area by hand, in video pixels, when detection gets it wrong |
-| `--enhance` | Upscales and sharpens the tab images so they print crisper; the PDF comes out about 3x larger |
+| `--no-enhance` | Skips upscaling and sharpening, for a PDF about a third the size |
 | `-o FOLDER` | Writes output somewhere other than `out/<song-name>/` |
 
 The song name comes from the video title with phrases like "Bass Cover (Play Along Tabs)" removed.
@@ -73,6 +72,7 @@ To also copy every finished PDF into one folder, create `~/.config/youtabber/con
 
 ```toml
 pdf_dir = "~/Documents/tabs"
+enhance = false   # optional: skip upscaling and sharpening unless --enhance is passed
 ```
 
 ### Fixing a wrong tab area
@@ -97,8 +97,11 @@ Run once, open `region.png`, and compare the outline with the tab. The run print
 4. **Lay out.** Every song is scaled so its tab lines sit the same distance apart on paper, which
    makes notation print the same size whatever the video looked like. The music is cut at barlines
    into rows of even width, and blank paper above and below it is trimmed.
-5. **Enhance (optional).** `--enhance` doubles each row's resolution, sharpens edges with an unsharp
-   mask, and pushes near-black to black and near-white to white. Light gray staff lines and measure
+5. **Clean up.** Cutting at barlines splits the gray measure numbers that sit over them, so gray
+   marks near a row's edges are erased, along with anything above or below the staves that an edge
+   cuts through. Nothing on or between the staves is touched. Full pages spread their rows evenly.
+6. **Enhance.** Unless turned off, each row's resolution is doubled, its edges are sharpened with an
+   unsharp mask, and near-black is pushed to black and near-white to white. Light gray staff lines and measure
    numbers stay gray instead of being thresholded away.
 
 ## Limitations

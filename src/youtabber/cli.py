@@ -12,16 +12,13 @@ from youtabber import layout, region, source, stitch, views
 CONFIG = Path.home() / ".config" / "youtabber" / "config.toml"
 
 
-def pdf_dir_setting() -> Path | None:
-    """Folder from the config file's `pdf_dir` that also receives each PDF, if set."""
+def load_config() -> dict:
     if not CONFIG.exists():
-        return None
+        return {}
     try:
-        config = tomllib.loads(CONFIG.read_text())
+        return tomllib.loads(CONFIG.read_text())
     except tomllib.TOMLDecodeError as e:
         raise SystemExit(f"Can't read {CONFIG}: {e}")
-    pdf_dir = config.get("pdf_dir")
-    return Path(pdf_dir).expanduser() if pdf_dir else None
 
 
 def parse_region(text: str) -> region.Region:
@@ -39,10 +36,13 @@ def main() -> None:
     parser.add_argument("--title", help="song name for the PDF, when the one taken from the video title is wrong")
     parser.add_argument("--region", type=parse_region,
                         help="tab area as x,y,w,h in video pixels, when detection gets it wrong")
-    parser.add_argument("--enhance", action="store_true",
-                        help="upscale and sharpen the tab images in the PDF; makes the file about 3x larger")
+    parser.add_argument("--enhance", action=argparse.BooleanOptionalAction, default=None,
+                        help="upscale and sharpen the tab images in the PDF (on unless the config says otherwise)")
     args = parser.parse_args()
-    pdf_dir = pdf_dir_setting()
+    config = load_config()
+    pdf_dir = Path(config["pdf_dir"]).expanduser() if config.get("pdf_dir") else None
+    # The command line wins over the config file, and enhancing is on when neither says
+    enhance = args.enhance if args.enhance is not None else config.get("enhance", True)
 
     src = source.fetch(args.source)
     if args.title:
@@ -80,7 +80,7 @@ def main() -> None:
     cv2.imwrite(str(out / "strip.png"), strip)
     scale = layout.scale_for(strip, tab_region.w)
     row_ranges = layout.rows(strip, placed, int(layout.USABLE_WIDTH / scale))
-    layout.write_pdf(strip, row_ranges, scale, pdf_path, src, sharpen=args.enhance)
+    layout.write_pdf(strip, row_ranges, scale, pdf_path, src, sharpen=enhance)
     overlaps = sum(1 for p in placed if p.new_from)
     print(f"  {overlaps} overlapping views joined, {len(row_ranges)} rows")
     guessed = [p for p in placed if p.ambiguous]
