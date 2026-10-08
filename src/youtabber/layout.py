@@ -33,22 +33,31 @@ def staff_lines(strip: np.ndarray) -> list[int]:
     """Rows of the strip holding staff lines, which run nearly its whole length."""
     rows = np.flatnonzero((strip < INK).mean(axis=1) > 0.5)
     lines: list[int] = []
+    prev = None
     for r in rows:
-        if not lines or r > lines[-1] + 2:
+        # Rows next to each other, allowing a one-row gap, are one thick line
+        if prev is None or r > prev + 2:
             lines.append(int(r))
+        prev = r
     return lines
 
 
 def tab_staff(lines: list[int]) -> list[int]:
-    """Lines of the bottom staff, which is the tab: the last run of evenly spaced lines."""
-    if len(lines) < 2:
+    """Lines of the bottom staff, which is the tab: the last run of at least three evenly spaced lines.
+
+    Needing three skips lone long lines below the tab, such as the bar of a rhythm bracket.
+    """
+    if len(lines) < 3:
         return []
-    gaps = np.diff(lines)
-    spacing = np.median(gaps)
-    top = len(lines) - 1
-    while top > 0 and gaps[top - 1] <= spacing * 1.5:
-        top -= 1
-    return lines[top:]
+    spacing = np.median(np.diff(lines))
+    runs = [[lines[0]]]
+    for prev, line in zip(lines, lines[1:]):
+        if line - prev <= spacing * 1.5:
+            runs[-1].append(line)
+        else:
+            runs.append([line])
+    staffs = [run for run in runs if len(run) >= 3]
+    return staffs[-1] if staffs else []
 
 
 def scale_for(strip: np.ndarray, region_width: int) -> float:
