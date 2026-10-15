@@ -171,7 +171,7 @@ def view_image(reading: pipeline.Reading, o) -> np.ndarray:
     img = o.image.copy() if o.image.ndim == 3 else cv2.cvtColor(o.image, cv2.COLOR_GRAY2BGR)
     slots = slot_ids(reading, o)
     for c in o.all_cells:
-        color = (0, 160, 0) if c.kind == "full" else (0, 0, 220)
+        color = (0, 160, 0) if c.complete else (0, 0, 220)
         cv2.rectangle(img, (int(c.x0), int(c.y0)), (int(c.x1), int(c.y0 + c.ink.shape[0] - 1)), color, 2)
         if id(c) in slots:
             cv2.putText(img, str(slots[id(c)]), (int(c.x0) + 4, int(c.y0) + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
@@ -194,7 +194,7 @@ def meta(reading: pipeline.Reading, src: source.Source, passes: str, pdfs: list[
                       "kind": "mosaic" if o.mosaic is not None else "plate", "segment": o.seg,
                       "image": f"views/{o.index:03d}.png",
                       "cells": [{"x": [int(c.x0 + ox), int(c.x1 + ox)], "system": c.system,
-                                 "complete": c.kind == "full", "number": c.number, "slot": slots.get(id(c))}
+                                 "complete": c.complete, "number": c.number, "slot": slots.get(id(c))}
                                 for c in o.all_cells],
                       "playhead": [[round(t, 2), round(x + ox), round(y + oy)] for t, x, y in o.playhead]})
     path, npass, prev = [], 0, None
@@ -208,7 +208,7 @@ def meta(reading: pipeline.Reading, src: source.Source, passes: str, pdfs: list[
     if cands:
         for i, (m, pc) in enumerate(zip(cands[0].measures, printed)):
             measures.append({"slot": m.slot, "view": m.view, "t": m.t, "play_t": m.play_t, "label": m.label,
-                             "complete": m.cell.kind == "full", "image": f"measures/{i:04d}.png",
+                             "complete": m.cell.complete, "image": f"measures/{i:04d}.png",
                              "gap": round(pc.gap, 2)})
     return {
         "version": 2,

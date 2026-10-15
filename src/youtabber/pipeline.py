@@ -316,19 +316,20 @@ def measure_at(sid: int, o: Obs, c: Cell, play: list[float]) -> Measure:
         # A glided measure is placed when its center crossed the playhead (or the slit when no playhead was found)
         when = round(m.time_at((c.x0 + c.x1) / 2), 2)
         return Measure(sid, o.index, c, when, when, round(m.ref_x + o.offset[0], 1),
-                       round(c.mid_y + o.offset[1] + m.y0, 1), when, c.number, c.kind != "full")
+                       round(c.mid_y + o.offset[1] + m.y0, 1), when, c.number, not c.complete)
     return Measure(sid, o.index, c, round((o.t0 + o.t1) / 2, 2), round(play[index_of(o, c)], 2),
                    round((c.x0 + c.x1) / 2 + o.offset[0], 1), round(c.mid_y + o.offset[1], 1), None, c.number,
-                   c.kind != "full")
+                   not c.complete)
 
 
 def measures_of(A: Assembly, obs: list[Obs], order: list[int]) -> list[Measure]:
-    """The measures to print for the slots in `order`, each from its best sighting: one between two barlines
-    when there is one, then the widest, then the earliest."""
+    """The measures to print for the slots in `order`, each from its best sighting: a complete one when there
+    is one, then one between two barlines, then the widest, then the earliest."""
     times = {o.index: play_times(o) for o in obs}
     out = []
     for sid in order:
-        vi, c = max(A.sightings[sid], key=lambda vc: (vc[1].kind == "full", vc[1].x1 - vc[1].x0, -vc[0]))
+        vi, c = max(A.sightings[sid], key=lambda vc: (vc[1].complete, vc[1].kind == "full", vc[1].x1 - vc[1].x0,
+                                                      -vc[0]))
         out.append(measure_at(sid, obs[vi], c, times[vi]))
     return out
 

@@ -30,3 +30,34 @@ def test_barlines_make_measures():
 
 def test_a_light_line_is_not_a_barline():
     assert full_cells(plate(light_line=True)) == full_cells(plate(light_line=False))
+
+
+def staff_from(x_start: int, opening: bool) -> np.ndarray:
+    """A tab staff starting at x_start with a fret digit in its first measure, barlines at 100, 400 and 700."""
+    img = np.full((200, 800, 3), 255, np.uint8)
+    for i in range(6):
+        cv2.line(img, (x_start, 60 + i * 14), (780, 60 + i * 14), (60, 60, 60), 1)
+    for x in (100, 400, 700):
+        cv2.line(img, (x, 60), (x, 130), (0, 0, 0), 2)
+    cv2.putText(img, "5", (60, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+    if opening:
+        cv2.line(img, (x_start + 2, 60), (x_start + 2, 130), (0, 0, 0), 2)
+    return img
+
+
+def first_cell(img: np.ndarray):
+    return parse_view(0, img, (0, 0, 800, 200), "dark", 140.0, 229.0, 14.0)[0].cells[0]
+
+
+def test_a_staff_cut_by_the_panel_edge_has_an_incomplete_first_cell():
+    c = first_cell(staff_from(0, opening=False))
+    assert c.kind == "lead" and not c.complete
+
+
+def test_a_staff_starting_inside_the_panel_has_a_complete_first_measure():
+    c = first_cell(staff_from(40, opening=False))
+    assert c.kind == "lead" and c.complete
+
+
+def test_an_opening_line_at_the_panel_edge_makes_the_first_measure_complete():
+    assert first_cell(staff_from(0, opening=True)).complete

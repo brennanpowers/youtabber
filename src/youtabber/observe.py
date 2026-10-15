@@ -197,6 +197,9 @@ def panel_rect(frame: np.ndarray, paper: np.ndarray, seed: tuple[int, int, int, 
     y0 = max(grow(rows, sy0, -1, slack), int(sy0 - ABOVE_GAPS * gap))
     y1 = min(grow(rows, sy1 - 1, 1, slack) + 1, int(sy1 + BELOW_GAPS * gap))
     cols = m[sy0:sy1].mean(axis=0) >= PANEL_SHARE
+    # A seed that starts in footage is moved to the first paper column to its right before growing
+    if not cols[sx0] and cols[sx0:].any():
+        sx0 = int(np.argmax(cols[sx0:])) + sx0
     x0 = grow(cols, sx0, -1)
     x1 = grow(cols, sx1 - 1, 1) + 1
     return x0, y0, x1, y1

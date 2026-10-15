@@ -7,6 +7,7 @@ YOUTABBER_EVAL to the folder holding truth/, mediator/ and opus/. Videos are rea
   uv run python tools/evaluate.py run --sets dev,h1 --out DIR [--jobs 4] [--ids A,B] [--passes once|all]
   uv run python tools/evaluate.py score --sets dev,h1 --out DIR [--gate port|core|pdf|accept]
   uv run python tools/evaluate.py compare --sets dev --out DIR
+  uv run python tools/evaluate.py partials --sets dev,confirm --out DIR
   uv run python tools/evaluate.py corpus --corpus DIR --out DIR [--exclude FILE] [--jobs 4] [--ids A,B]
 
 The closed acceptance set lives outside the eval folder; only its one run sets YOUTABBER_ACCEPT.
@@ -319,6 +320,49 @@ def cmd_compare(a) -> None:
             print(f"{name:<8} {t['id']:<12} {same:<8} reference {summary(ref)}  v1 {summary(mine)}")
 
 
+def cmd_partials(a) -> None:
+    """Our cell completeness against the truth's partial flags, on screens where the truth gives x ranges."""
+    ev = eval_dir(a.eval)
+    for name in a.sets.split(","):
+        for t in truths(truth_folder(ev, name)):
+            meta = read_json(a.out / name / t["id"] / "meta.json")
+            if not meta or t["outcome"] != "tab":
+                continue
+            screens = [e for e in t.get("screens", []) if e.get("kind", "screen") == "screen"]
+            agree = said_complete = said_partial = 0
+            examples = []
+            for v in meta["views"]:
+                if v["kind"] != "plate":
+                    continue
+                mid = (v["t"][0] + v["t"][1]) / 2
+                e = next((e for e in screens if e["t0"] - 1.5 <= mid <= e["t1"] + 1.5), None)
+                if e is None:
+                    continue
+                for c in v["cells"]:
+                    if c["system"] >= len(e["systems"]):
+                        continue
+                    for m in e["systems"][c["system"]]["measures"]:
+                        if not isinstance(m, dict) or not m.get("x"):
+                            continue
+                        x0, x1 = m["x"]
+                        if min(c["x"][1], x1) - max(c["x"][0], x0) < 0.6 * min(c["x"][1] - c["x"][0], x1 - x0):
+                            continue
+                        truth_complete = not m.get("partial", False)
+                        if c["complete"] == truth_complete:
+                            agree += 1
+                        elif c["complete"]:
+                            said_complete += 1
+                            examples.append(f"t {mid:.1f} x {c['x']}: complete here, partial in truth")
+                        else:
+                            said_partial += 1
+                            examples.append(f"t {mid:.1f} x {c['x']}: partial here, complete in truth")
+                        break
+            print(f"{name:<8} {t['id']:<12} agree {agree:>4}  complete-but-partial {said_complete:>3}  "
+                  f"partial-but-complete {said_partial:>3}")
+            for ex in examples[:5]:
+                print(f"    {ex}")
+
+
 def cmd_corpus(a) -> None:
     """Every cached corpus video, and an index to compare with the earlier tool's outputs."""
     corpus = json.loads((a.corpus / "corpus.json").read_text())
@@ -351,7 +395,7 @@ def main() -> None:
     one.add_argument("video")
     one.add_argument("out")
     one.add_argument("--passes", choices=["once", "all"], default="once")
-    for cmd in ("run", "score", "compare"):
+    for cmd in ("run", "score", "compare", "partials"):
         p = sub.add_parser(cmd)
         p.add_argument("--sets", required=True, help="comma-separated: " + ",".join(SETS))
         p.add_argument("--out", type=Path, required=True)
@@ -368,7 +412,8 @@ def main() -> None:
     corpus.add_argument("--jobs", type=int, default=4)
     corpus.add_argument("--ids", help="comma-separated corpus ids to run (default: all)")
     a = ap.parse_args()
-    {"one": cmd_one, "run": cmd_run, "score": cmd_score, "compare": cmd_compare, "corpus": cmd_corpus}[a.cmd](a)
+    {"one": cmd_one, "run": cmd_run, "score": cmd_score, "compare": cmd_compare, "partials": cmd_partials,
+     "corpus": cmd_corpus}[a.cmd](a)
 
 
 if __name__ == "__main__":

@@ -15,6 +15,8 @@ BAR_WIDTH = 0.6
 BAR_MERGE = 0.7
 # A measure is at least this many gaps wide
 MIN_CELL = 1.5
+# A staff that starts or ends this many line gaps inside the panel starts or ends there, not at the panel edge
+INSIDE_GAPS = 1.0
 
 
 @dataclass
@@ -37,6 +39,8 @@ class Cell:
     number_text: str | None = None
     slot: int | None = None
     glided: bool = False                    # read from a glide mosaic
+    # between two barlines, or a system's own first or last measure; False when the panel edge cuts it
+    complete: bool = True
 
 
 @dataclass
@@ -206,6 +210,14 @@ def drawn_bars(gray: np.ndarray, st, bars: list[tuple[int, int]]) -> list[tuple[
     return [bar for bar, level in zip(bars, levels) if level <= max(lighter_than_lines, lighter_than_bars)]
 
 
+def opening_line(struct: np.ndarray, st) -> bool:
+    """True when a line crosses the whole tab staff within one line gap of the staff's left end."""
+    a, b = int(round(st.top)), int(round(st.bottom))
+    x0, x1 = int(st.x0), int(st.x0 + INSIDE_GAPS * st.gap) + 1
+    band = struct[a:b + 1, x0:x1]
+    return band.size > 0 and bool((band.mean(axis=0) >= BAR_COVER).any())
+
+
 def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], polarity: str, thr: float, fthr: float,
                gap: float) -> list[ParsedSystem]:
     g = to_gray(plate, polarity)
@@ -256,6 +268,10 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
             edges.append((xs[-1][1], st.x1, "tail"))
         if not xs:
             edges.append((st.x0, st.x1, "lead"))
+        # A lead cell is the system's own first measure when its staff starts inside the panel or has an
+        # opening line; otherwise the panel edge cut a measure in two
+        starts_inside = st.x0 >= rx0 + INSIDE_GAPS * st.gap or opening_line(faint_struct, st)
+        ends_inside = st.x1 <= rx1 - INSIDE_GAPS * st.gap
         for ci, (a, b, kind) in enumerate(edges):
             # The first measure of a system takes in the margin to its left, where some players print the
             # measure number; two pages that differ only there are different pages
@@ -274,5 +290,7 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
             crop = number_crop(sub, marks, top, top_gap, a)
             ps.cells.append(Cell(vi, si, len(ps.cells), a, b, kind, box_ink, box_faint, ps.y0, crop,
                                  gap=st.gap, ref_y=int(round(st.top)) - ps.y0, mid_y=(st.top + st.bottom) / 2,
-                                 tint=box_tint))
+                                 tint=box_tint,
+                                 complete=kind == "full" or (kind == "lead" and starts_inside)
+                                 or (kind == "tail" and ends_inside)))
     return out
