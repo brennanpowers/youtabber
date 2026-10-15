@@ -42,3 +42,11 @@ def test_a_close_line_group_above_the_notation_does_not_steal_it():
     systems = systems_in(img)
     tab = [s for s in systems if len(s.tab.lines) == 6]
     assert len(tab) == 1 and tab[0].notation is not None and len(tab[0].notation.lines) == 5
+
+
+def test_wide_lines_below_a_tab_staff_do_not_take_it_as_notation():
+    img = staff_image()
+    for i in range(4):
+        cv2.line(img, (50, 280 + i * 25), (750, 280 + i * 25), 60, 1)
+    tab = [s for s in systems_in(img) if len(s.tab.lines) == 6]
+    assert len(tab) == 1 and tab[0].notation is None

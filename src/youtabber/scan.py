@@ -93,8 +93,11 @@ def systems_in(gray: np.ndarray) -> list[System]:
             continue
         s = staffs[i]
         above = staffs[i - 1] if i > 0 and i - 1 not in used else None
+        # Closer-spaced lines above are notation (a ledger line can add a sixth), unless they outnumber the lines
+        # below: then the lower group is strings or frets under a tab staff, not a tab staff
         if (above is not None and above.polarity == s.polarity and 0 < s.top - above.bottom < NOTATION_GAPS * s.gap
-                and (len(above.lines) == 5 and above.gap <= 1.1 * s.gap or above.gap < 0.85 * s.gap)):
+                and (len(above.lines) == 5 and above.gap <= 1.1 * s.gap
+                     or above.gap < 0.85 * s.gap and len(above.lines) <= len(s.lines))):
             out.append(System(s, above))
             used.update({i, i - 1})
         else:
