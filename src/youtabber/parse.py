@@ -39,7 +39,7 @@ class Cell:
     number_text: str | None = None
     slot: int | None = None
     glided: bool = False                    # read from a glide mosaic
-    # between two barlines, or a system's own first or last measure; False when the panel edge cuts it
+    # Between two barlines, or a system's own first or last measure; False when the panel edge cuts it
     complete: bool = True
 
 
@@ -211,7 +211,9 @@ def drawn_bars(gray: np.ndarray, st, bars: list[tuple[int, int]]) -> list[tuple[
 
 
 def opening_line(struct: np.ndarray, st) -> bool:
-    """True when a line crosses the whole tab staff within one line gap of the staff's left end."""
+    """True when a solid line crosses the whole tab staff within one line gap of the staff's left end.
+
+    Only solid ink counts: the soft gray edge of a panel or of the frame is faint."""
     a, b = int(round(st.top)), int(round(st.bottom))
     x0, x1 = int(st.x0), int(st.x0 + INSIDE_GAPS * st.gap) + 1
     band = struct[a:b + 1, x0:x1]
@@ -270,7 +272,7 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
             edges.append((st.x0, st.x1, "lead"))
         # A lead cell is the system's own first measure when its staff starts inside the panel or has an
         # opening line; otherwise the panel edge cut a measure in two
-        starts_inside = st.x0 >= rx0 + INSIDE_GAPS * st.gap or opening_line(faint_struct, st)
+        starts_inside = st.x0 >= rx0 + INSIDE_GAPS * st.gap or opening_line(dark, st)
         ends_inside = st.x1 <= rx1 - INSIDE_GAPS * st.gap
         for ci, (a, b, kind) in enumerate(edges):
             # The first measure of a system takes in the margin to its left, where some players print the

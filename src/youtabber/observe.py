@@ -158,6 +158,8 @@ def significant_change(a: np.ndarray, b: np.ndarray, gap: float, radius: int = 1
 
 
 PAPER_TOL = 40
+# A panel border is darker than this in every color channel (averaged over half a line gap left of the paper)
+BORDER_LEVEL = 40
 # A row (or column) belongs to the panel when this share of it is paper colored
 PANEL_SHARE = 0.5
 # The panel reaches at most this many tab line gaps above the top staff and below the tab staff
@@ -197,9 +199,13 @@ def panel_rect(frame: np.ndarray, paper: np.ndarray, seed: tuple[int, int, int, 
     y0 = max(grow(rows, sy0, -1, slack), int(sy0 - ABOVE_GAPS * gap))
     y1 = min(grow(rows, sy1 - 1, 1, slack) + 1, int(sy1 + BELOW_GAPS * gap))
     cols = m[sy0:sy1].mean(axis=0) >= PANEL_SHARE
-    # A seed that starts in footage is moved to the first paper column to its right before growing
+    # A seed that starts in footage is moved to the first paper column to its right before growing, but only
+    # past a dark panel border: a highlight, a tinted clef panel or a clef glyph is music, not footage
     if not cols[sx0] and cols[sx0:].any():
-        sx0 = int(np.argmax(cols[sx0:])) + sx0
+        p = int(np.argmax(cols[sx0:])) + sx0
+        border = frame[sy0:sy1, max(0, p - max(2, int(gap / 2))):p]
+        if border.size and border.max(axis=2).mean() < BORDER_LEVEL:
+            sx0 = p
     x0 = grow(cols, sx0, -1)
     x1 = grow(cols, sx1 - 1, 1) + 1
     return x0, y0, x1, y1
