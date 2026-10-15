@@ -175,6 +175,37 @@ def end_repeat(dark: np.ndarray, st, bars: list[tuple[int, int]]) -> bool:
     return False
 
 
+# A playhead line held still over a view is lighter than the staff lines and than the staff's real barlines.
+# A candidate is dropped only when it is lighter than both: past the staff lines' level by this share of the
+# line-to-paper contrast...
+BAR_LINE_SLACK = 0.15
+# ...and past the staff's typical barline by this share of the barline-to-paper contrast
+BAR_TYPICAL_SLACK = 0.5
+# The typical barline is known only from this many candidates or more
+BAR_TYPICAL_MIN = 3
+
+
+def line_darkness(gray: np.ndarray, st) -> tuple[float, float]:
+    """(gray level of a staff's lines, gray level of the paper between them)."""
+    xs = slice(int(st.x0), int(st.x1))
+    lines = [float(np.median(gray[max(0, int(round(y)) - 1):int(round(y)) + 2, xs].min(axis=0))) for y in st.lines]
+    papers = [float(np.median(gray[int(round((a + b) / 2)), xs])) for a, b in zip(st.lines, st.lines[1:])]
+    return float(np.median(lines)), float(np.median(papers))
+
+
+def drawn_bars(gray: np.ndarray, st, bars: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """The barline candidates left once lines lighter than both the staff lines and the typical barline are dropped."""
+    if len(bars) < BAR_TYPICAL_MIN:
+        return bars
+    a, b = int(round(st.top)), int(round(st.bottom))
+    levels = [float(np.median(gray[a:b + 1, p:q + 1].min(axis=1))) for p, q in bars]
+    line, paper = line_darkness(gray, st)
+    typical = float(np.median(levels))
+    lighter_than_lines = line + BAR_LINE_SLACK * (paper - line)
+    lighter_than_bars = typical + BAR_TYPICAL_SLACK * (paper - typical)
+    return [bar for bar, level in zip(bars, levels) if level <= max(lighter_than_lines, lighter_than_bars)]
+
+
 def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], polarity: str, thr: float, fthr: float,
                gap: float) -> list[ParsedSystem]:
     g = to_gray(plate, polarity)
@@ -210,6 +241,7 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
         st.x0, st.x1 = staff_extent(faint_struct, st.lines, max(st.x0, rx0), min(st.x1, rx1), st.gap)
         bars = barlines(faint_struct, st.top, st.bottom, st.gap, max(rx0, st.x0 - 2), min(rx1, st.x1 + 3),
                         (s.notation.lines[1], s.notation.lines[-2]) if s.notation else None)
+        bars = drawn_bars(sub, st, bars)
         out.append(ParsedSystem(s, bars, y0, y1, repeat_end=end_repeat(dark, st, bars)))
     for si, ps in enumerate(out):
         st = ps.system.tab
