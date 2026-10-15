@@ -1,0 +1,361 @@
+"""Read a video into a score: find the tab, build clean views, cut measures, place them, and check the result."""
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+from youtabber import glide, ocr
+from youtabber.assemble import Assembly, Obs, assemble, cell_at, number_views
+from youtabber.check import dwell, fmt, odd_widths, possible_duplicates, too_few
+from youtabber.observe import ABOVE_GAPS, BELOW_GAPS, ink_map, set_paper, to_gray, views_in
+from youtabber.parse import Cell, parse_view
+from youtabber.scan import Segment, scan
+from youtabber.video import probe
+
+# Every kind of evidence the assembler can weigh
+EVIDENCE = {"numbers", "playhead", "navigation"}
+# A cell narrower than this share of a typical measure is a header or a sliver, not a measure
+EDGE_SHARE = 0.25
+# A view whose ink contrast is below this share of its segment's typical contrast is mid-fade
+FADE_SHARE = 0.85
+# A segment at least GLIDE_MIN_SECONDS long whose still views cover less than GLIDE_SHARE of it glides
+GLIDE_MIN_SECONDS, GLIDE_SHARE = 20.0, 0.4
+# Staff positions tried for a glide, most often seen first
+GLIDE_GROUPS = 3
+# Frame-fixed ink: inked in this share of a segment's views, which must number at least FIXED_MIN_VIEWS
+FIXED_SHARE, FIXED_MIN_VIEWS = 0.85, 4
+
+Region = tuple[int, int, int, int]
+
+
+@dataclass
+class Measure:
+    """One printed measure: which slot it is, the sighting its image comes from, and when and where it was seen."""
+    slot: int
+    view: int
+    cell: Cell
+    t: float                 # view midpoint for still views, playhead crossing for glides
+    play_t: float            # when playback reached it
+    x: float                 # source pixels: cell center, or the playhead's x for glides
+    y: float                 # source pixels: middle of the tab staff
+    t_ref: float | None      # glides only: when its center crossed the playhead
+    label: int | None        # measure number, when the view's numbers were trusted
+    partial: bool
+
+
+@dataclass
+class Candidate:
+    name: str                # "primary" or "folded"
+    mode: str                # "once" or "all"
+    measures: list[Measure]
+
+
+@dataclass
+class Notice:
+    t0: float
+    t1: float
+    kind: str
+    text: str
+    doubt: bool              # music may be lost or doubled; False when a reading was chosen and the other PDF exists
+
+
+@dataclass
+class Reading:
+    duration: float
+    segments: list[Segment] = field(default_factory=list)
+    outcome: str = "tab"
+    fail_reason: str | None = None
+    message: str = ""
+    tab_spans: list[tuple[float, float]] = field(default_factory=list)
+    panels: list[dict] = field(default_factory=list)
+    numbering: str = "unnumbered"
+    views: list[Obs] = field(default_factory=list)
+    assembly: Assembly | None = None
+    candidates: list[Candidate] = field(default_factory=list)
+    every_pass: list[Candidate] = field(default_factory=list)
+    path: list[tuple[int, int, int, float]] = field(default_factory=list)   # (slot, view, cell, play time)
+    notices: list[Notice] = field(default_factory=list)
+
+    def fail(self, reason: str, message: str) -> "Reading":
+        self.outcome, self.fail_reason, self.message = "fail", reason, message
+        self.candidates, self.every_pass, self.path = [], [], []
+        return self
+
+
+def read(path: Path, region: Region | None = None) -> Reading:
+    """Everything youtabber reads from one video, ready to print, or the reason it can't be printed."""
+    info = probe(path)
+    segments, found = scan(path, info.width, info.height)
+    r = Reading(info.duration, segments)
+    if not segments:
+        return r.fail("no_tab", f"No tab on screen: no steady set of evenly spaced staff lines on paper in "
+                                f"{info.duration:.0f} s of video. youtabber can't read text tab (e|--3--) or tab "
+                                f"drawn see-through over the video either.")
+    obs: list[Obs] = []
+    gaps = []
+    for si, seg in enumerate(segments):
+        crop = (seg.x0, seg.y0, seg.x1 - seg.x0, seg.y1 - seg.y0)
+        set_paper(seg.paper)
+        views, thr, fthr = views_in(path, crop, seg.polarity, seg.gap, seg.paper, seed_function(found, seg),
+                                    seg.t0, seg.t1, "playhead" in EVIDENCE)
+        r.tab_spans.append((round(seg.t0, 2), round(seg.t1, 2)))
+        held = sum(v.t1 - v.t0 for v in views)
+        if seg.t1 - seg.t0 >= GLIDE_MIN_SECONDS and held < GLIDE_SHARE * (seg.t1 - seg.t0):
+            # The tab glides past a playhead instead of holding still: read it from a mosaic
+            o = glide_obs(path, crop, seg, si, found, thr, fthr, len(obs))
+            if o is not None:
+                obs.append(o)
+                r.panels.append({"t0": round(seg.t0, 2), "t1": round(seg.t1, 2),
+                                 "box": [seg.x0, seg.y0 + o.rows[0], seg.x1 - seg.x0, o.rows[1] - o.rows[0]]})
+                gaps.append(seg.gap)
+                continue
+        for v in views:
+            obs.append(plate_obs(v, seg, si, thr, fthr, len(obs)))
+            x0, y0, x1, y1 = v.rect
+            r.panels.append({"t0": round(v.t0, 2), "t1": round(v.t1, 2),
+                             "box": [int(x0 + seg.x0), int(y0 + seg.y0), int(x1 - x0), int(y1 - y0)]})
+        gaps.append(seg.gap)
+    r.views = obs
+    gap = float(np.median(gaps))
+    # A view caught in a fade has weak contrast and loses its barlines; its music is shown again at full
+    # contrast, so it is left out
+    for si in range(len(segments)):
+        group = [o for o in obs if o.seg == si]
+        if len(group) >= 3:
+            typical = float(np.median([o.contrast for o in group]))
+            for o in group:
+                if o.contrast < FADE_SHARE * typical:
+                    o.all_cells = []
+    # Tab that glides but couldn't be put together into a mosaic: say so rather than print the few still moments
+    for si, seg in enumerate(segments):
+        held = sum(o.t1 - o.t0 for o in obs if o.seg == si)
+        if (seg.t1 - seg.t0 >= GLIDE_MIN_SECONDS and held < GLIDE_SHARE * (seg.t1 - seg.t0)
+                and not any(o.mosaic is not None for o in obs if o.seg == si)):
+            return r.fail("check_failed", f"The tab scrolls smoothly from {fmt(seg.t0)} to {fmt(seg.t1)} (it holds "
+                                          f"still for only {held:.0f} of {seg.t1 - seg.t0:.0f} s). The moving band "
+                                          f"could not be put together, so no PDF was written.")
+    # Ink at the same screen place in nearly every view of a segment is fixed to the frame (a clef and key
+    # panel that stays while the music scrolls behind it)
+    for si in range(len(segments)):
+        group = [o for o in obs if o.seg == si]
+        if len(group) >= FIXED_MIN_VIEWS:
+            share = np.mean([o.band for o in group], axis=0)
+            fixed = cv2.dilate((share >= FIXED_SHARE).astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
+        else:
+            fixed = np.zeros_like(group[0].band) if group else None
+        for o in group:
+            o.fixed = fixed
+    # A cell much narrower than a typical measure is not one: a clef and key signature before a
+    # start-repeat barline, or a sliver cut by the panel edge
+    full_widths = [c.x1 - c.x0 for o in obs for c in o.all_cells if c.kind == "full"]
+    typical = float(np.median(full_widths)) if full_widths else 0.0
+    for o in obs:
+        o.cells = [c for c in o.all_cells if (c.x1 - c.x0) >= EDGE_SHARE * typical]
+        o.bars = sorted({c.x0 for c in o.all_cells if c.kind != "lead"} | {c.x1 for c in o.all_cells if c.kind != "tail"})
+    r.numbering = number_views(obs, ocr.read_number)
+
+    def words_of(o: Obs) -> list[str]:
+        return ocr.find_words(o.plate) if o.plate is not None else []
+
+    main = assemble(obs, gap, False, EVIDENCE, words_of)
+    r.assembly = main
+    r.candidates = [Candidate("primary", "once", measures_of(main, obs, main.order))]
+    if main.unresolved_folds:
+        folded = assemble(obs, gap, True, EVIDENCE, words_of)
+        r.candidates.append(Candidate("folded", "once", measures_of(folded, obs, folded.order)))
+
+    notices = []
+    for d in main.decisions:
+        if not d.resolved and d.kind == "join":
+            o = next(x for x in obs if x.t0 == d.t)
+            notices.append(Notice(round(d.t - 1, 2), round(o.t1, 2), "unresolved_join",
+                                  f"Couldn't tell how this screen joins the one before ({d.chosen} chosen, "
+                                  f"{', '.join(d.alternatives)} also fit).", True))
+    ranges = []
+    for t0, t1, j0, j1 in main.unresolved_folds:
+        first_seen = obs[main.slots[j0].obs]
+        ranges.append((first_seen.t0, first_seen.t1, t0, t1))
+        notices.append(Notice(round(t0, 2), round(t1, 2), "unresolved_fold",
+                              f"The measures at {fmt(t0)}-{fmt(t1)} repeat ones first shown at "
+                              f"{fmt(first_seen.t0)}-{fmt(first_seen.t1)}, with no sign whether the song plays "
+                              f"them again or the video replays them.", False))
+    for w in possible_duplicates(main, obs, gap) + dwell(obs) + odd_widths(obs):
+        notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
+    r.notices = sorted(notices, key=lambda w: (w.t0, w.t1))
+
+    n = len(r.candidates[0].measures)
+    if len(r.candidates) > 1:
+        spans = "; ".join(f"{fmt(a)}-{fmt(b)} repeats {fmt(c)}-{fmt(d)}" for c, d, a, b in ranges[:6])
+        r.message = (f"Wrote two PDFs that differ where screens repeat without measure numbers or a repeat sign "
+                     f"({spans}). The main PDF prints those measures every time; the folded PDF prints them once.")
+    else:
+        r.message = f"Read {n} measures."
+    short = too_few(obs, n) if n else None
+    if short:
+        return r.fail("check_failed", short)
+    if not n:
+        return r.fail("check_failed", "Found tab staffs but no complete measures between barlines.")
+    r.path = play_path(main, obs)
+    r.every_pass = [Candidate("primary", "all", path_measures(main, obs, r.path))]
+    return r
+
+
+def seed_function(found, seg):
+    """The staffs' box at time t in crop coordinates, from the scan, or None when no staff was seen near t."""
+    def seed_at(t):
+        best = min(found, key=lambda k: abs(k - t))
+        if abs(best - t) > 0.6 or not found[best]:
+            return None
+        sy = found[best]
+        return (int(min(x.tab.x0 for x in sy)) - seg.x0, int(min(x.top for x in sy)) - seg.y0,
+                int(max(x.tab.x1 for x in sy)) - seg.x0, int(max(x.tab.bottom for x in sy)) - seg.y0)
+    return seed_at
+
+
+def plate_obs(v, seg: Segment, si: int, thr: float, fthr: float, index: int) -> Obs:
+    """One still view, parsed into measure cells."""
+    systems = parse_view(index, v.plate, v.rect, seg.polarity, thr, fthr, seg.gap)
+    cells = [c for ps in systems for c in ps.cells]
+    x0, y0, x1, y1 = v.rect
+    o = Obs(index, v.t0, v.t1, cells, v.playhead, si, (seg.x0, seg.y0), v.plate[y0:y1, x0:x1])
+    o.all_cells = cells
+    o.wrapped = v.wrapped
+    o.frames = len(v.times)
+    o.rect = v.rect
+    o.single = len(systems) == 1
+    panel = to_gray(v.plate, seg.polarity)[y0:y1, x0:x1]
+    # Paper against the darkest ink (the 50th darkest pixel, so a few noisy pixels don't count)
+    o.contrast = float(np.median(panel) - np.partition(panel.ravel(), 50)[50]) if panel.size > 100 else 0.0
+    o.repeat_end = any(ps.repeat_end for ps in systems)
+    band = ink_map(to_gray(v.plate, seg.polarity), thr, seg.gap)
+    keep = np.zeros_like(band)
+    keep[y0:y1, x0:x1] = True
+    o.band = band & keep
+    o.tall = cv2.morphologyEx(o.band.astype(np.uint8), cv2.MORPH_OPEN, np.ones((5, 1), np.uint8)).astype(bool)
+    o.image = v.plate
+    o.systems = systems
+    o.print_rect = v.rect
+    return o
+
+
+def glide_obs(path: Path, crop, seg: Segment, si: int, found, thr: float, fthr: float, index: int) -> Obs | None:
+    """One view holding the whole glide of a segment, read from its mosaic."""
+    systems_seen = [s for t, ss in found.items() if seg.t0 <= t <= seg.t1 for s in ss]
+    if not systems_seen:
+        return None
+    # Group the systems seen by height on screen; the one that glides is read, others (a fretboard drawn
+    # as six lines, a still title staff) are left out
+    groups: list[list] = []
+    for s in sorted(systems_seen, key=lambda s: s.top):
+        if groups and s.top - groups[-1][-1].top < 2 * s.tab.gap:
+            groups[-1].append(s)
+        else:
+            groups.append([s])
+    m = rows = None
+    for group in sorted(groups, key=len, reverse=True)[:GLIDE_GROUPS]:
+        top = float(np.median([s.top for s in group])) - seg.y0
+        bottom = float(np.median([s.tab.bottom for s in group])) - seg.y0
+        g = float(np.median([s.tab.gap for s in group]))
+        rows = (max(0, int(top - ABOVE_GAPS * g)), min(seg.y1 - seg.y0, int(bottom + BELOW_GAPS * g)))
+        staff_rows = (max(rows[0], int(top)), min(rows[1], int(bottom) + 1))
+        m = glide.build(path, crop, rows, staff_rows, seg.polarity, thr, seg.gap, seg.t0, seg.t1)
+        if m is not None:
+            break
+    if m is None:
+        return None
+    h, w = m.image.shape[:2]
+    systems = parse_view(index, m.image, (0, 0, w, h), seg.polarity, thr, fthr, seg.gap)
+    cells = [c for ps in systems for c in ps.cells]
+    for c in cells:
+        c.glided = True
+    o = Obs(index, seg.t0, seg.t1, cells, [], si, (seg.x0, seg.y0), m.image)
+    o.all_cells = cells
+    o.mosaic = m
+    o.rows = rows
+    o.frames = len(m.times)
+    o.rect = (0, 0, w, h)
+    o.single = len(systems) == 1
+    o.contrast = 255.0
+    o.repeat_end = any(ps.repeat_end for ps in systems)
+    o.band = np.zeros((h, w), bool)
+    o.tall = o.band
+    o.image = m.image
+    o.systems = systems
+    o.print_rect = (0, 0, w, h)
+    return o
+
+
+def index_of(o: Obs, c: Cell) -> int:
+    """Position of cell c in the view's cells. Cells hold arrays, so they are found by identity, not ==."""
+    return next(i for i, x in enumerate(o.cells) if x is c)
+
+
+def play_times(o: Obs) -> list[float]:
+    """When playback reached each cell of a view: the first playhead sample over it, or an even share of the
+    view's time when the playhead was never seen there."""
+    if o.mosaic is not None:
+        return [o.mosaic.time_at((c.x0 + c.x1) / 2) for c in o.cells]
+    first: dict[int, float] = {}
+    for t, x, y in o.playhead:
+        i = cell_at(o, (x, y))
+        if i is not None:
+            first.setdefault(i, t)
+    n = max(len(o.cells), 1)
+    return [first.get(i, o.t0 + (i + 0.5) * (o.t1 - o.t0) / n) for i in range(len(o.cells))]
+
+
+def measure_at(sid: int, o: Obs, c: Cell, play: list[float]) -> Measure:
+    """A printed measure for slot sid, seen as cell c of view o."""
+    if o.mosaic is not None:
+        m = o.mosaic
+        # A glided measure is placed when its center crossed the playhead (or the slit when no playhead was found)
+        when = round(m.time_at((c.x0 + c.x1) / 2), 2)
+        return Measure(sid, o.index, c, when, when, round(m.ref_x + o.offset[0], 1),
+                       round(c.mid_y + o.offset[1] + m.y0, 1), when, c.number, c.kind != "full")
+    return Measure(sid, o.index, c, round((o.t0 + o.t1) / 2, 2), round(play[index_of(o, c)], 2),
+                   round((c.x0 + c.x1) / 2 + o.offset[0], 1), round(c.mid_y + o.offset[1], 1), None, c.number,
+                   c.kind != "full")
+
+
+def measures_of(A: Assembly, obs: list[Obs], order: list[int]) -> list[Measure]:
+    """The measures to print for the slots in `order`, each from its best sighting: one between two barlines
+    when there is one, then the widest, then the earliest."""
+    times = {o.index: play_times(o) for o in obs}
+    out = []
+    for sid in order:
+        vi, c = max(A.sightings[sid], key=lambda vc: (vc[1].kind == "full", vc[1].x1 - vc[1].x0, -vc[0]))
+        out.append(measure_at(sid, obs[vi], c, times[vi]))
+    return out
+
+
+def play_path(A: Assembly, obs: list[Obs]) -> list[tuple[int, int, int, float]]:
+    """(slot, view, cell, play time) in the order the video plays them. Measures a view shows again from the
+    view before (a scroll overlap, a line carried up) are listed once; a replay is listed again."""
+    path: list[tuple[int, int, int, float]] = []
+    for o in obs:
+        sl = A.view_slots.get(o.index)
+        if not sl:
+            continue
+        play = play_times(o)
+        step = [(s, o.index, i, play[i]) for i, s in enumerate(sl) if s is not None]
+        ids = [s for s, _, _, _ in step]
+        done = [s for s, _, _, _ in path]
+        k = min(len(ids), len(done))
+        while k > 0 and ids[:k] != done[-k:]:
+            k -= 1
+        path.extend(step[k:])
+    return path
+
+
+def path_measures(A: Assembly, obs: list[Obs], path) -> list[Measure]:
+    """Measures in play order for the every-pass PDF: each image from its slot's best sighting, the time and
+    place from where it was played."""
+    best = {m.slot: m for m in measures_of(A, obs, A.order)}
+    times = {o.index: play_times(o) for o in obs}
+    out = []
+    for sid, vi, ci, _ in path:
+        here = measure_at(sid, obs[vi], obs[vi].cells[ci], times[vi])
+        here.view, here.cell = best[sid].view, best[sid].cell
+        out.append(here)
+    return out
