@@ -32,6 +32,10 @@ class Song:
     seconds_per_view: float = 3.0
     cursor: tuple[int, int, int] = (40, 40, 230)
     seed: int = 1
+    theme: str = "light"  # "dark" draws light ink on black paper
+    glide: bool = False  # scroll continuously past a fixed playhead instead of holding still
+    glide_speed: float = 150.0  # pixels per second, when gliding
+    playhead_x: int = 320  # where the fixed playhead line sits on the tab, when gliding
 
     @property
     def tab_box(self) -> tuple[int, int, int, int]:
@@ -67,6 +71,10 @@ def draw_measures(song: Song, first: int, count: int, width: int, offset: int = 
     for m in range(count):
         x0 = lead + m * song.measure_width
         x1 = x0 + song.measure_width
+        if m == 0:
+            # A system's opening line, so its first measure is complete
+            for top, bottom, _, _ in staffs:
+                cv2.line(paper, (x0, top), (x0, bottom), line, 2)
         for top, bottom, _, _ in staffs:
             cv2.line(paper, (x1, top), (x1, bottom), line, 2)
         # Measure numbers are gray and sit above the top staff, just after the barline
@@ -85,7 +93,7 @@ def draw_measures(song: Song, first: int, count: int, width: int, offset: int = 
                 note_y = staffs[0][0] + int(rng.integers(9)) * 6
                 cv2.ellipse(paper, (x + 4, note_y), (6, 4), -20, 0, 360, (0, 0, 0), -1)
                 cv2.line(paper, (x + 9, note_y), (x + 9, note_y - 30), (0, 0, 0), 2)
-    return paper
+    return 255 - paper if song.theme == "dark" else paper
 
 
 def views(song: Song) -> list[np.ndarray]:
@@ -103,9 +111,23 @@ def views(song: Song) -> list[np.ndarray]:
     return pages
 
 
+def glide_sheet(song: Song) -> np.ndarray:
+    """The whole song on one strip, starting at the playhead, with a screen's width of paper after it."""
+    return draw_measures(song, 0, song.measures,
+                         song.playhead_x + song.measures * song.measure_width + song.tab_box[2], lead=song.playhead_x)
+
+
+def background(n: int) -> np.ndarray:
+    """A dark frame with a bright blob wandering around, standing in for the player, so only the tab stays still."""
+    frame = np.full((VIDEO_H, VIDEO_W, 3), 45, np.uint8)
+    cx, cy = int(VIDEO_W / 2 + 400 * np.sin(n / 7)), int(VIDEO_H / 2 + 200 * np.cos(n / 5))
+    cv2.circle(frame, (cx, cy), 90, (90, 150, 200), -1)
+    return frame
+
+
 def write_video(song: Song, path: Path) -> list[np.ndarray]:
     """Encode the song's video to `path` and return the views it shows."""
-    shown = views(song)
+    shown = [glide_sheet(song)] if song.glide else views(song)
     x, y, w, h = song.tab_box
     frames_per_view = int(song.seconds_per_view * FPS)
     ffmpeg = subprocess.Popen(
@@ -113,19 +135,27 @@ def write_video(song: Song, path: Path) -> list[np.ndarray]:
          "-r", str(FPS), "-i", "-", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
          str(path)], stdin=subprocess.PIPE)
     n = 0
-    for view in shown:
-        for i in range(frames_per_view):
-            frame = np.full((VIDEO_H, VIDEO_W, 3), 45, np.uint8)
-            # A bright blob wandering around stands in for the player, so only the tab stays still
-            cx, cy = int(VIDEO_W / 2 + 400 * np.sin(n / 7)), int(VIDEO_H / 2 + 200 * np.cos(n / 5))
-            cv2.circle(frame, (cx, cy), 90, (90, 150, 200), -1)
-            frame[y:y + h, x:x + w] = view
-            # A translucent cursor sweeping across the tab once per view
-            cursor_x = x + int(w * i / frames_per_view)
-            frame[y:y + h, cursor_x:cursor_x + 8] = (
-                frame[y:y + h, cursor_x:cursor_x + 8] * 0.5 + np.array(song.cursor) * 0.5).astype(np.uint8)
+    if song.glide:
+        sheet = shown[0]
+        step = song.glide_speed / FPS
+        for k in range(int((sheet.shape[1] - w) / step)):
+            frame = background(n)
+            s = int(k * step)
+            frame[y:y + h, x:x + w] = sheet[:, s:s + w]
+            frame[y:y + h, x + song.playhead_x:x + song.playhead_x + 3] = (40, 40, 230)
             ffmpeg.stdin.write(frame.tobytes())
             n += 1
+    else:
+        for view in shown:
+            for i in range(frames_per_view):
+                frame = background(n)
+                frame[y:y + h, x:x + w] = view
+                # A translucent cursor sweeping across the tab once per view
+                cursor_x = x + int(w * i / frames_per_view)
+                frame[y:y + h, cursor_x:cursor_x + 8] = (
+                    frame[y:y + h, cursor_x:cursor_x + 8] * 0.5 + np.array(song.cursor) * 0.5).astype(np.uint8)
+                ffmpeg.stdin.write(frame.tobytes())
+                n += 1
     ffmpeg.stdin.close()
     if ffmpeg.wait() != 0:
         raise RuntimeError("ffmpeg failed to encode the test video")
