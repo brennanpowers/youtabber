@@ -7,7 +7,8 @@ import numpy as np
 
 from youtabber import glide, ocr
 from youtabber.assemble import Assembly, Obs, assemble, cell_at, number_views
-from youtabber.check import dwell, fmt, odd_widths, possible_duplicates, too_few
+from youtabber.check import (dwell, empty_stretches, fmt, glide_gaps, glide_repeats, number_checks, odd_widths,
+                             possible_duplicates, too_few)
 from youtabber.observe import ABOVE_GAPS, BELOW_GAPS, ink_map, set_paper, to_gray, views_in
 from youtabber.parse import Cell, parse_view
 from youtabber.scan import Segment, scan
@@ -185,6 +186,42 @@ def read(path: Path, region: Region | None = None) -> Reading:
                               f"{fmt(first_seen.t0)}-{fmt(first_seen.t1)}, with no sign whether the song plays "
                               f"them again or the video replays them.", False))
     for w in possible_duplicates(main, obs, gap) + dwell(obs) + odd_widths(obs):
+        notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
+    for o in obs:
+        if o.mosaic is not None:
+            m = o.mosaic
+            # Measures read from the first frame alone: on screen between the playhead and the reading column
+            # before the scroll moved
+            seeded = [c for c in o.cells if (c.x0 + c.x1) / 2 < m.seeded]
+            if seeded:
+                notices.append(Notice(round(o.t0, 2), round(m.time_at(seeded[-1].x1), 2), "glide_start",
+                                      f"The first {len(seeded)} measures of this smooth scroll were on screen before "
+                                      f"it moved and are read from its first frame only; check them.", True))
+            # Measures played within one measure's time of the first frame were already at the playhead when the
+            # scroll started, so they may be cut off; this finds them even when no playhead was found
+            times = [m.time_at((c.x0 + c.x1) / 2) for c in o.cells]
+            step = float(np.median(np.diff(times))) if len(times) > 1 else 0.0
+            early = [c for c, t in zip(o.cells, times) if t < o.t0 + step and (c.x0 + c.x1) / 2 >= m.seeded]
+            if early:
+                notices.append(Notice(round(o.t0, 2), round(m.time_at(early[-1].x1), 2), "glide_start",
+                                      f"The first {len(early)} measures of this smooth scroll were already at the "
+                                      f"playhead when it started and may be cut off or not belong to the song; "
+                                      f"check them.", True))
+            # Measures read from the last frame alone: still ahead of the reading column when the scroll ended.
+            # They are played after it stops, so the notice ends where the scroll ends.
+            ending = [c for c in o.cells if (c.x0 + c.x1) / 2 >= m.tail_from]
+            if m.tail_from < m.image.shape[1]:
+                t0 = min(m.time_at(ending[0].x0 if ending else m.tail_from), o.t1 - 1)
+                text = ("The last measures of this smooth scroll were still ahead of the playhead when the scroll "
+                        "ended and are read from its last frame only; check them." if ending else
+                        "This smooth scroll ended with staff still ahead of the playhead, and no measure was read "
+                        "from it; check that the last measures are all printed.")
+                notices.append(Notice(round(t0, 2), round(o.t1, 2), "glide_end", text, True))
+            for w in glide_repeats(o, gap) + glide_gaps(o):
+                notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
+    primary = r.candidates[0].measures
+    for w in (empty_stretches(r.tab_spans, [m.play_t for m in primary])
+              + number_checks([(m.play_t, m.label) for m in primary], True, info.duration)):
         notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
     r.notices = sorted(notices, key=lambda w: (w.t0, w.t1))
 

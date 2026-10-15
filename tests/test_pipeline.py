@@ -60,7 +60,7 @@ def test_numbers_count_up_when_read(case):
 
 def test_nothing_to_check(case):
     _, r = case
-    assert [n.text for n in r.notices] == []
+    assert [n.text for n in r.notices if n.kind not in ("glide_start", "glide_end")] == []
 
 
 def test_every_pass_is_the_same_without_replays(case):
