@@ -17,6 +17,8 @@ BAR_MERGE = 0.7
 MIN_CELL = 1.5
 # A staff that starts or ends this many line gaps inside the panel starts or ends there, not at the panel edge
 INSIDE_GAPS = 1.0
+# Line groups spaced closer than this share of the view's widest-spaced tab staff are not tab staffs
+CLOSE_STAFF_SHARE = 0.6
 
 
 @dataclass
@@ -231,7 +233,10 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
     sub[ry1:] = paper
     sub[:, :rx0] = paper
     sub[:, rx1:] = paper
+    # A "tab staff" spaced much closer than the view's widest-spaced one is beams or text lines, not a staff
     syss = systems_in(sub)
+    widest = max((s.tab.gap for s in syss), default=0.0)
+    syss = [s for s in syss if s.tab.gap >= CLOSE_STAFF_SHARE * widest]
     colored_plate = colored(plate)
     # Where a cursor or highlight tinted the page, ink can't be compared between sightings
     tint = cv2.dilate(colored_plate.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)

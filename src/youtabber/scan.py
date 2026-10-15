@@ -86,20 +86,21 @@ def systems_in(gray: np.ndarray) -> list[System]:
     staffs = [s for s in keep if paper_between_lines(gray, s)]
     out: list[System] = []
     used = set()
-    for i, s in enumerate(staffs):
+    # From the bottom up: each tab staff takes the staff just above it as its notation staff, so a stray group of
+    # close lines above a notation staff can't pull the notation staff away from its tab
+    for i in range(len(staffs) - 1, -1, -1):
         if i in used:
             continue
-        # A five-line staff with another staff just below is notation over tab
-        nxt = staffs[i + 1] if i + 1 < len(staffs) else None
-        # A staff just above another one is its notation staff: five lines, or more narrowly spaced than tab
-        # lines (a ledger line or a cursor edge can add a sixth)
-        if (nxt is not None and nxt.polarity == s.polarity and 0 < nxt.top - s.bottom < NOTATION_GAPS * nxt.gap
-                and (len(s.lines) == 5 and s.gap <= 1.1 * nxt.gap or s.gap < 0.85 * nxt.gap)):
-            out.append(System(nxt, s))
-            used.update({i, i + 1})
+        s = staffs[i]
+        above = staffs[i - 1] if i > 0 and i - 1 not in used else None
+        if (above is not None and above.polarity == s.polarity and 0 < s.top - above.bottom < NOTATION_GAPS * s.gap
+                and (len(above.lines) == 5 and above.gap <= 1.1 * s.gap or above.gap < 0.85 * s.gap)):
+            out.append(System(s, above))
+            used.update({i, i - 1})
         else:
             out.append(System(s, None))
             used.add(i)
+    out.reverse()
     return out
 
 

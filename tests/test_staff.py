@@ -33,3 +33,12 @@ def test_pairs_notation_over_tab():
     (system,) = systems_in(staff_image(notation=True))
     assert len(system.tab.lines) == 6
     assert system.notation is not None and len(system.notation.lines) == 5
+
+
+def test_a_close_line_group_above_the_notation_does_not_steal_it():
+    img = staff_image(notation=True)
+    for i in range(4):
+        cv2.line(img, (300, 30 + i * 7), (700, 30 + i * 7), 60, 1)
+    systems = systems_in(img)
+    tab = [s for s in systems if len(s.tab.lines) == 6]
+    assert len(tab) == 1 and tab[0].notation is not None and len(tab[0].notation.lines) == 5
