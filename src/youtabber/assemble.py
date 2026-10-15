@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from youtabber.match import resemble, resemble_scaled, same, same_part
+from youtabber.match import WIDTH_PX, WIDTH_SHARE, resemble, resemble_scaled, same, same_part
 from youtabber.observe import unmatched
 
 # A gap with no tab at least this long before a re-shown first page means the song started over
@@ -227,9 +227,27 @@ def scroll_shifts(p: Obs, o: Obs, gap: float) -> list[tuple[int, float]]:
     scored.sort(key=lambda s: s[1])
     out = []
     for dx, s in scored:
-        if all(abs(dx - d) > gap for d, _ in out):
+        if all(abs(dx - d) > gap for d, _ in out) and keeps_widths(p, o, dx):
             out.append((dx, s))
     return out
+
+
+def keeps_widths(p: Obs, o: Obs, dx: int) -> bool:
+    """True when every whole measure the shift lines up has the same width in both views.
+
+    Scrolling moves the page without redrawing it; a page that only looks alike (the same music printed
+    again elsewhere in the score) is laid out differently. Only measures inside the columns both views
+    show are compared, since a measure running past them can't be checked for a barline missed there.
+    """
+    lo, hi = max(p.rect[0], o.rect[0] + dx), min(p.rect[2], o.rect[2] + dx)
+    for i, j in scroll_links(p, o, dx).items():
+        a, b = o.cells[i], p.cells[j]
+        if a.kind != "full" or b.kind != "full" or min(a.x0 + dx, b.x0) < lo or max(a.x1 + dx, b.x1) > hi:
+            continue
+        wa, wb = a.x1 - a.x0, b.x1 - b.x0
+        if abs(wa - wb) > max(WIDTH_PX, WIDTH_SHARE * max(wa, wb)):
+            return False
+    return True
 
 
 def choose_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float):
