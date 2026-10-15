@@ -29,6 +29,7 @@ def test_writes_pdf_meta_and_measure_images(video, tmp_path):
     meta = json.loads((tmp_path / "out" / "meta.json").read_text())
     assert meta["version"] == 2
     assert meta["outcome"]["status"] in ("ok", "warn")
+    assert meta["runtime_s"] > 0
     assert (tmp_path / "out" / "song.pdf").exists()
     assert len(list((tmp_path / "out" / "measures").glob("*.png"))) == len(meta["measures"]) > 0
     assert len(list((tmp_path / "out" / "views").glob("*.png"))) == len(meta["views"])

@@ -2,6 +2,7 @@ import argparse
 import json
 import shutil
 import sys
+import time
 import tomllib
 from dataclasses import replace
 from pathlib import Path
@@ -89,8 +90,9 @@ def run(args: argparse.Namespace, config: dict) -> int:
     out = args.out or Path("out") / name
 
     print("Reading the video")
+    started = time.time()
     reading = pipeline.read(src.path, args.region)
-    pdfs = write_outputs(reading, src, out, name, passes, upscale)
+    pdfs = write_outputs(reading, src, out, name, passes, upscale, started=started)
     for n in reading.notices:
         print(f"  {fmt(n.t0)}-{fmt(n.t1)}  {n.text}")
     if reading.outcome == "fail":
@@ -106,7 +108,7 @@ def run(args: argparse.Namespace, config: dict) -> int:
 
 
 def write_outputs(reading: pipeline.Reading, src: source.Source, out: Path, name: str, passes: str,
-                  upscale: enhance.Upscaler | None) -> list[Path]:
+                  upscale: enhance.Upscaler | None, started: float | None = None) -> list[Path]:
     """Write the PDFs, meta.json, measures/ and views/ for one reading. Returns the PDFs written."""
     out.mkdir(parents=True, exist_ok=True)
     for folder in ("measures", "views"):
@@ -130,7 +132,7 @@ def write_outputs(reading: pipeline.Reading, src: source.Source, out: Path, name
                     cv2.imwrite(str(out / "measures" / f"{i:04d}.png"), pc.image)
     for o in reading.views:
         cv2.imwrite(str(out / "views" / f"{o.index:03d}.png"), view_image(reading, o))
-    (out / "meta.json").write_text(json.dumps(meta(reading, src, passes, pdfs, printed), indent=1, default=_plain))
+    (out / "meta.json").write_text(json.dumps(meta(reading, src, passes, pdfs, printed, started), indent=1, default=_plain))
     return pdfs
 
 
@@ -178,7 +180,7 @@ def view_image(reading: pipeline.Reading, o) -> np.ndarray:
 
 
 def meta(reading: pipeline.Reading, src: source.Source, passes: str, pdfs: list[Path],
-         printed: list[printcell.PrintCell]) -> dict:
+         printed: list[printcell.PrintCell], started: float | None = None) -> dict:
     """Everything read from the video, to check a result without rerunning it and for later tools."""
     A = reading.assembly
     status = "failed" if reading.outcome == "fail" else ("warn" if reading.notices or len(pdfs) > 1 else "ok")
@@ -227,6 +229,7 @@ def meta(reading: pipeline.Reading, src: source.Source, passes: str, pdfs: list[
                        "basis": d.basis, "resolved": d.resolved} for d in A.decisions] if A else [],
         "notices": [{"t0": n.t0, "t1": n.t1, "kind": n.kind, "doubt": n.doubt, "text": n.text}
                     for n in reading.notices],
+        "runtime_s": round(time.time() - started, 1) if started is not None else None,
     }
 
 

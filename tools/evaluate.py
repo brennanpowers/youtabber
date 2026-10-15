@@ -133,7 +133,7 @@ def cmd_one(a) -> None:
     from youtabber import cli, enhance
     from youtabber.source import Source
     pdfs = cli.write_outputs(reading, Source(video, video.stem, video.stem, None, None), out, video.stem, a.passes,
-                             enhance.classic)
+                             enhance.classic, started=started)
     result = to_result(video.stem, reading, a.passes)
     result["pdfs"] = [p.name for p in pdfs]
     result["runtime_s"] = round(time.time() - started, 1)
