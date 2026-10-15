@@ -4,8 +4,8 @@ The band's movement between frames is measured on the music to the right of a fi
 (the slit), where the upcoming music is drawn at full contrast. Each frame adds the strip of columns that
 crossed the slit since the frame before, so the playhead and anything else fixed to the screen stay out
 of those strips. The mosaic starts with the first frame from a few line gaps left of the playhead to the
-slit, which holds the playhead and some of the dimmed played zone, and ends with the last frame right of
-the slit.
+slit (or at the slit when no playhead is found), which holds the playhead and some of the dimmed played
+zone, and ends with the last frame right of the slit.
 """
 from dataclasses import dataclass
 from pathlib import Path

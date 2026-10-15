@@ -195,6 +195,8 @@ def read(path: Path, region: Region | None = None) -> Reading:
             seeded = [c for c in o.cells if (c.x0 + c.x1) / 2 < m.seeded]
             if seeded:
                 notices.append(Notice(round(o.t0, 2), round(m.time_at(seeded[-1].x1), 2), "glide_start",
+                                      f"The first measure of this smooth scroll was on screen before it moved and "
+                                      f"is read from its first frame only; check it." if len(seeded) == 1 else
                                       f"The first {len(seeded)} measures of this smooth scroll were on screen before "
                                       f"it moved and are read from its first frame only; check them.", True))
             # Measures played within one measure's time of the first frame were already at the playhead when the
@@ -204,6 +206,9 @@ def read(path: Path, region: Region | None = None) -> Reading:
             early = [c for c, t in zip(o.cells, times) if t < o.t0 + step and (c.x0 + c.x1) / 2 >= m.seeded]
             if early:
                 notices.append(Notice(round(o.t0, 2), round(m.time_at(early[-1].x1), 2), "glide_start",
+                                      f"The first measure of this smooth scroll was already at the playhead when "
+                                      f"it started and may be cut off or not belong to the song; check it."
+                                      if len(early) == 1 else
                                       f"The first {len(early)} measures of this smooth scroll were already at the "
                                       f"playhead when it started and may be cut off or not belong to the song; "
                                       f"check them.", True))

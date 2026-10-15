@@ -57,6 +57,17 @@ def test_number_checks():
     assert [w["kind"] for w in number_checks(labels, False, 10.0)] == ["numbers_skipped"]
 
 
+def test_unread_numbers_in_between_are_not_a_skip():
+    labels = [(1.0, 19), (2.0, None), (3.0, None), (4.0, None), (5.0, 23)]
+    assert number_checks(labels, True, 10.0) == []
+
+
+def test_unread_last_numbers_are_not_counted_over():
+    labels = [(float(t), t + 1) for t in range(10)] + [(float(t), None) for t in range(10, 15)]
+    assert [w["kind"] for w in number_checks(labels, True, 20.0)] == []
+
+
 def test_more_measures_than_numbers():
-    kinds = [w["kind"] for w in number_checks([(float(t), 1) for t in range(5)], True, 10.0)]
-    assert kinds[0] == "count_over"
+    labels = [(0.0, 1)] + [(float(t), None) for t in range(1, 5)] + [(5.0, 2)]
+    kinds = [w["kind"] for w in number_checks(labels, True, 10.0)]
+    assert "count_over" in kinds

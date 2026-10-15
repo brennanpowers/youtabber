@@ -93,11 +93,11 @@ REPEAT_RUN = 4
 REPEAT_RESEMBLE = 0.15
 # A gap between consecutive glided measures' play times this many times the median means measures were lost
 GAP_RATIO = 1.6
-# Tab on screen this long with no printed measure means music was lost
+# Tab on screen this long with no new printed measure may mean music was lost
 EMPTY_SECONDS = 25.0
 # Long stretches are reported in pieces this long, so each points at a findable part of the video
 PIECE_SECONDS = 30.0
-# More printed measures than the highest measure number plus this many means some printed twice
+# The highest-numbered measure printed more than this many places after its number means some printed twice
 COUNT_SLACK = 2
 
 
@@ -171,27 +171,32 @@ def empty_stretches(spans: list[tuple[float, float]], play_times: list[float]) -
             if b - a >= EMPTY_SECONDS:
                 for p0, p1 in pieces(a, b):
                     out.append({"t0": round(p0, 2), "t1": round(p1, 2), "kind": "no_measures",
-                                "text": f"Tab is on screen at {fmt(p0)}-{fmt(p1)}, but no measure was printed "
-                                        f"from it."})
+                                "text": f"Tab is on screen at {fmt(p0)}-{fmt(p1)}, but no new measure was printed "
+                                        f"from it. If the video isn't replaying earlier music here, measures are "
+                                        f"missing."})
     return out
 
 
 def number_checks(labels: list[tuple[float, int | None]], once: bool, duration: float) -> list[dict]:
-    """Measure numbers of the printed measures, in print order with their play times: more measures than the
-    highest number, numbers that skip ahead, and (when replays print once) numbers that come back."""
-    read = [(t, n) for t, n in labels if n is not None]
+    """Measure numbers of the printed measures, in print order with their play times: a measure printed later
+    in the list than its number allows, numbers that skip ahead by more than the unread measures between them,
+    and (when replays print once) numbers that come back."""
+    read = [(i, t, n) for i, (t, n) in enumerate(labels) if n is not None]
     if not read:
         return []
     out = []
-    top = max(n for _, n in read)
-    if once and len(labels) > top + COUNT_SLACK:
+    top = max(n for _, _, n in read)
+    # The last measure carrying the top number, counted from 1 in print order
+    position = max(i for i, _, n in read if n == top) + 1
+    if once and position > top + COUNT_SLACK:
         out.append({"t0": 0.0, "t1": round(duration, 2), "kind": "count_over",
-                    "text": f"{len(labels)} measures are printed, but the highest measure number read is {top}; "
-                            f"some measures may be printed twice."})
-    for (ta, a), (tb, b) in zip(read, read[1:]):
-        if b > a + 1:
+                    "text": f"{position - 1} measures are printed before measure {top}, the highest measure number "
+                            f"read; some measures may be printed twice."})
+    for (ia, ta, a), (ib, tb, b) in zip(read, read[1:]):
+        if b - a - 1 > ib - ia - 1:
+            which = f"Measure {a + 1} wasn't" if a + 1 == b - 1 else f"Measures {a + 1}-{b - 1} weren't"
             out.append({"t0": round(min(ta, tb), 2), "t1": round(max(ta, tb), 2), "kind": "numbers_skipped",
-                        "text": f"Measures {a + 1}-{b - 1} weren't read (between {fmt(ta)} and {fmt(tb)})."})
+                        "text": f"{which} read (between {fmt(ta)} and {fmt(tb)})."})
         elif once and b <= a:
             out.append({"t0": round(tb - 2, 2), "t1": round(tb + 2, 2), "kind": "number_again",
                         "text": f"Measure {b} is printed again at {fmt(tb)}."})
