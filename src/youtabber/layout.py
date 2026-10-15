@@ -1,4 +1,4 @@
-import math
+"""Lay measure images out in rows on Letter pages and write the PDF."""
 from pathlib import Path
 
 import cv2
@@ -6,10 +6,9 @@ import numpy as np
 from fpdf import FPDF
 from PIL import Image
 
-from youtabber import ink
 from youtabber.enhance import Upscaler
+from youtabber.printcell import PrintCell
 from youtabber.source import Source
-from youtabber.stitch import Placed
 
 # Page measurements in points (1/72 inch), on US Letter
 MARGIN = 36
@@ -18,94 +17,68 @@ FOOTER = 14
 ROW_GAP = 14
 # Spreading leftover space never makes a gap more than this many times ROW_GAP
 MAX_GAP_STRETCH = 4
-# Distance between tab lines on paper; every song is scaled to match so notation prints the same size
+# Distance between tab lines on paper; every measure is scaled to match so notation prints the same size
 TAB_LINE_SPACING = 6.5
-# Measure numbers are drawn in gray; music in black prints darker than this
-GRAY_INK = 100
-# Lightest mark that still counts as ink when looking for cut-off fragments
-FAINT_INK = 235
-# Blank strip pixels kept above and below the music
-TRIM_PAD = 8
 # Largest and smallest title size, in points; long titles shrink to fit the page
 TITLE_SIZE = 20
 MIN_TITLE_SIZE = 10
+# Size of the notes on page 1 and the check list, in points
+NOTE_SIZE = 9
 
 
-def scale_for(strip: np.ndarray, region_width: int) -> float:
-    """Points per strip pixel that give every song the same tab line spacing on paper."""
-    tab = ink.tab_staff(ink.staff_lines(strip))
-    if len(tab) < 2:
-        # Without a staff to measure, fit the video's tab area to the page width
-        return USABLE_WIDTH / region_width
-    return TAB_LINE_SPACING / float(np.median(np.diff(tab)))
-
-
-def content_rows(strip: np.ndarray) -> tuple[int, int]:
-    """First and last strip rows holding any ink, padded, so blank paper above and below is dropped."""
-    ink_rows = np.flatnonzero((strip < ink.FAINT).sum(axis=1) > 20)
-    if ink_rows.size == 0:
-        return 0, strip.shape[0]
-    return max(ink_rows[0] - TRIM_PAD, 0), min(ink_rows[-1] + 1 + TRIM_PAD, strip.shape[0])
-
-
-def barlines(strip: np.ndarray, lines: list[int]) -> list[tuple[int, int]]:
-    """(first, last) columns of each barline, found where ink spans the tab staff top to bottom."""
-    tab = ink.tab_staff(lines)
-    if not tab:
-        return []
-    y0, y1 = tab[0], tab[-1]
-    full = (strip[y0:y1 + 1] < ink.FAINT).mean(axis=0) > 0.95
-    bars: list[tuple[int, int]] = []
-    for x in np.flatnonzero(full):
-        # Columns close together belong to one thick or double barline
-        if bars and x <= bars[-1][1] + 12:
-            bars[-1] = (bars[-1][0], int(x))
-        else:
-            bars.append((int(x), int(x)))
-    return bars
-
-
-def rows(strip: np.ndarray, placed: list[Placed], width: int) -> list[tuple[int, int]]:
-    """Split the strip into (start, end) column ranges no wider than `width`, as even in width as barlines allow."""
-    bars = barlines(strip, ink.staff_lines(strip))
-    # Each page turn starts a new line of music with its own clef, so always cut there
-    turns = [p.x for p in placed if p.new_from == 0] + [strip.shape[1]]
-    out = []
-    for seg_start, seg_end in zip(turns, turns[1:]):
-        start = seg_start
-        rows_left = math.ceil((seg_end - seg_start) / width)
-        while start < seg_end:
-            if seg_end - start <= width:
-                out.append((start, seg_end))
-                break
-            # Aim for an equal share of what's left, so rows come out alike instead of full rows and a stub
-            rows_left = max(rows_left, math.ceil((seg_end - start) / width))
-            target = start + (seg_end - start) / rows_left
-            fits = [b for b in bars if start < b[0] and b[1] < start + width]
-            if fits:
-                # End the row after the barline and start the next one on it, so both rows show it
-                first, last = min(fits, key=lambda b: abs(b[1] - target))
-                out.append((start, last + 1))
-                start = first
-            else:
-                out.append((start, start + width))
-                start += width
-            rows_left -= 1
+def rows(cells: list[PrintCell], breaks: set[int], width: float = USABLE_WIDTH) -> list[list[int]]:
+    """Indexes of the measures on each row: consecutive measures while they fit `width` points, and a new
+    row at every index in `breaks`. A measure too wide for the page gets a row to itself."""
+    out: list[list[int]] = []
+    cur: list[int] = []
+    lead = used = 0.0
+    for i, pc in enumerate(cells):
+        k = TAB_LINE_SPACING / pc.gap
+        adv = pc.advance * k
+        right = (pc.image.shape[1] - pc.left - pc.advance) * k
+        if cur and (i in breaks or lead + used + adv + right > width):
+            out.append(cur)
+            cur, used = [], 0.0
+        if not cur:
+            lead = pc.left * k
+        cur.append(i)
+        used += adv
+    if cur:
+        out.append(cur)
     return out
 
 
-def whiten(strip: np.ndarray) -> np.ndarray:
-    """Scale brightness so the video's off-white paper prints as white."""
-    paper = float(np.median(strip))
-    out = np.clip(strip.astype(np.float32) * (255 / paper), 0, 255)
-    out[out > 240] = 255
-    return out.astype(np.uint8)
+def compose(row: list[PrintCell]) -> tuple[np.ndarray, float]:
+    """One image of a row's measures side by side, lined up on the tab staff's top line, at the row's widest
+    line spacing. Returns the image and that spacing in pixels."""
+    g = max(pc.gap for pc in row)
+    parts = []
+    for pc in row:
+        f = g / pc.gap
+        img = pc.image if f == 1 else cv2.resize(pc.image, None, fx=f, fy=f, interpolation=cv2.INTER_CUBIC)
+        parts.append((img, pc.top * f, pc.left * f, pc.advance * f))
+    starts, x = [], 0.0
+    for _, _, left, adv in parts:
+        starts.append(x - left)
+        x += adv
+    shift = -min(starts)
+    above = max(top for _, top, _, _ in parts)
+    below = max(img.shape[0] - top for img, top, _, _ in parts)
+    width = max(s + shift + img.shape[1] for s, (img, _, _, _) in zip(starts, parts))
+    canvas = np.full((int(np.ceil(above + below)), int(np.ceil(width))), 255, np.uint8)
+    for s, (img, top, _, _) in zip(starts, parts):
+        y0, x0 = int(round(above - top)), int(round(s + shift))
+        region = canvas[y0:y0 + img.shape[0], x0:x0 + img.shape[1]]
+        # Darker wins where neighbors overlap, so marks hanging over a barline join the next measure's ink
+        np.minimum(region, img[:region.shape[0], :region.shape[1]], out=region)
+    return canvas, g
 
 
 class _TabPDF(FPDF):
-    def __init__(self, source: Source):
+    def __init__(self, source: Source, note: str | None = None):
         super().__init__(orientation="portrait", unit="pt", format="letter")
         self.source = source
+        self.note = note
         self.set_margins(MARGIN, MARGIN)
         self.set_auto_page_break(False)
 
@@ -127,6 +100,11 @@ class _TabPDF(FPDF):
                 if self.source.url:
                     self.cell(0, 14, self.source.url, link=self.source.url)
                 self.ln(14)
+                self.set_text_color(0)
+            if self.note:
+                self.set_font("Helvetica", "", NOTE_SIZE)
+                self.set_text_color(110)
+                self.multi_cell(0, 11, _latin1(self.note), new_x="LMARGIN", new_y="NEXT")
                 self.set_text_color(0)
         else:
             self.set_font("Helvetica", "", 9)
@@ -150,102 +128,54 @@ def _latin1(text: str) -> str:
     return text.encode("latin-1", "replace").decode("latin-1")
 
 
-def clear_edge_fragments(strip: np.ndarray, start: int, end: int, view_edges: set[int],
-                         top_line: int, bottom_line: int, near: int) -> np.ndarray:
-    """The row strip[:, start:end] with marks its edges cut through erased, staves left alone.
-
-    A row edge is either a cut at a barline or the edge of what the video showed (`view_edges`).
-    At a barline, a black mark such as a boxed section label is kept by whichever row holds most of
-    it. At the video's edge, anything cut is erased, such as the ends of a system bracket. Measure
-    numbers sit over or just after barlines and are drawn in gray, so gray marks above the staff
-    within `near` pixels of an edge are erased: a cut leaves part of a number, and part of "17"
-    reads as "7".
-    """
-    row = strip[:, start:end].copy()
-    w = end - start
-    # Look a little past each barline cut to see how much of a cut mark lies outside the row
-    left = start if start in view_edges else max(start - near, 0)
-    right = end if end in view_edges else min(end + near, strip.shape[1])
-    window = strip[:, left:right]
-    staves = slice(max(top_line - 1, 0), bottom_line + 4)
-
-    # A loose threshold so faint marks come out as whole shapes, not scattered specks.
-    # Blanking the staves keeps a mark that touches a barline from joining it.
-    marks = (window < FAINT_INK).astype(np.uint8)
-    marks[staves] = 0
-    count, labels, stats, _ = cv2.connectedComponentsWithStats(marks, connectivity=8)
-    inside = labels[:, start - left:end - left]
-    for i in range(1, count):
-        x, _, cw, _, total = stats[i]
-        x -= start - left
-        in_row = inside == i
-        cut_left, cut_right = x <= 0 < x + cw, x < w <= x + cw
-        if not in_row.any() or not (cut_left or cut_right):
-            continue
-        at_video_edge = (cut_left and start in view_edges) or (cut_right and end in view_edges)
-        if at_video_edge or in_row.sum() < total / 2 or row[in_row].min() > GRAY_INK:
-            row[in_row] = 255
-
-    # Gray pixels above the staff, minus the soft edges of black marks such as section labels
-    black = cv2.dilate((row <= GRAY_INK).astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
-    gray = (row < FAINT_INK) & ~black
-    gray[max(top_line - 1, 0):] = False
-    # Join the digits of one measure number so the whole number goes, not just the digit nearest the edge
-    joined = cv2.dilate(gray.astype(np.uint8), np.ones((1, near // 3 + 1), np.uint8))
-    count, labels, stats, _ = cv2.connectedComponentsWithStats(joined, connectivity=8)
-    for i in range(1, count):
-        x, _, cw, _, _ = stats[i]
-        if x < near or x + cw > w - near:
-            row[gray & (labels == i)] = 255
-    return row
+def _draw_page(pdf: FPDF, page: list[tuple[np.ndarray, float, float]], top: float, bottom: float,
+               spread: bool) -> None:
+    gap = ROW_GAP
+    if spread and len(page) > 1:
+        # Share the leftover space between rows so full pages end at the same place
+        spare = bottom - top - sum(h for _, _, h in page) - (len(page) - 1) * ROW_GAP
+        gap = min(ROW_GAP + spare / (len(page) - 1), ROW_GAP * MAX_GAP_STRETCH)
+    y = top
+    for img, w, h in page:
+        pdf.image(Image.fromarray(img), x=MARGIN, y=y, w=w, h=h)
+        y += h + gap
 
 
-def write_pdf(strip: np.ndarray, row_ranges: list[tuple[int, int]], scale: float, out: Path, source: Source,
-              placed: list[Placed], upscale: Upscaler | None = None) -> None:
-    """Lay the rows out on Letter pages at `scale` points per strip pixel, running `upscale` on each row if given."""
-    lines = ink.staff_lines(strip)
-    y0, y1 = content_rows(strip)
-    trimmed = strip[y0:y1]
-    strip = whiten(trimmed)
-
-    def staves(start: int, end: int) -> tuple[int, int]:
-        """Top and bottom staff lines of one row. Pages of a video can place the staffs differently."""
-        found = ink.staff_lines(trimmed[:, start:end]) or [line - y0 for line in lines]
-        return (found[0], found[-1]) if found else (0, strip.shape[0])
-
-    # About the width of a two-digit measure number
-    tab = ink.tab_staff(lines)
-    near = int(2 * np.median(np.diff(tab))) if len(tab) > 1 else 0
-    view_edges = {p.x for p in placed if p.new_from == 0} | {strip.shape[1]}
-    pdf = _TabPDF(source)
+def write_pdf(cells: list[PrintCell], breaks: set[int], out: Path, source: Source,
+              upscale: Upscaler | None = None, note: str | None = None, spots: list[str] | None = None) -> int:
+    """Write the measures in rows on Letter pages, with `spots` listed on a last page. Returns the page count."""
+    pdf = _TabPDF(source, note)
     pdf.set_title(_latin1(source.title))
-    row_h = strip.shape[0] * scale
-    bottom = pdf.h - MARGIN - FOOTER
-
-    def draw_page(rows_on_page: list[tuple[int, int]], top: float, spread: bool) -> None:
-        gap = ROW_GAP
-        if spread and len(rows_on_page) > 1:
-            # Share the leftover space between rows so full pages end at the same place
-            spare = bottom - top - len(rows_on_page) * row_h - (len(rows_on_page) - 1) * ROW_GAP
-            gap = min(ROW_GAP + spare / (len(rows_on_page) - 1), ROW_GAP * MAX_GAP_STRETCH)
-        y = top
-        for start, end in rows_on_page:
-            row = clear_edge_fragments(strip, start, end, view_edges, *staves(start, end), near)
-            if upscale:
-                row = upscale(row)
-            pdf.image(Image.fromarray(row), x=MARGIN, y=y, w=(end - start) * scale)
-            y += row_h + gap
-
     pdf.add_page()
     top = y = pdf.get_y()
-    page_rows: list[tuple[int, int]] = []
-    for r in row_ranges:
-        if page_rows and y + row_h > bottom:
-            draw_page(page_rows, top, spread=True)
+    bottom = pdf.h - MARGIN - FOOTER
+    placed = []
+    for row in rows(cells, breaks):
+        img, g = compose([cells[i] for i in row])
+        w = img.shape[1] * TAB_LINE_SPACING / g
+        h = img.shape[0] * TAB_LINE_SPACING / g
+        # A row too wide or too tall for the page shrinks to fit
+        fit = min(1.0, USABLE_WIDTH / w, (bottom - top) / h)
+        if upscale:
+            img = upscale(img)
+        placed.append((img, w * fit, h * fit))
+    page: list = []
+    for item in placed:
+        if page and y + item[2] > bottom:
+            _draw_page(pdf, page, top, bottom, spread=True)
             pdf.add_page()
             top = y = pdf.get_y()
-            page_rows = []
-        page_rows.append(r)
-        y += row_h + ROW_GAP
-    draw_page(page_rows, top, spread=False)
+            page = []
+        page.append(item)
+        y += item[2] + ROW_GAP
+    _draw_page(pdf, page, top, bottom, spread=False)
+    if spots:
+        pdf.add_page()
+        pdf.set_auto_page_break(True, MARGIN + FOOTER)
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(0, 18, "Check these spots", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "", NOTE_SIZE)
+        for line in spots:
+            pdf.multi_cell(0, 12, _latin1(line), new_x="LMARGIN", new_y="NEXT")
     pdf.output(str(out))
+    return pdf.page_no()
