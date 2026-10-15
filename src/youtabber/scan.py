@@ -61,6 +61,13 @@ def paper_between_lines(gray: np.ndarray, st: Staff) -> bool:
     return good >= len(st.lines) - 1 - 1  # one row may be crowded with digits
 
 
+def inside(s: System, region: tuple[int, int, int, int]) -> bool:
+    """True when the tab staff's middle lies inside region (x, y, w, h)."""
+    rx, ry, rw, rh = region
+    cx, cy = (s.tab.x0 + s.tab.x1) / 2, (s.tab.top + s.tab.bottom) / 2
+    return rx <= cx <= rx + rw and ry <= cy <= ry + rh
+
+
 def systems_in(gray: np.ndarray) -> list[System]:
     """Tab staffs in a frame, each with the notation staff drawn above it if there is one."""
     h, w = gray.shape
@@ -96,12 +103,13 @@ def systems_in(gray: np.ndarray) -> list[System]:
     return out
 
 
-def scan(path: Path, width: int, height: int) -> tuple[list[Segment], dict[float, list[System]]]:
+def scan(path: Path, width: int, height: int, region: tuple[int, int, int, int] | None = None
+         ) -> tuple[list[Segment], dict[float, list[System]]]:
     found: dict[float, list[System]] = {}
     papers: list[np.ndarray] = []
     for t, f in frames(path, SCAN_FPS):
         g = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
-        found[t] = systems_in(g)
+        found[t] = [s for s in systems_in(g) if region is None or inside(s, region)]
         for s in found[t]:
             st = s.tab
             for a, b in zip(st.lines, st.lines[1:]):
@@ -155,6 +163,11 @@ def scan(path: Path, width: int, height: int) -> tuple[list[Segment], dict[float
         seg.y1 = int(min(height, max(bots)))
         seg.x0 = int(max(0, min(lefts) - seg.gap * 3))
         seg.x1 = int(min(width, max(rights) + seg.gap * 3))
+        if region is not None:
+            # The region given on the command line bounds what is read
+            rx, ry, rw, rh = region
+            seg.x0, seg.y0 = max(seg.x0, rx), max(seg.y0, ry)
+            seg.x1, seg.y1 = min(seg.x1, rx + rw), min(seg.y1, ry + rh)
         seg.x0 -= seg.x0 % 2
         seg.y0 -= seg.y0 % 2
         seg.x1 -= (seg.x1 - seg.x0) % 2

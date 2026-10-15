@@ -86,8 +86,12 @@ class Reading:
 def read(path: Path, region: Region | None = None) -> Reading:
     """Everything youtabber reads from one video, ready to print, or the reason it can't be printed."""
     info = probe(path)
-    segments, found = scan(path, info.width, info.height)
+    segments, found = scan(path, info.width, info.height, region)
     r = Reading(info.duration, segments)
+    if not segments and region is not None:
+        x, y, w, h = region
+        return r.fail("no_tab", f"No tab staff inside --region {x},{y},{w},{h}. Leave --region out to let youtabber "
+                                f"find the tab.")
     if not segments:
         return r.fail("no_tab", f"No tab on screen: no steady set of evenly spaced staff lines on paper in "
                                 f"{info.duration:.0f} s of video. youtabber can't read text tab (e|--3--) or tab "

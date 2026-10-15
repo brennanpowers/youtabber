@@ -130,7 +130,12 @@ def cmd_one(a) -> None:
     video, out = Path(a.video), Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     reading = pipeline.read(video)
+    from youtabber import cli, enhance
+    from youtabber.source import Source
+    pdfs = cli.write_outputs(reading, Source(video, video.stem, video.stem, None, None), out, video.stem, a.passes,
+                             enhance.classic)
     result = to_result(video.stem, reading, a.passes)
+    result["pdfs"] = [p.name for p in pdfs]
     result["runtime_s"] = round(time.time() - started, 1)
     rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss + resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
     result["peak_rss_mb"] = round(rss / (1024 * 1024 if sys.platform == "darwin" else 1024), 1)
