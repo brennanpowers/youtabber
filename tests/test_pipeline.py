@@ -39,7 +39,6 @@ def test_writes_a_tab(case):
 # Known defects and what goes wrong. Strict: once a defect is fixed, its test fails until the entry is removed.
 DEFECTS = {
     "pages in a box": "an empty staff end at the panel's right edge prints as a measure",
-    "smooth scroll": "measures on screen when the glide starts or ends are not read",
 }
 
 

@@ -25,6 +25,10 @@ PLAYHEAD_SHARE = 0.5
 MIN_RESPONSE = 0.1
 
 
+# The canvas starts this many line gaps left of the playhead, so a first measure starting just before it is whole
+SEED_BACK_GAPS = 4.0
+
+
 @dataclass
 class Mosaic:
     image: np.ndarray           # BGR, band rows of the crop, canvas columns
@@ -32,14 +36,23 @@ class Mosaic:
     offsets: np.ndarray         # how far the band has moved since the first sampled frame, per frame
     times: np.ndarray           # time of each sampled frame
     ref_x: float                # screen x (crop coordinates) where measures are said to be played
-    slit: int                   # screen x of the slit; canvas column 0 is what sat there in the first frame
+    slit: int                   # screen x of the reading column
+    lead: int                   # canvas columns that sat left of ref_x in the first frame
+    seeded: int = 0             # canvas columns taken from the first frame alone
+    tail_from: int = 0          # first canvas column taken from the last frame alone
 
     def time_at(self, canvas_x: float) -> float:
-        """When the canvas column was at the reference x on screen."""
-        pos = self.offsets + self.ref_x - self.slit   # canvas column under the reference, per frame
-        if pos[-1] <= pos[0]:
+        """When the canvas column reached ref_x on screen. Columns still right of it when the band last moved get
+        the time the band's average speed until then would bring them there."""
+        reached = canvas_x - self.lead
+        if self.offsets[-1] <= self.offsets[0]:
             return float(self.times[0])
-        return float(np.interp(canvas_x, pos, self.times))
+        # Frames after the band's last move (blank staff past the end, or the video holding still) add no time
+        k = int(np.argmax(self.offsets >= self.offsets[-1] - 1.0))
+        if reached <= self.offsets[k]:
+            return float(np.interp(reached, self.offsets[:k + 1], self.times[:k + 1]))
+        speed = (self.offsets[k] - self.offsets[0]) / max(float(self.times[k] - self.times[0]), 1e-6)
+        return float(self.times[k] + (reached - self.offsets[k]) / speed)
 
 
 def build(path: Path, crop: tuple[int, int, int, int], rows: tuple[int, int], staff_rows: tuple[int, int],
@@ -54,11 +67,13 @@ def build(path: Path, crop: tuple[int, int, int, int], rows: tuple[int, int], st
     slit = None
     last_int = 0
     last_step = 0.0
+    first = last = None
     for t, f in frames(path, GLIDE_FPS, crop=crop, start=t0, length=t1 - t0):
         band = f[y0:y1]
         w = band.shape[1]
         if slit is None:
             slit = int(SLIT_SHARE * w)
+            first = band.copy()
         votes = colored(band).mean(axis=0) > PLAYHEAD_SHARE
         color_votes = votes.astype(np.int32) if color_votes is None else color_votes + votes
         g = to_gray(band, polarity)
@@ -69,26 +84,31 @@ def build(path: Path, crop: tuple[int, int, int, int], rows: tuple[int, int], st
         content[staff_rows[1] - y0:] = 0
         if prev is not None:
             (dx, _), resp = cv2.phaseCorrelate(prev, content)
-            if resp > MIN_RESPONSE and abs(dx) < MAX_STEP_SHARE * w:
+            # Right of the slit there is nothing but staff lines (past the last measure): the lines match at any
+            # shift, so the band keeps the speed it had
+            notes = ink_map(g[staff_rows[0] - y0:staff_rows[1] - y0, slit:], thr, gap)
+            if notes.sum() >= gap * gap and resp > MIN_RESPONSE and abs(dx) < MAX_STEP_SHARE * w:
                 step = max(-dx, 0.0)
                 last_step = step
             else:
                 # No clear match (a bar of rests, a fade): the band keeps the speed it had
                 step = last_step
             offset += step
-        new_int = int(round(offset))
-        if prev is None:
-            strips.append(band[:, slit:slit + 1].copy())
-        elif new_int > last_int:
-            # Columns that moved past the slit since the last frame, in canvas order
-            strips.append(band[:, slit:slit + (new_int - last_int)].copy())
-        last_int = new_int if prev is not None else 0
+            new_int = int(round(offset))
+            if new_int > last_int:
+                # Columns that crossed the slit since the frame before, in canvas order
+                strips.append(band[:, slit - (new_int - last_int):slit].copy())
+                last_int = new_int
         offsets.append(offset)
         times.append(t)
         prev = content
-    if not strips or offsets[-1] < 2 * gap:
+        last = band
+    if first is None or offsets[-1] < 2 * gap:
         return None
-    image = np.concatenate(strips, axis=1)
-    n = max(len(times), 1)
-    ref_x = float(np.argmax(color_votes)) if color_votes is not None and color_votes.max() > 0.5 * n else slit
-    return Mosaic(image, y0, np.array(offsets), np.array(times), ref_x, slit)
+    n = len(times)
+    ref_x = float(np.argmax(color_votes)) if color_votes.max() > 0.5 * n else float(slit)
+    # Music already left of the slit in the first frame, and still right of it in the last, never crossed it
+    start = max(0, int(ref_x - SEED_BACK_GAPS * gap)) if ref_x < slit else slit
+    image = np.concatenate([first[:, start:slit]] + strips + [last[:, slit:]], axis=1)
+    return Mosaic(image, y0, np.array(offsets), np.array(times), ref_x, slit, int(ref_x) - start, slit - start,
+                  image.shape[1] - (last.shape[1] - slit))
