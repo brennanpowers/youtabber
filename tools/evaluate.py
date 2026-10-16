@@ -481,6 +481,25 @@ def cmd_partials(a) -> None:
                 print(f"    {ex}")
 
 
+def cmd_allpass(a) -> None:
+    """Runs made with --passes all, against the truth's every-pass sequence (the scorer holds a primary PDF to
+    the main sequence, so this compares directly)."""
+    ev = eval_dir(a.eval)
+    sc = load(ev / "mediator" / "score.py", "frozen_score")
+    for name in a.sets.split(","):
+        for d in truths(truth_folder(ev, name)):
+            truth = sc.Truth(d)
+            result = sc.load_result(a.out / name, truth.id)
+            if truth.outcome != "tab" or not result or result.get("outcome") != "tab":
+                print(f"{name:<8} {truth.id:<12} truth {truth.outcome}, v1 {result and result.get('outcome')}")
+                continue
+            s = sc.score_sequence(truth, truth.print_all(), result["candidates"][0]["measures"])
+            times = [e["t"] for e in s["extra"]] + [played_at(truth, m) for m in s["missing"]]
+            silent = sum(1 for t in times if not sc.warned_near(result, [t], truth.data.get("duration")))
+            print(f"{name:<8} {truth.id:<12} expected {s['expected']:>4} printed {s['printed']:>4} "
+                  f"missing {len(s['missing']):>3} extra {len(s['extra']):>3} unwarned {silent:>3}")
+
+
 def cmd_corpus(a) -> None:
     """Every cached corpus video, and an index to compare with the earlier tool's outputs."""
     corpus = json.loads((a.corpus / "corpus.json").read_text())
@@ -513,7 +532,7 @@ def main() -> None:
     one.add_argument("video")
     one.add_argument("out")
     one.add_argument("--passes", choices=["once", "all"], default="once")
-    for cmd in ("run", "score", "compare", "partials"):
+    for cmd in ("run", "score", "compare", "partials", "allpass"):
         p = sub.add_parser(cmd)
         p.add_argument("--sets", required=True, help="comma-separated: " + ",".join(SETS))
         p.add_argument("--out", type=Path, required=True)
@@ -531,7 +550,7 @@ def main() -> None:
     corpus.add_argument("--ids", help="comma-separated corpus ids to run (default: all)")
     a = ap.parse_args()
     {"one": cmd_one, "run": cmd_run, "score": cmd_score, "compare": cmd_compare, "partials": cmd_partials,
-     "corpus": cmd_corpus}[a.cmd](a)
+     "allpass": cmd_allpass, "corpus": cmd_corpus}[a.cmd](a)
 
 
 if __name__ == "__main__":
