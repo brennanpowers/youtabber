@@ -1,8 +1,8 @@
 """Run youtabber on videos whose measures are known, and score the results with the frozen scorer.
 
-The truth files, the scorer and the reference scores live outside this repository: pass --eval DIR or set
-YOUTABBER_EVAL to the folder holding truth/, mediator/ and opus/. Videos are read from
-~/.cache/youtabber/<id>.mp4. Nothing here reads the youtabber config file.
+The truth files, the scorer, the reference scores and the reference outputs live outside this repository: pass
+--eval DIR or set YOUTABBER_EVAL to the folder holding them, with mediator/score.py and eval-sets.json. Videos are
+read from ~/.cache/youtabber/<id>.mp4. Nothing here reads the youtabber config file.
 
   uv run python tools/evaluate.py run --sets dev,h1 --out DIR [--jobs 4] [--ids A,B] [--passes once|all]
   uv run python tools/evaluate.py score --sets dev,h1 --out DIR [--gate port|core|pdf|accept]
@@ -32,16 +32,8 @@ CACHE = Path.home() / ".cache" / "youtabber"
 # A run longer than this counts as a crash, as the scorer rules
 TIMEOUT_S = 600
 
-# Per set: truth folder, reference score file, reference outputs, relative to the eval folder
-SETS = {
-    "dev": ("truth", "mediator/scores/opus-3c-dev.json", "opus/out"),
-    "h1": ("truth/heldout", "mediator/scores/opus-3c-h1.json", "opus/heldout-3c-h1"),
-    "h2": ("truth/heldout2", "mediator/scores/opus-3c-h2.json", "opus/heldout-3c-h2"),
-    "h3": ("truth/heldout3", "mediator/scores/opus-3c-h3.json", "opus/heldout3"),
-    "confirm": ("truth/confirm", "mediator/scores/opus-confirm.json", "opus/confirm"),
-    "reserve": ("truth/reserve-r4", "mediator/scores/opus-r4-reserve.json", "opus/r4-reserve"),
-    "accept": (None, None, None),
-}
+# The eval folder's eval-sets.json gives each set's paths; accept has none there, see truth_folder
+SETS = ("dev", "h1", "h2", "h3", "confirm", "reserve", "accept")
 # The videos the earlier tool was built on: they must stay correct (the last at least near correct)
 FLOOR_CORRECT = {"HLVzc4nNiY0", "EpQWdwfmQo8", "Jqt1vJEtyik"}
 FLOOR_NEAR = {"JzjGuv3lkq4"}
@@ -81,6 +73,16 @@ def eval_dir(arg: str | None) -> Path:
     return p
 
 
+def eval_sets(ev: Path) -> dict:
+    """The eval folder's eval-sets.json: per set, the truth folder, reference score file and reference outputs
+    (relative to the eval folder), and the reference's key in mediator/pdfpass/cut_ink.json."""
+    path = ev / "eval-sets.json"
+    if not path.exists():
+        sys.exit(f"No {path}. Add it with {{\"sets\": {{\"dev\": {{\"truth\": ..., \"reference_score\": ..., "
+                 f"\"reference_outputs\": ...}}, ...}}, \"cut_ink_reference\": ...}}.")
+    return json.loads(path.read_text())
+
+
 def load(path: Path, name: str):
     """Import a Python file by path, so the frozen scorer is used as it is."""
     spec = importlib.util.spec_from_file_location(name, path)
@@ -104,7 +106,7 @@ def truths(folder: Path) -> list[dict]:
 def truth_folder(ev: Path, name: str) -> Path:
     """Truth folder of a set. The closed acceptance set is kept outside the eval folder; YOUTABBER_ACCEPT names it."""
     if name != "accept":
-        return ev / SETS[name][0]
+        return ev / eval_sets(ev)["sets"][name]["truth"]
     path = os.environ.get("YOUTABBER_ACCEPT")
     if not path:
         sys.exit("Set YOUTABBER_ACCEPT to the folder holding the acceptance truth files.")
@@ -368,7 +370,8 @@ def pdf_metrics(ev: Path, truth, result: dict, folder: Path) -> dict:
             slivers.append(f"{m['image']} (t {m['t']}, {w:.1f} gaps wide)")
     cut_staff = [m["image"] for m, img in images if not keeps_staff(img, m["gap"])]
     reference = read_json(ev / "mediator" / "pdfpass" / "cut_ink.json") or {"videos": {}}
-    ref_spill = reference["videos"].get(truth.id, {}).get("opus", {}).get("mean_spill_nonpaper")
+    side = eval_sets(ev)["cut_ink_reference"]
+    ref_spill = reference["videos"].get(truth.id, {}).get(side, {}).get("mean_spill_nonpaper")
     return {"cut_ink": round(float(np.mean(cuts)), 4) if cuts else None,
             "spill": round(float(np.mean(spills)), 4) if spills else None,
             "reference_spill": ref_spill,
@@ -381,7 +384,7 @@ def cmd_score(a) -> None:
     sc = load(ev / "mediator" / "score.py", "frozen_score")
     problems = []
     for name in a.sets.split(","):
-        _, base_file, _ = SETS[name]
+        base_file = eval_sets(ev)["sets"].get(name, {}).get("reference_score")
         base = {v["id"]: v for v in json.loads((ev / base_file).read_text())["videos"]} if base_file else {}
         data = truths(truth_folder(ev, name))
         styles = {d["id"]: d.get("style", []) for d in data}
@@ -430,7 +433,7 @@ def cmd_compare(a) -> None:
         return [(round(m["t"], 1), m.get("label"), round(m["x"])) for m in cands[0].get("measures", [])]
 
     for name in a.sets.split(","):
-        frozen = ev / SETS[name][2]
+        frozen = ev / eval_sets(ev)["sets"][name]["reference_outputs"]
         for t in truths(truth_folder(ev, name)):
             mine = read_json(a.out / name / t["id"] / "result.json")
             ref = read_json(frozen / t["id"] / "result.json")
@@ -526,7 +529,7 @@ def cmd_corpus(a) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Run and score youtabber on videos with known measures.")
-    ap.add_argument("--eval", help="folder holding truth/, mediator/ and opus/ (default: $YOUTABBER_EVAL)")
+    ap.add_argument("--eval", help="folder holding the truth, the scorer and eval-sets.json (default: $YOUTABBER_EVAL)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     one = sub.add_parser("one")
     one.add_argument("video")
