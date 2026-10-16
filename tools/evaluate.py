@@ -302,7 +302,29 @@ def tint_share(img: np.ndarray, gap: float) -> tuple[float, bool]:
     light = ((img >= TINT_LO) & (img < TINT_HI)).astype(np.uint8)
     k = max(3, int(0.5 * gap))
     solid = cv2.morphologyEx(light, cv2.MORPH_OPEN, np.ones((k, k), np.uint8))
-    return float(solid.mean()), bool((light.mean(axis=0) > LINE_SHARE).any())
+    # Barlines sit at a measure's edges and can print light gray, so lines count only half a gap away from them
+    edge = int(0.5 * gap)
+    return float(solid.mean()), bool((light[:, edge:img.shape[1] - edge].mean(axis=0) > LINE_SHARE).any())
+
+
+def keeps_staff(img: np.ndarray, gap: float) -> bool:
+    """Whether a printed measure shows 4 or more tab lines with paper above and below them."""
+    from youtabber.staff import find_staffs, line_rows
+    h = img.shape[0]
+    # Both outer lines need half a gap of paper outside them, or the digits on them are cut
+    margin = 0.5 * gap
+    if any(len(st.lines) >= 4 and st.top >= margin and st.bottom <= h - margin for st in find_staffs(img)):
+        return True
+    # Stacked digits can break the lines so find_staffs drops the staff; evenly spaced rows still show it.
+    # Rows must cover half the width, so a column of digits can't join neighboring lines into one row.
+    ys = [y for y, *_ in line_rows(img, "dark", img.shape[1] // 2)]
+    runs = [ys[:1]]
+    for prev, y in zip(ys, ys[1:]):
+        if abs(y - prev - gap) <= 0.25 * gap:
+            runs[-1].append(y)
+        else:
+            runs.append([y])
+    return any(len(run) >= 4 and run[0] >= margin and run[-1] <= h - margin for run in runs)
 
 
 def pdf_metrics(ev: Path, truth, result: dict, folder: Path) -> dict:
@@ -334,8 +356,7 @@ def pdf_metrics(ev: Path, truth, result: dict, folder: Path) -> dict:
             residue.append(f"{m['image']} (t {m['t']}, label {m['label']})")
         if not m["complete"] and w < SLIVER_SHARE * typical:
             slivers.append(f"{m['image']} (t {m['t']}, {w:.1f} gaps wide)")
-    from youtabber.staff import find_staffs
-    cut_staff = [m["image"] for m, img in images if not any(len(st.lines) >= 4 for st in find_staffs(img))]
+    cut_staff = [m["image"] for m, img in images if not keeps_staff(img, m["gap"])]
     reference = read_json(ev / "mediator" / "pdfpass" / "cut_ink.json") or {"videos": {}}
     ref_spill = reference["videos"].get(truth.id, {}).get("opus", {}).get("mean_spill_nonpaper")
     return {"cut_ink": round(float(np.mean(cuts)), 4) if cuts else None,
