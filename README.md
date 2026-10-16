@@ -29,13 +29,16 @@ uv tool install --editable ./youtabber
 youtabber URL                          # writes out/<song-name>/<song-name>.pdf
 youtabber song.mp4                     # a local video works too
 youtabber URL --title "Song - Artist"  # when the name pulled from the video title is wrong
-youtabber URL --region 370,712,1546,364  # when it grabs the wrong part of the screen
+youtabber URL --region 370,712,1546,364  # when it picks up something that isn't the tab
+youtabber URL --passes all             # print every pass of a replayed section
 youtabber URL --no-enhance             # skip sharpening, for a smaller file
 ```
 
-If a PDF looks wrong, open `region.png` in the output folder. It shows the area youtabber read the
-tab from, and the run prints that area as `Region(x=…, y=…, w=…, h=…)` so you can adjust it and pass
-it back with `--region`.
+The output folder holds the PDF, `meta.json` (what was read, with times), and `views/` (each screen
+it read, with the measures it found boxed), so you can check a PDF that looks wrong against the video.
+
+It exits with 0 when the PDF is clean, 1 when no PDF was made, and 3 when the PDF has spots to check
+(listed on its last page) or a second PDF was written with replayed sections printed once.
 
 Videos are cached in `~/.cache/youtabber`, so a second run doesn't download again.
 
@@ -47,6 +50,7 @@ Videos are cached in `~/.cache/youtabber`, so a second run doesn't download agai
 pdf_dir = "~/Documents/tabs"   # also copy every PDF here
 model = "realesrgan-anime"     # sharper output, see below
 enhance = false                # skip sharpening unless --enhance or --model is passed
+passes = "all"                 # print every pass instead of folding replays
 ```
 
 ## Sharper output
@@ -67,19 +71,21 @@ video before trusting it.
 
 ## How it works
 
-Staff lines stay put for the whole video while everything else moves, so averaging frames finds the
-tab. Frames are compared by their dark ink only, which ignores colored cursors, and each stretch of
-matching frames is merged into one clean image. When a video scrolls forward with some overlap, each
-new image is slid across the last one to find where they line up. The result is cut at barlines into
-rows and scaled so the notation prints the same size no matter how big it was on screen.
+It finds the tab by the long, evenly spaced lines of its staff. Each screen that holds still becomes
+one clean image with the cursor taken out, and tab that slides smoothly past a fixed line is stitched
+into one long image. Each image is cut at its barlines into measures, and the measure numbers above
+them are read. Each measure is placed in the song once, and a section shown again is printed once
+only when the video shows it's a replay, such as matching measure numbers, a repeat sign, or a D.S.
+marking. When it can't tell, it prints the section every time and writes a second PDF that prints
+it once.
 
 ## Known gaps
 
-- Videos that scroll smoothly, instead of jumping, aren't supported yet.
-- Dark-themed tab won't be found, and colored notation, like red X notes, prints as blank.
 - A video that shows one page of tab the whole time may need `--region`.
 - If downloads start failing, YouTube probably changed something. `uv tool upgrade youtabber` pulls
   the latest [yt-dlp](https://github.com/yt-dlp/yt-dlp).
+- Text tab (`e|--3--`) and tab drawn see-through over the video aren't read.
+- A compilation of several songs prints as one PDF, without song labels.
 
 ## Please be nice
 
