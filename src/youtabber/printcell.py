@@ -1,6 +1,8 @@
 """Turn one measure, as the video showed it, into a clean black-on-white image for printing."""
+import bisect
 from dataclasses import dataclass
 
+import cv2
 import numpy as np
 
 from youtabber.assemble import Obs
@@ -10,6 +12,11 @@ from youtabber.scan import Segment
 
 # Paper this close to white prints white
 WHITE_FROM = 240
+# A mark crossing the next barline this many line gaps or less from its left edge is a measure number centered
+# on that barline, and belongs to the measure starting there
+NUMBER_REACH = 1.5
+# Anything this much darker than white, once the paper is whitened, is a mark
+MARK_LEVEL = 235
 
 
 @dataclass
@@ -29,11 +36,62 @@ def whiten(gray: np.ndarray) -> np.ndarray:
     return out.astype(np.uint8)
 
 
+def owner(left: int, right: int, starts: list[int], gap: float) -> int:
+    """Index of the measure a mark above or below the staffs belongs to. `starts` are the measures' left edges,
+    left to right. A mark belongs to the measure its left edge is in, except one that crosses the next barline
+    close to its left edge."""
+    k = max(bisect.bisect_right(starts, left) - 1, 0)
+    if k + 1 < len(starts) and left < starts[k + 1] < right and starts[k + 1] - left <= NUMBER_REACH * gap:
+        return k + 1
+    return k
+
+
+def clean(band: np.ndarray, seg: Segment, gap: float, cols: tuple[int, int] | None = None) -> np.ndarray:
+    """Gray image of a band with dark ink on white paper. Only columns cols (the paper panel) are kept; the rest
+    print white."""
+    a, b = cols or (0, band.shape[1])
+    out = np.full(band.shape[:2], 255, np.uint8)
+    out[:, a:b] = whiten(to_gray(band[:, a:b], seg.polarity))
+    return out
+
+
 def print_cell(o: Obs, c: Cell, seg: Segment) -> PrintCell:
-    """Measure c of view o as printed: the cell's columns over its system's print band, gray with dark ink,
-    paper white."""
-    # The cell starts at its left barline, or a little before it for a system's first measure
-    x_left = c.print_x0
-    box = o.image[c.band[0]:c.band[1], x_left:c.x1 + 1]
-    top = c.y0 + c.ref_y - c.band[0]
-    return PrintCell(whiten(to_gray(box, seg.polarity)), c.gap, top, c.x0 - x_left, c.x1 - c.x0)
+    """Measure c of view o as printed: its system's band, from its left barline to the next one, with the marks
+    above and below the staffs that belong to it and none that belong to its neighbors."""
+    ps = o.systems[c.system]
+    i = next(k for k, x in enumerate(ps.cells) if x is c)
+    starts = [x.x0 for x in ps.cells]
+    b0, b1 = c.band
+    # Only the paper panel counts: footage left or right of it would skew the paper level
+    px0, _, px1, _ = o.print_rect
+    gray = clean(o.image[b0:b1], seg, c.gap, (px0, px1))
+    st = ps.system.tab
+    sys_top = int(round((ps.system.notation or st).top)) - b0
+    sys_bottom = int(round(st.bottom)) - b0
+    margin = max(1, int(0.5 * c.gap))
+    # The measure's own columns: its left edge (a system's first measure keeps the margin before it) through
+    # its right barline
+    x0 = c.print_x0 if i == 0 else c.x0
+    x1 = next((q for p, q in ps.bars if p == c.x1), c.x1) + 1
+    # Marks are looked at between the neighbors' far edges, so a mark's left edge is never cut off
+    w0 = starts[i - 1] if i > 0 else max(0, x0 - int(3 * c.gap))
+    w1 = starts[i + 2] if i + 2 < len(starts) else gray.shape[1]
+    keep = np.zeros(gray.shape, bool)
+    keep[:, x0:x1] = True
+    xa, xb = x0, x1
+    for rows in (slice(0, max(0, sys_top - margin)), slice(min(gray.shape[0], sys_bottom + margin), gray.shape[0])):
+        marks = (gray[rows, w0:w1] < MARK_LEVEL).astype(np.uint8)
+        # OpenCV crashes on an empty image: a band with no room above or below the staffs has no marks there
+        if marks.size == 0:
+            continue
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(marks, connectivity=8)
+        part = keep[rows, w0:w1]
+        for j in range(1, n):
+            x, _, w, _, _ = stats[j]
+            mine = owner(x + w0, x + w0 + w, starts, c.gap) == i
+            part[labels == j] = mine
+            if mine:
+                xa, xb = min(xa, x + w0), max(xb, x + w0 + w)
+    out = np.where(keep, gray, 255).astype(np.uint8)[:, xa:xb]
+    # Overhang is measured from the left barline (a system's first measure: its staff start)
+    return PrintCell(out, c.gap, c.y0 + c.ref_y - b0, c.x0 - xa, c.x1 - c.x0)
