@@ -231,7 +231,7 @@ def meta(reading: pipeline.Reading, src: source.Source, passes: str, pdfs: list[
         for i, (m, pc) in enumerate(zip(cands[0].measures, printed)):
             measures.append({"slot": m.slot, "view": m.view, "t": m.t, "play_t": m.play_t, "label": m.label,
                              "complete": m.cell.complete, "image": f"measures/{i:04d}.png",
-                             "gap": round(pc.gap, 2)})
+                             "gap": round(pc.gap, 2), "left": int(pc.left)})
     return {
         "version": 2,
         "source": {"id": src.id, "url": src.url, "title": src.title, "credit": src.credit},

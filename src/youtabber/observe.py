@@ -221,8 +221,11 @@ def panel_rect(frame: np.ndarray, paper: np.ndarray, seed: tuple[int, int, int, 
         border = frame[sy0:sy1, max(0, p - max(2, int(gap / 2))):p]
         if border.size and border.max(axis=2).mean() < BORDER_LEVEL:
             sx0 = p
-    x0 = grow(cols, sx0, -1)
-    x1 = grow(cols, sx1 - 1, 1) + 1
+    # The print area steps over a dark stroke up to half a line gap wide when paper goes on past it: a bracket
+    # joining a system's staffs, with the measure number printed above it
+    cslack = max(3, int(gap / 2)) if for_print else 3
+    x0 = grow(cols, sx0, -1, cslack)
+    x1 = grow(cols, sx1 - 1, 1, cslack) + 1
     return x0, y0, x1, y1
 
 

@@ -296,15 +296,25 @@ def print_table(name: str, reports: list[dict], base: dict) -> None:
     print(f"total {total:.1f}" + (f" (reference {ref:.1f})" if ref is not None else ""))
 
 
-def tint_share(img: np.ndarray, gap: float) -> tuple[float, bool]:
-    """(share of solid light-gray area, whether a light-gray vertical line runs through) for a printed measure.
-    Staff lines and the soft edges of digits are thin, so an opening of about half a line gap removes them first."""
+def tint_share(img: np.ndarray, gap: float, left: int = 0) -> tuple[float, bool]:
+    """(share of solid light-gray area, whether a light-gray vertical line runs through) for a printed measure
+    whose left barline is image column `left`. Staff lines and the soft edges of digits are thin, so an opening of
+    about half a line gap removes them first."""
     light = ((img >= TINT_LO) & (img < TINT_HI)).astype(np.uint8)
     k = max(3, int(0.5 * gap))
     solid = cv2.morphologyEx(light, cv2.MORPH_OPEN, np.ones((k, k), np.uint8))
-    # Barlines sit at a measure's edges and can print light gray, so lines count only half a gap away from them
+    # Barlines sit at a measure's edges and can print light gray, so lines count only half a gap away from them.
+    # A measure number can reach left past the left barline, so that barline is not always at the image edge.
     edge = int(0.5 * gap)
-    return float(solid.mean()), bool((light[:, edge:img.shape[1] - edge].mean(axis=0) > LINE_SHARE).any())
+    lines = light.mean(axis=0) > LINE_SHARE
+    # A light column beside dark ink over most of its rows is the soft edge of a bracket or barline, not a playhead
+    lit, dark = light.astype(bool), img < 128
+    pad = np.zeros((img.shape[0], 1), bool)
+    beside = np.hstack([pad, dark[:, :-1]]) | np.hstack([dark[:, 1:], pad])
+    lines &= (lit & beside).sum(axis=0) <= 0.5 * np.maximum(lit.sum(axis=0), 1)
+    lines[:edge] = lines[img.shape[1] - edge:] = False
+    lines[max(0, left - edge + 1):max(0, left + edge)] = False
+    return float(solid.mean()), bool(lines.any())
 
 
 def keeps_staff(img: np.ndarray, gap: float) -> bool:
@@ -351,7 +361,7 @@ def pdf_metrics(ev: Path, truth, result: dict, folder: Path) -> dict:
     widths = [img.shape[1] / m["gap"] for m, img in images]
     typical = float(np.median(widths)) if widths else 0.0
     for (m, img), w in zip(images, widths):
-        share, line = tint_share(img, m["gap"])
+        share, line = tint_share(img, m["gap"], m.get("left", 0))
         if share > RESIDUE_SHARE or line:
             residue.append(f"{m['image']} (t {m['t']}, label {m['label']})")
         if not m["complete"] and w < SLIVER_SHARE * typical:

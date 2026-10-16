@@ -15,6 +15,9 @@ WHITE_FROM = 240
 # A mark crossing the next barline this many line gaps or less from its left edge is a measure number centered
 # on that barline, and belongs to the measure starting there
 NUMBER_REACH = 1.5
+# A cell left out of the measure list joins the next measure only up to this many line gaps wide: a clef, key or
+# time signature is short, a piece of music cut off by stray barlines is often wider
+JOIN_GAPS = 4.5
 # Anything this much darker than white, once the paper is whitened, is a mark
 MARK_LEVEL = 235
 # Tinted areas at least this many square line gaps big, or taller than three gaps, are cursor boxes, highlight
@@ -77,11 +80,33 @@ def mark_groups(marks: np.ndarray, x_off: int, starts: list[int], gap: float) ->
     return groups
 
 
+def joined_cells(cells: list[Cell], kept: list[Cell]) -> list[tuple[Cell, int, int]]:
+    """A system's cells as printed, left to right: each cell, the column its printed measure starts at, and the
+    first column it prints. A short complete cell left out of the measure list, alone between kept cells (a clef
+    or time signature set off by a barline of its own), prints with the measure after it, so its measure number
+    and signature print whole."""
+    ids = {id(x) for x in kept}
+    dropped = [id(x) not in ids for x in cells]
+    out, carry = [], None
+    for k, x in enumerate(cells):
+        alone = not (k > 0 and dropped[k - 1]) and k + 1 < len(cells) and not dropped[k + 1]
+        if dropped[k] and x.complete and alone and x.x1 - x.x0 <= JOIN_GAPS * x.gap:
+            carry = (x.x0, x.print_x0)
+            continue
+        out.append((x, *(carry or (x.x0, x.print_x0))))
+        carry = None
+    return out
+
+
 def clean(band: np.ndarray, seg: Segment, gap: float, cols: tuple[int, int] | None = None) -> np.ndarray:
     """Gray image of a band with dark ink on white paper, with cursor and highlight tint lifted to paper. Only
     columns cols (the paper panel) are kept; the rest print white."""
     set_paper(seg.paper)
     a, b = cols or (0, band.shape[1])
+    out = np.full(band.shape[:2], 255, np.uint8)
+    # OpenCV crashes on an empty image
+    if b <= a:
+        return out
     part = band[:, a:b]
     gray = to_gray(part, seg.polarity).astype(np.float32)
     paper = float(np.median(gray))
@@ -96,7 +121,6 @@ def clean(band: np.ndarray, seg: Segment, gap: float, cols: tuple[int, int] | No
             # darker than the box, and a tinted barline is darker than half the paper.
             level = float(np.median(gray[body])) - LIFT_SLACK * paper
             gray[body & (gray >= level) & (gray > 0.5 * paper)] = paper
-    out = np.full(band.shape[:2], 255, np.uint8)
     out[:, a:b] = whiten(gray.astype(np.uint8))
     return out
 
@@ -105,8 +129,10 @@ def print_cell(o: Obs, c: Cell, seg: Segment) -> PrintCell:
     """Measure c of view o as printed: its system's band, from its left barline to the next one, with the marks
     above and below the staffs that belong to it and none that belong to its neighbors."""
     ps = o.systems[c.system]
-    i = next(k for k, x in enumerate(ps.cells) if x is c)
-    starts = [x.x0 for x in ps.cells]
+    parts = joined_cells(ps.cells, o.cells)
+    i = next(k for k, (x, _, _) in enumerate(parts) if x is c)
+    _, left_bar, first_col = parts[i]
+    starts = [p[1] for p in parts]
     b0, b1 = c.band
     # Only the paper panel counts: footage left or right of it would skew the paper level
     px0, _, px1, _ = o.print_rect
@@ -118,7 +144,7 @@ def print_cell(o: Obs, c: Cell, seg: Segment) -> PrintCell:
     margin = max(2, int(0.15 * c.gap))
     # The measure's own columns: its left edge (a system's first measure keeps the margin before it) through
     # its right barline
-    x0 = c.print_x0 if i == 0 else c.x0
+    x0 = first_col
     x1 = next((q for p, q in ps.bars if p == c.x1), c.x1) + 1
     # Marks are looked at between the neighbors' far edges, so a mark's left edge is never cut off
     w0 = starts[i - 1] if i > 0 else max(0, x0 - int(3 * c.gap))
@@ -138,4 +164,4 @@ def print_cell(o: Obs, c: Cell, seg: Segment) -> PrintCell:
                 xa, xb = min(xa, left), max(xb, right)
     out = np.where(keep, gray, 255).astype(np.uint8)[:, xa:xb]
     # Overhang is measured from the left barline (a system's first measure: its staff start)
-    return PrintCell(out, c.gap, c.y0 + c.ref_y - b0, c.x0 - xa, c.x1 - c.x0)
+    return PrintCell(out, c.gap, c.y0 + c.ref_y - b0, left_bar - xa, c.x1 - left_bar)
