@@ -37,6 +37,7 @@ class View:
     times: list[float] = field(default_factory=list)
     rect: tuple[int, int, int, int] = (0, 0, 0, 0)   # panel in crop coordinates
     wrapped: bool = False                            # began where the playhead jumped back to the page start
+    print_rect: tuple[int, int, int, int] = (0, 0, 0, 0)   # paper area to print from, crop coordinates
 
 
 def to_gray(frame: np.ndarray, polarity: str) -> np.ndarray:
@@ -164,6 +165,11 @@ BORDER_LEVEL = 40
 PANEL_SHARE = 0.5
 # The panel reaches at most this many tab line gaps above the top staff and below the tab staff
 ABOVE_GAPS, BELOW_GAPS = 2.5, 3.0
+# Marks printed with a system (chord names, section labels, tempo, beams, P.M.) sit within this many line gaps
+# above its top staff line and below its tab staff
+PRINT_ABOVE_GAPS, PRINT_BELOW_GAPS = 7.0, 5.0
+# The print area keeps at least this many line gaps around the staffs, so digits on the outer lines are whole
+PRINT_MARGIN_GAPS = 1.0
 
 
 def grow(ok: np.ndarray, i: int, step: int, slack: int = 3) -> int:
@@ -185,9 +191,16 @@ def grow(ok: np.ndarray, i: int, step: int, slack: int = 3) -> int:
     return last
 
 
-def panel_rect(frame: np.ndarray, paper: np.ndarray, seed: tuple[int, int, int, int], gap: float) -> tuple[int, int, int, int]:
-    """(x0, y0, x1, y1) of the paper panel around the seed box (the staffs), grown while rows and columns stay paper."""
+def panel_rect(frame: np.ndarray, paper: np.ndarray, seed: tuple[int, int, int, int], gap: float,
+               above: float = ABOVE_GAPS, below: float = BELOW_GAPS,
+               tint_is_paper: bool = False) -> tuple[int, int, int, int]:
+    """(x0, y0, x1, y1) of the paper panel around the seed box (the staffs), grown while rows and columns stay paper.
+
+    With `tint_is_paper`, colored pixels count as paper: a highlight box over the whole band is still music.
+    """
     m = (np.abs(frame.astype(np.int16) - paper.astype(np.int16)).max(axis=2) < PAPER_TOL)
+    if tint_is_paper:
+        m |= colored(frame)
     h, w = m.shape
     sx0, sy0, sx1, sy1 = seed
     sx0, sx1 = max(0, sx0), min(w, sx1)
@@ -196,8 +209,12 @@ def panel_rect(frame: np.ndarray, paper: np.ndarray, seed: tuple[int, int, int, 
     slack = max(3, int(gap / 2))
     # Chord names, numbers and beams stay within a few line gaps of the staffs; past that, paper-colored
     # rows are footage that happens to match (dark rooms behind a dark theme)
-    y0 = max(grow(rows, sy0, -1, slack), int(sy0 - ABOVE_GAPS * gap))
-    y1 = min(grow(rows, sy1 - 1, 1, slack) + 1, int(sy1 + BELOW_GAPS * gap))
+    y0 = max(grow(rows, sy0, -1, slack), int(sy0 - above * gap))
+    y1 = min(grow(rows, sy1 - 1, 1, slack) + 1, int(sy1 + below * gap))
+    if tint_is_paper:
+        # Digits sit centered on the outer staff lines, so the print area always reaches past them
+        y0 = max(0, min(y0, int(sy0 - PRINT_MARGIN_GAPS * gap)))
+        y1 = min(h, max(y1, int(sy1 + PRINT_MARGIN_GAPS * gap)))
     cols = m[sy0:sy1].mean(axis=0) >= PANEL_SHARE
     # A seed that starts in footage is moved to the first paper column to its right before growing, but only
     # past a dark panel border: a highlight, a tinted clef panel or a clef glyph is music, not footage
@@ -218,7 +235,7 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
     `seed_at(t)` gives the staffs' box at time t in crop coordinates, from the scan.
     """
     views: list[View] = []
-    cur: list[tuple[float, np.ndarray, tuple, tuple]] = []   # (t, frame, panel rect, unused)
+    cur: list[tuple[float, np.ndarray, tuple, tuple]] = []   # (t, frame, panel rect, staffs' box)
     ref = None
     cand = None      # a new picture that may be the next view
     held: list = []  # frames that match cand, waiting to see whether it holds
@@ -229,6 +246,8 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         plate = np.median(np.stack([f for _, f, _, _ in chunk[::step]]), axis=0).astype(np.uint8)
         rect = tuple(int(np.median([c[2][i] for c in chunk])) for i in range(4))
         v = View(chunk[0][0], chunk[-1][0] + 1 / OBS_FPS, plate, times=[t for t, _, _, _ in chunk], rect=rect)
+        mid_seed = chunk[len(chunk) // 2][3]
+        v.print_rect = panel_rect(plate, paper, mid_seed, gap, PRINT_ABOVE_GAPS, PRINT_BELOW_GAPS, tint_is_paper=True)
         x0, y0, x1, y1 = rect
         for t, f, _, _ in chunk:
             dev = (np.abs(f[y0:y1, x0:x1].astype(np.int16) - plate[y0:y1, x0:x1].astype(np.int16)).max(axis=2)
@@ -327,17 +346,17 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         rect = panel_rect(f, paper, seed, gap)
         if ref is None:
             ref = start(t, f, g, rect, seed)
-            cur = [(t, f, rect, (0, 0))]
+            cur = [(t, f, rect, seed)]
             continue
         changed, _ = compare(ref, f, g, rect)
         if not changed:
             # Frames held while a possible change was checked were blips (a cursor crossing a beam)
             cur.extend(held)
             held, cand = [], None
-            cur.append((t, f, rect, (0, 0)))
+            cur.append((t, f, rect, seed))
             continue
         if cand is not None and not compare(cand, f, g, rect)[0]:
-            held.append((t, f, rect, (0, 0)))
+            held.append((t, f, rect, seed))
             if len(held) >= SETTLE_FRAMES:
                 # The new picture held steady: the view ended where it began
                 close()
@@ -346,6 +365,6 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
             continue
         # Changed from the view, and not yet steady: the start of a possible new view
         cand = start(t, f, g, rect, seed)
-        held = [(t, f, rect, (0, 0))]
+        held = [(t, f, rect, seed)]
     close()
     return views, (thr or 128.0), (fthr or 230.0)

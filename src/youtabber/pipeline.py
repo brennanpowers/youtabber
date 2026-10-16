@@ -9,7 +9,7 @@ from youtabber import glide, ocr
 from youtabber.assemble import Assembly, Obs, assemble, cell_at, number_views
 from youtabber.check import (dwell, empty_stretches, fmt, glide_gaps, glide_repeats, number_checks, odd_widths,
                              possible_duplicates, too_few)
-from youtabber.observe import ABOVE_GAPS, BELOW_GAPS, ink_map, set_paper, to_gray, views_in
+from youtabber.observe import ABOVE_GAPS, BELOW_GAPS, PRINT_ABOVE_GAPS, ink_map, set_paper, to_gray, views_in
 from youtabber.parse import Cell, parse_view
 from youtabber.scan import Segment, scan
 from youtabber.video import probe
@@ -116,8 +116,12 @@ def read(path: Path, region: Region | None = None) -> Reading:
                 gaps.append(seg.gap)
                 continue
         for v in views:
-            obs.append(plate_obs(v, seg, si, thr, fthr, len(obs)))
-            x0, y0, x1, y1 = v.rect
+            o = plate_obs(v, seg, si, thr, fthr, len(obs))
+            obs.append(o)
+            # The reported panel is the print area: the print rect's columns, its systems' bands' rows
+            x0, y0, x1, y1 = v.print_rect
+            if o.systems:
+                y0, y1 = min(ps.band[0] for ps in o.systems), max(ps.band[1] for ps in o.systems)
             r.panels.append({"t0": round(v.t0, 2), "t1": round(v.t1, 2),
                              "box": [int(x0 + seg.x0), int(y0 + seg.y0), int(x1 - x0), int(y1 - y0)]})
         gaps.append(seg.gap)
@@ -261,7 +265,7 @@ def seed_function(found, seg):
 
 def plate_obs(v, seg: Segment, si: int, thr: float, fthr: float, index: int) -> Obs:
     """One still view, parsed into measure cells."""
-    systems = parse_view(index, v.plate, v.rect, seg.polarity, thr, fthr, seg.gap)
+    systems = parse_view(index, v.plate, v.rect, seg.polarity, thr, fthr, seg.gap, v.print_rect)
     cells = [c for ps in systems for c in ps.cells]
     x0, y0, x1, y1 = v.rect
     o = Obs(index, v.t0, v.t1, cells, v.playhead, si, (seg.x0, seg.y0), v.plate[y0:y1, x0:x1])
@@ -281,7 +285,7 @@ def plate_obs(v, seg: Segment, si: int, thr: float, fthr: float, index: int) -> 
     o.tall = cv2.morphologyEx(o.band.astype(np.uint8), cv2.MORPH_OPEN, np.ones((5, 1), np.uint8)).astype(bool)
     o.image = v.plate
     o.systems = systems
-    o.print_rect = v.rect
+    o.print_rect = v.print_rect
     return o
 
 
@@ -305,20 +309,24 @@ def glide_obs(path: Path, crop, seg: Segment, si: int, found, thr: float, fthr: 
         g = float(np.median([s.tab.gap for s in group]))
         rows = (max(0, int(top - ABOVE_GAPS * g)), min(seg.y1 - seg.y0, int(bottom + BELOW_GAPS * g)))
         staff_rows = (max(rows[0], int(top)), min(rows[1], int(bottom) + 1))
-        m = glide.build(path, crop, rows, staff_rows, seg.polarity, thr, seg.gap, seg.t0, seg.t1)
+        # The mosaic reaches up to the chord names and labels; the playhead is looked for in the analysis rows
+        print_rows = (max(0, int(top - PRINT_ABOVE_GAPS * g)), rows[1])
+        m = glide.build(path, crop, print_rows, staff_rows, seg.polarity, thr, seg.gap, seg.t0, seg.t1, rows)
         if m is not None:
             break
     if m is None:
         return None
     h, w = m.image.shape[:2]
-    systems = parse_view(index, m.image, (0, 0, w, h), seg.polarity, thr, fthr, seg.gap)
+    print_top = print_rows[0]
+    systems = parse_view(index, m.image, (0, rows[0] - print_top, w, rows[1] - print_top), seg.polarity, thr, fthr,
+                         seg.gap, (0, 0, w, h))
     cells = [c for ps in systems for c in ps.cells]
     for c in cells:
         c.glided = True
     o = Obs(index, seg.t0, seg.t1, cells, [], si, (seg.x0, seg.y0), m.image)
     o.all_cells = cells
     o.mosaic = m
-    o.rows = rows
+    o.rows = print_rows
     o.frames = len(m.times)
     o.rect = (0, 0, w, h)
     o.single = len(systems) == 1

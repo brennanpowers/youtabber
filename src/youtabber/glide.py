@@ -58,8 +58,11 @@ class Mosaic:
 
 
 def build(path: Path, crop: tuple[int, int, int, int], rows: tuple[int, int], staff_rows: tuple[int, int],
-          polarity: str, thr: float, gap: float, t0: float, t1: float) -> Mosaic | None:
-    """Mosaic of the band rows `rows` (crop coordinates) between t0 and t1, or None if it never moves."""
+          polarity: str, thr: float, gap: float, t0: float, t1: float, vote_rows: tuple[int, int]) -> Mosaic | None:
+    """Mosaic of the band rows `rows` (crop coordinates) between t0 and t1, or None if it never moves.
+
+    A fixed playhead is looked for in the crop rows `vote_rows` only.
+    """
     y0, y1 = rows
     prev = None
     offset = 0.0
@@ -76,7 +79,7 @@ def build(path: Path, crop: tuple[int, int, int, int], rows: tuple[int, int], st
         if slit is None:
             slit = int(SLIT_SHARE * w)
             first = band.copy()
-        votes = colored(band).mean(axis=0) > PLAYHEAD_SHARE
+        votes = colored(f[vote_rows[0]:vote_rows[1]]).mean(axis=0) > PLAYHEAD_SHARE
         color_votes = votes.astype(np.int32) if color_votes is None else color_votes + votes
         g = to_gray(band, polarity)
         content = (np.clip((thr + 40 - g.astype(np.float32)) / 80.0, 0, 1))

@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from youtabber.observe import colored, gray_pixels, ink_map, to_gray
+from youtabber.observe import PRINT_ABOVE_GAPS, PRINT_BELOW_GAPS, colored, gray_pixels, ink_map, to_gray
 from youtabber.scan import System, systems_in
 
 # A barline covers at least this share of the rows between the tab staff's top and bottom lines
@@ -43,6 +43,7 @@ class Cell:
     glided: bool = False                    # read from a glide mosaic
     # Between two barlines, or a system's own first or last measure; False when the panel edge cuts it
     complete: bool = True
+    band: tuple[int, int] = (0, 0)          # rows to print, crop coordinates
 
 
 @dataclass
@@ -53,6 +54,7 @@ class ParsedSystem:
     y1: int
     cells: list[Cell] = field(default_factory=list)
     repeat_end: bool = False   # an end-repeat sign (dots before a barline) somewhere in the system
+    band: tuple[int, int] = (0, 0)   # rows to print, crop coordinates
 
 
 def barlines(dark: np.ndarray, tab_top: float, tab_bottom: float, gap: float, x0: int, x1: int,
@@ -222,8 +224,36 @@ def opening_line(struct: np.ndarray, st) -> bool:
     return band.size > 0 and bool((band.mean(axis=0) >= BAR_COVER).any())
 
 
+# A run of blank rows this many line gaps tall ends the marks that belong to a system; chord names sit up to
+# about 1.5 gaps above the staff with blank paper between
+BLANK_GAPS = 2.0
+
+
+def print_band(marks: np.ndarray, top: float, bottom: float, gap: float, lo: int, hi: int) -> tuple[int, int]:
+    """Rows to print for a system: from its top line up to the last row of marks before a blank stretch, and
+    the same below its bottom line, kept within lo..hi and within the print reach."""
+    rows = marks.any(axis=1)
+
+    def reach(start: int, step: int, limit: int) -> int:
+        last, blank, y = start, 0, start
+        while (y > limit) if step < 0 else (y < limit):
+            y += step
+            if rows[y]:
+                last, blank = y, 0
+            else:
+                blank += 1
+                if blank > BLANK_GAPS * gap:
+                    break
+        return last
+
+    y0 = reach(int(top), -1, max(lo, int(top - PRINT_ABOVE_GAPS * gap)))
+    y1 = reach(int(bottom), 1, min(hi - 1, int(bottom + PRINT_BELOW_GAPS * gap)))
+    pad = max(2, int(0.3 * gap))
+    return max(lo, y0 - pad), min(hi, y1 + 1 + pad)
+
+
 def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], polarity: str, thr: float, fthr: float,
-               gap: float) -> list[ParsedSystem]:
+               gap: float, print_rect: tuple[int, int, int, int] | None = None) -> list[ParsedSystem]:
     g = to_gray(plate, polarity)
     rx0, ry0, rx1, ry1 = rect
     sub = g.copy()
@@ -246,6 +276,11 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
     ink = ink_map(sub, thr, gap, plate)
     faint = ink_map(sub, fthr, gap) & ~ink & gray_pixels(plate)
     faint &= ~cv2.dilate(ink.astype(np.uint8), np.ones((7, 7), np.uint8)).astype(bool)
+    # Marks that may be printed with a system: everything visible on the unpainted plate inside the print area,
+    # colored marks left out
+    px0, py0, px1, py1 = print_rect or rect
+    print_marks = np.zeros_like(ink)
+    print_marks[py0:py1, px0:px1] = ink_map(to_gray(plate, polarity), fthr, gap, plate)[py0:py1, px0:px1]
     out: list[ParsedSystem] = []
     for si, s in enumerate(syss):
         st = s.tab
@@ -262,6 +297,12 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
                         (s.notation.lines[1], s.notation.lines[-2]) if s.notation else None)
         bars = drawn_bars(sub, st, bars)
         out.append(ParsedSystem(s, bars, y0, y1, repeat_end=end_repeat(dark, st, bars)))
+    # Print bands: each system's marks, up to halfway to the systems above and below
+    for si, ps in enumerate(out):
+        s, st = ps.system, ps.system.tab
+        lo = py0 if si == 0 else max(py0, int((syss[si - 1].tab.bottom + s.top) / 2))
+        hi = py1 if si == len(out) - 1 else min(py1, int((st.bottom + syss[si + 1].top) / 2))
+        ps.band = print_band(print_marks[:, st.x0:st.x1], s.top, st.bottom, st.gap, lo, hi)
     for si, ps in enumerate(out):
         st = ps.system.tab
         edges: list[tuple[int, int, str]] = []
@@ -299,5 +340,5 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
                                  gap=st.gap, ref_y=int(round(st.top)) - ps.y0, mid_y=(st.top + st.bottom) / 2,
                                  tint=box_tint,
                                  complete=kind == "full" or (kind == "lead" and starts_inside)
-                                 or (kind == "tail" and ends_inside)))
+                                 or (kind == "tail" and ends_inside), band=ps.band))
     return out

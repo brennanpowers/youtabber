@@ -61,3 +61,13 @@ def test_a_staff_starting_inside_the_panel_has_a_complete_first_measure():
 
 def test_an_opening_line_at_the_panel_edge_makes_the_first_measure_complete():
     assert first_cell(staff_from(0, opening=True)).complete
+
+
+def test_band_reaches_chord_names_but_stops_at_a_blank_stretch():
+    marks = np.zeros((400, 100), bool)
+    marks[150:160, 10:40] = True     # a chord name 2 gaps above the top line at row 180
+    marks[95:105, 10:40] = True      # footage 6 gaps above, inside the reach but past a blank stretch
+    from youtabber.parse import print_band
+    y0, y1 = print_band(marks, top=180.0, bottom=250.0, gap=14.0, lo=0, hi=400)
+    assert 140 <= y0 <= 150          # the chord name and a little padding
+    assert y1 >= 250
