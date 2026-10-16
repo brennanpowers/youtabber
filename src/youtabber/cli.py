@@ -1,5 +1,6 @@
 import argparse
 import json
+import re
 import shutil
 import sys
 import time
@@ -119,7 +120,7 @@ def write_outputs(reading: pipeline.Reading, src: source.Source, out: Path, name
     printed: list[printcell.PrintCell] = []
     if reading.outcome == "tab":
         cands = reading.every_pass if passes == "all" else reading.candidates
-        spots = [f"{fmt(n.t0)}-{fmt(n.t1)}  {n.text}" for n in reading.notices if n.doubt]
+        spots = spot_lines(reading.notices)
         for k, cand in enumerate(cands):
             cells = [printcell.print_cell(reading.views[m.view], m.cell, reading.segments[reading.views[m.view].seg])
                      for m in cand.measures]
@@ -134,6 +135,27 @@ def write_outputs(reading: pipeline.Reading, src: source.Source, out: Path, name
         cv2.imwrite(str(out / "views" / f"{o.index:03d}.png"), view_image(reading, o))
     (out / "meta.json").write_text(json.dumps(meta(reading, src, passes, pdfs, printed, started), indent=1, default=_plain))
     return pdfs
+
+
+def spot_lines(notices: list[pipeline.Notice]) -> list[str]:
+    """The PDF's "Check these spots" lines: each doubtful notice once, in time order. no_measures notices come
+    in short pieces, so pieces that touch end to end print as one line over the whole stretch."""
+    distinct = sorted({(n.t0, n.t1, n.text): n for n in notices if n.doubt}.values(), key=lambda n: (n.t0, n.t1))
+    spots = [n for n in distinct if n.kind != "no_measures"]
+    stretches: list[pipeline.Notice] = []
+    for n in distinct:
+        if n.kind != "no_measures":
+            continue
+        if stretches and n.t0 <= stretches[-1].t1:
+            last = stretches[-1]
+            t1 = max(last.t1, n.t1)
+            # The text names the piece's own times; give it the whole stretch's
+            text = re.sub(r"\d+:\d\d-\d+:\d\d", f"{fmt(last.t0)}-{fmt(t1)}", last.text, count=1)
+            stretches[-1] = replace(last, t1=t1, text=text)
+        else:
+            stretches.append(n)
+    spots = sorted(spots + stretches, key=lambda n: (n.t0, n.t1))
+    return [f"{fmt(n.t0)}-{fmt(n.t1)}  {n.text}" for n in spots]
 
 
 def note_for(count: int, k: int, name: str) -> str | None:

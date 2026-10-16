@@ -193,8 +193,8 @@ def read(path: Path, region: Region | None = None) -> Reading:
         if not d.resolved and d.kind == "join":
             o = next(x for x in obs if x.t0 == d.t)
             notices.append(Notice(round(d.t - 1, 2), round(o.t1, 2), "unresolved_join",
-                                  f"Couldn't tell how this screen joins the one before ({d.chosen} chosen, "
-                                  f"{', '.join(d.alternatives)} also fit).", True))
+                                  "Couldn't tell how this screen continues from the one before; check that no "
+                                  "measure is missing or printed twice here.", True))
     ranges = []
     for t0, t1, j0, j1 in main.unresolved_folds:
         first_seen = obs[main.slots[j0].obs]
