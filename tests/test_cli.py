@@ -59,6 +59,12 @@ def test_pdfs_are_copied_to_pdf_dir(video, tmp_path):
     assert (tmp_path / "copies" / "song.pdf").exists()
 
 
+def test_pdf_dir_same_as_out_skips_the_copy(video, tmp_path):
+    code = cli.run(args(video, tmp_path / "out"), {"pdf_dir": str(tmp_path / "out")})
+    assert code in (cli.EXIT_CLEAN, cli.EXIT_CHECK)
+    assert (tmp_path / "out" / "song.pdf").exists()
+
+
 @pytest.fixture(scope="module")
 def folded_reading(video):
     """The video's reading with a second, folded reading added, as when a replay can't be told from a repeat."""

@@ -101,7 +101,8 @@ def run(args: argparse.Namespace, config: dict) -> int:
     print(run_message(reading, passes))
     for p in pdfs:
         print(f"Wrote {p}")
-        if pdf_dir:
+        # When -o is already pdf_dir, the PDF is in place and copying it onto itself would fail.
+        if pdf_dir and (pdf_dir / p.name).resolve() != p.resolve():
             pdf_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(p, pdf_dir / p.name)
             print(f"Copied to {pdf_dir / p.name}")
@@ -114,8 +115,8 @@ def printed_candidates(reading: pipeline.Reading, passes: str) -> list[pipeline.
 
 
 def run_message(reading: pipeline.Reading, passes: str) -> str:
-    """The run's summary line. Pipeline's message describes the once-mode PDFs, so it is kept only when those
-    two PDFs were written."""
+    """The run's summary line: pipeline's message for a failed run or when two PDFs were written, else the
+    measure count of the one PDF written."""
     cands = printed_candidates(reading, passes)
     if reading.outcome == "tab" and len(cands) == 1:
         return f"Read {len(cands[0].measures)} measures."
