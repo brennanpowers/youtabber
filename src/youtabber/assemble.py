@@ -98,6 +98,7 @@ class Assembly:
     decisions: list[Decision] = field(default_factory=list)
     unresolved_folds: list[tuple[float, float, int, int]] = field(default_factory=list)
     view_slots: dict = field(default_factory=dict)
+    view_links: dict = field(default_factory=dict)   # view index -> cells the join tied to the view before
     sightings: dict = field(default_factory=dict)
     replay_next: int | None = None       # the slot a replay under way reaches next
     segment_starts: set = field(default_factory=set)
@@ -471,6 +472,7 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
                                                     basis, resolved))
             for i, j in links.items():
                 slot_of[i] = prev_slots[j]
+            A.view_links[o.index] = set(links)
             # A scrolling band that showed earlier music without scrolling onto it jumped back
             place_rest(o, slot_of, A, gap, gap_before, prev, use, words_of, fold_unresolved, scrolled > 0 and not links)
             if "numbers" in use:

@@ -407,8 +407,28 @@ def play_path(A: Assembly, obs: list[Obs]) -> list[tuple[int, int, int, float]]:
         sl = A.view_slots.get(o.index)
         if not sl:
             continue
+        sl = list(sl)
+        known = [i for i, s in enumerate(sl) if s is not None]
+        for a, b in zip(known, known[1:]):
+            # A replayed measure the alignment left out, between two it placed, is the slot between theirs
+            if b - a > 1 and sl[b] - sl[a] == b - a:
+                for k in range(a + 1, b):
+                    sl[k] = sl[a] + (k - a)
         play = play_times(o)
         step = [(s, o.index, i, play[i]) for i, s in enumerate(sl) if s is not None]
+        if o.mosaic is None:
+            seen = [i for i in (cell_at(o, (x, y)) for _, x, y in o.playhead) if i is not None]
+            if seen:
+                played = {x[0] for x in path}
+                head = [x for x in step if x[2] < min(seen)]
+                if all(x[0] in played for x in head):
+                    # Measures left of where the playhead first appears were played before this view
+                    step = [x for x in step if x[2] >= min(seen)]
+        tied = A.view_links.get(o.index)
+        if tied is not None:
+            # Cells the join tied to the view before were played there
+            path.extend(x for x in step if x[2] not in tied)
+            continue
         ids = [s for s, _, _, _ in step]
         done = [s for s, _, _, _ in path]
         k = min(len(ids), len(done))
