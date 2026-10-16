@@ -58,10 +58,10 @@ class Mosaic:
 
 
 def build(path: Path, crop: tuple[int, int, int, int], rows: tuple[int, int], staff_rows: tuple[int, int],
-          polarity: str, thr: float, gap: float, t0: float, t1: float, vote_rows: tuple[int, int]) -> Mosaic | None:
+          polarity: str, thr: float, gap: float, t0: float, t1: float, analysis_rows: tuple[int, int]) -> Mosaic | None:
     """Mosaic of the band rows `rows` (crop coordinates) between t0 and t1, or None if it never moves.
 
-    A fixed playhead is looked for in the crop rows `vote_rows` only.
+    The playhead and the motion are measured in the crop rows `analysis_rows` only.
     """
     y0, y1 = rows
     prev = None
@@ -79,14 +79,16 @@ def build(path: Path, crop: tuple[int, int, int, int], rows: tuple[int, int], st
         if slit is None:
             slit = int(SLIT_SHARE * w)
             first = band.copy()
-        votes = colored(f[vote_rows[0]:vote_rows[1]]).mean(axis=0) > PLAYHEAD_SHARE
+        votes = colored(f[analysis_rows[0]:analysis_rows[1]]).mean(axis=0) > PLAYHEAD_SHARE
         color_votes = votes.astype(np.int32) if color_votes is None else color_votes + votes
         g = to_gray(band, polarity)
-        content = (np.clip((thr + 40 - g.astype(np.float32)) / 80.0, 0, 1))
+        # Motion is measured in the analysis rows, whatever rows the mosaic keeps for printing
+        a0 = analysis_rows[0]
+        content = (np.clip((thr + 40 - g[a0 - y0:analysis_rows[1] - y0].astype(np.float32)) / 80.0, 0, 1))
         content[:, :slit] = 0
         # Motion is measured on the staffs only: lyrics, a fretboard or a title below them stay still
-        content[:staff_rows[0] - y0] = 0
-        content[staff_rows[1] - y0:] = 0
+        content[:staff_rows[0] - a0] = 0
+        content[staff_rows[1] - a0:] = 0
         if prev is not None:
             (dx, _), resp = cv2.phaseCorrelate(prev, content)
             # Right of the slit there is nothing but staff lines (past the last measure): the lines match at any

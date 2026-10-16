@@ -32,8 +32,8 @@ def whiten(gray: np.ndarray) -> np.ndarray:
 def print_cell(o: Obs, c: Cell, seg: Segment) -> PrintCell:
     """Measure c of view o as printed: the cell's columns over its system's print band, gray with dark ink,
     paper white."""
-    # The cell's ink box starts at its left barline, or a little before it for a system's first measure
-    x_left = c.x1 + 1 - c.ink.shape[1]
+    # The cell starts at its left barline, or a little before it for a system's first measure
+    x_left = c.print_x0
     box = o.image[c.band[0]:c.band[1], x_left:c.x1 + 1]
     top = c.y0 + c.ref_y - c.band[0]
     return PrintCell(whiten(to_gray(box, seg.polarity)), c.gap, top, c.x0 - x_left, c.x1 - c.x0)

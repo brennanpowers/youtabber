@@ -71,3 +71,9 @@ def test_band_reaches_chord_names_but_stops_at_a_blank_stretch():
     y0, y1 = print_band(marks, top=180.0, bottom=250.0, gap=14.0, lo=0, hi=400)
     assert 140 <= y0 <= 150          # the chord name and a little padding
     assert y1 >= 250
+
+
+def test_band_keeps_a_gap_of_paper_past_the_outer_lines():
+    from youtabber.parse import print_band
+    y0, y1 = print_band(np.zeros((400, 100), bool), top=180.0, bottom=250.0, gap=14.0, lo=0, hi=400)
+    assert y0 <= 180 - 14 and y1 >= 250 + 14

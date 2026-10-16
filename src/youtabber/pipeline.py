@@ -11,7 +11,7 @@ from youtabber.check import (dwell, empty_stretches, fmt, glide_gaps, glide_repe
                              possible_duplicates, too_few)
 from youtabber.observe import ABOVE_GAPS, BELOW_GAPS, PRINT_ABOVE_GAPS, ink_map, set_paper, to_gray, views_in
 from youtabber.parse import Cell, parse_view
-from youtabber.scan import Segment, scan
+from youtabber.scan import SCAN_FPS, Segment, scan
 from youtabber.video import probe
 
 # Every kind of evidence the assembler can weigh
@@ -26,6 +26,8 @@ GLIDE_MIN_SECONDS, GLIDE_SHARE = 20.0, 0.4
 GLIDE_GROUPS = 3
 # Frame-fixed ink: inked in this share of a segment's views, which must number at least FIXED_MIN_VIEWS
 FIXED_SHARE, FIXED_MIN_VIEWS = 0.85, 4
+# A page turn between two views takes less than this
+TURN_SECONDS = 1.0
 
 Region = tuple[int, int, int, int]
 
@@ -115,6 +117,7 @@ def read(path: Path, region: Region | None = None) -> Reading:
                                  "box": [seg.x0, seg.y0 + o.rows[0], seg.x1 - seg.x0, o.rows[1] - o.rows[0]]})
                 gaps.append(seg.gap)
                 continue
+        still = []
         for v in views:
             o = plate_obs(v, seg, si, thr, fthr, len(obs))
             obs.append(o)
@@ -122,8 +125,19 @@ def read(path: Path, region: Region | None = None) -> Reading:
             x0, y0, x1, y1 = v.print_rect
             if o.systems:
                 y0, y1 = min(ps.band[0] for ps in o.systems), max(ps.band[1] for ps in o.systems)
-            r.panels.append({"t0": round(v.t0, 2), "t1": round(v.t1, 2),
-                             "box": [int(x0 + seg.x0), int(y0 + seg.y0), int(x1 - x0), int(y1 - y0)]})
+            still.append({"t0": round(v.t0, 2), "t1": round(v.t1, 2),
+                          "box": [int(x0 + seg.x0), int(y0 + seg.y0), int(x1 - x0), int(y1 - y0)]})
+        # A view's print area stays in place through a page turn to the next view. The scan finds a segment's
+        # ends only to within half a scan step, so the first and last areas reach that far past them
+        for a, b in zip(still, still[1:]):
+            if b["t0"] - a["t1"] <= TURN_SECONDS:
+                a["t1"] = b["t0"]
+        if still:
+            before = segments[si - 1].t1 if si > 0 else 0.0
+            after = segments[si + 1].t0 if si + 1 < len(segments) else r.duration
+            still[0]["t0"] = round(max(before, min(still[0]["t0"], seg.t0 - 0.5 / SCAN_FPS)), 2)
+            still[-1]["t1"] = round(min(after, max(still[-1]["t1"], seg.t1 + 0.5 / SCAN_FPS)), 2)
+        r.panels += still
         gaps.append(seg.gap)
     r.views = obs
     gap = float(np.median(gaps))
@@ -309,9 +323,10 @@ def glide_obs(path: Path, crop, seg: Segment, si: int, found, thr: float, fthr: 
         g = float(np.median([s.tab.gap for s in group]))
         rows = (max(0, int(top - ABOVE_GAPS * g)), min(seg.y1 - seg.y0, int(bottom + BELOW_GAPS * g)))
         staff_rows = (max(rows[0], int(top)), min(rows[1], int(bottom) + 1))
-        # The mosaic reaches up to the chord names and labels; the playhead is looked for in the analysis rows
+        # The mosaic reaches up to the chord names and labels; the playhead and the motion use the analysis rows
         print_rows = (max(0, int(top - PRINT_ABOVE_GAPS * g)), rows[1])
-        m = glide.build(path, crop, print_rows, staff_rows, seg.polarity, thr, seg.gap, seg.t0, seg.t1, rows)
+        m = glide.build(path, crop, print_rows, staff_rows, seg.polarity, thr, seg.gap, seg.t0, seg.t1,
+                        analysis_rows=rows)
         if m is not None:
             break
     if m is None:

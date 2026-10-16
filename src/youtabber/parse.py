@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from youtabber.observe import PRINT_ABOVE_GAPS, PRINT_BELOW_GAPS, colored, gray_pixels, ink_map, to_gray
+from youtabber.observe import PRINT_ABOVE_GAPS, PRINT_BELOW_GAPS, PRINT_MARGIN_GAPS, colored, gray_pixels, ink_map, to_gray
 from youtabber.scan import System, systems_in
 
 # A barline covers at least this share of the rows between the tab staff's top and bottom lines
@@ -44,6 +44,7 @@ class Cell:
     # Between two barlines, or a system's own first or last measure; False when the panel edge cuts it
     complete: bool = True
     band: tuple[int, int] = (0, 0)          # rows to print, crop coordinates
+    print_x0: int = 0                       # first column to print, crop coordinates
 
 
 @dataclass
@@ -224,9 +225,9 @@ def opening_line(struct: np.ndarray, st) -> bool:
     return band.size > 0 and bool((band.mean(axis=0) >= BAR_COVER).any())
 
 
-# A run of blank rows this many line gaps tall ends the marks that belong to a system; chord names sit up to
-# about 1.5 gaps above the staff with blank paper between
-BLANK_GAPS = 2.0
+# A run of blank rows this many line gaps tall ends the marks that belong to a system; chord names can sit
+# 2.5 gaps of blank paper above the measure numbers
+BLANK_GAPS = 3.0
 
 
 def print_band(marks: np.ndarray, top: float, bottom: float, gap: float, lo: int, hi: int) -> tuple[int, int]:
@@ -249,7 +250,10 @@ def print_band(marks: np.ndarray, top: float, bottom: float, gap: float, lo: int
     y0 = reach(int(top), -1, max(lo, int(top - PRINT_ABOVE_GAPS * gap)))
     y1 = reach(int(bottom), 1, min(hi - 1, int(bottom + PRINT_BELOW_GAPS * gap)))
     pad = max(2, int(0.3 * gap))
-    return max(lo, y0 - pad), min(hi, y1 + 1 + pad)
+    # Digits sit centered on the outer lines, so the band always keeps a full margin of paper past them
+    y0 = min(y0 - pad, int(np.floor(top - PRINT_MARGIN_GAPS * gap)))
+    y1 = max(y1 + 1 + pad, int(np.ceil(bottom + PRINT_MARGIN_GAPS * gap)) + 1)
+    return max(lo, y0), min(hi, y1)
 
 
 def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], polarity: str, thr: float, fthr: float,
@@ -323,7 +327,10 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
         for ci, (a, b, kind) in enumerate(edges):
             # The first measure of a system takes in the margin to its left, where some players print the
             # measure number; two pages that differ only there are different pages
-            left = int(max(rx0, a - 1.5 * st.gap)) if ci == 0 and a <= st.x0 + 2 else a
+            first = ci == 0 and a <= st.x0 + 2
+            left = int(max(rx0, a - 1.5 * st.gap)) if first else a
+            # The printed first measure takes in the same left margin, kept inside the print area
+            print_x0 = int(max(px0, a - 1.5 * st.gap)) if first else a
             box_ink = ink[ps.y0:ps.y1, left:b + 1].copy()
             box_tint = tint[ps.y0:ps.y1, left:b + 1].copy()
             # Faint marks count only above the system, where light-gray measure numbers are printed; inside
@@ -340,5 +347,5 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
                                  gap=st.gap, ref_y=int(round(st.top)) - ps.y0, mid_y=(st.top + st.bottom) / 2,
                                  tint=box_tint,
                                  complete=kind == "full" or (kind == "lead" and starts_inside)
-                                 or (kind == "tail" and ends_inside), band=ps.band))
+                                 or (kind == "tail" and ends_inside), band=ps.band, print_x0=print_x0))
     return out

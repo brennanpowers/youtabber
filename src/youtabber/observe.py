@@ -193,14 +193,12 @@ def grow(ok: np.ndarray, i: int, step: int, slack: int = 3) -> int:
 
 def panel_rect(frame: np.ndarray, paper: np.ndarray, seed: tuple[int, int, int, int], gap: float,
                above: float = ABOVE_GAPS, below: float = BELOW_GAPS,
-               tint_is_paper: bool = False) -> tuple[int, int, int, int]:
+               for_print: bool = False) -> tuple[int, int, int, int]:
     """(x0, y0, x1, y1) of the paper panel around the seed box (the staffs), grown while rows and columns stay paper.
 
-    With `tint_is_paper`, colored pixels count as paper: a highlight box over the whole band is still music.
+    With `for_print`, the area to print from, which keeps a margin around the staffs.
     """
     m = (np.abs(frame.astype(np.int16) - paper.astype(np.int16)).max(axis=2) < PAPER_TOL)
-    if tint_is_paper:
-        m |= colored(frame)
     h, w = m.shape
     sx0, sy0, sx1, sy1 = seed
     sx0, sx1 = max(0, sx0), min(w, sx1)
@@ -211,7 +209,7 @@ def panel_rect(frame: np.ndarray, paper: np.ndarray, seed: tuple[int, int, int, 
     # rows are footage that happens to match (dark rooms behind a dark theme)
     y0 = max(grow(rows, sy0, -1, slack), int(sy0 - above * gap))
     y1 = min(grow(rows, sy1 - 1, 1, slack) + 1, int(sy1 + below * gap))
-    if tint_is_paper:
+    if for_print:
         # Digits sit centered on the outer staff lines, so the print area always reaches past them
         y0 = max(0, min(y0, int(sy0 - PRINT_MARGIN_GAPS * gap)))
         y1 = min(h, max(y1, int(sy1 + PRINT_MARGIN_GAPS * gap)))
@@ -247,7 +245,9 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         rect = tuple(int(np.median([c[2][i] for c in chunk])) for i in range(4))
         v = View(chunk[0][0], chunk[-1][0] + 1 / OBS_FPS, plate, times=[t for t, _, _, _ in chunk], rect=rect)
         mid_seed = chunk[len(chunk) // 2][3]
-        v.print_rect = panel_rect(plate, paper, mid_seed, gap, PRINT_ABOVE_GAPS, PRINT_BELOW_GAPS, tint_is_paper=True)
+        # On a dark theme, footage in a dark room looks like paper, so the print area keeps the panel's reach
+        above, below = (ABOVE_GAPS, BELOW_GAPS) if polarity == "light" else (PRINT_ABOVE_GAPS, PRINT_BELOW_GAPS)
+        v.print_rect = panel_rect(plate, paper, mid_seed, gap, above, below, for_print=True)
         x0, y0, x1, y1 = rect
         for t, f, _, _ in chunk:
             dev = (np.abs(f[y0:y1, x0:x1].astype(np.int16) - plate[y0:y1, x0:x1].astype(np.int16)).max(axis=2)
