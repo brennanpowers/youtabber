@@ -25,6 +25,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 CACHE = Path.home() / ".cache" / "youtabber"
@@ -55,6 +56,19 @@ MUST_WARN = {"oDGo0LDH9UE", "hOnXJYCePa8"}
 GLIDES = {"ksSDjQ8dJUs", "oDGo0LDH9UE", "hOnXJYCePa8", "DeDDz4c_ajE", "sRWpd8EcZ3c"}
 # Verdicts that count as a good PDF
 GOOD = {"correct", "near_correct", "alternate_correct"}
+# Largest share of the truth panel's ink a video's print area may leave out
+CUT_INK_MAX = 0.02
+# Gray levels a cursor box or highlight bar takes once the paper is whitened
+TINT_LO, TINT_HI = 170, 250
+# A printed measure whose solid light-gray area is above this share keeps cursor tint
+RESIDUE_SHARE = 0.15
+# A light-gray column over this share of a measure's height is a playhead line left in
+LINE_SHARE = 0.8
+# A printed measure cut by the panel edge and narrower than this share of the video's median printed measure is a
+# sliver (short complete measures, such as 3/8 bars among 6/8 ones, are not)
+SLIVER_SHARE = 0.5
+# Slivers are gated only on this video; elsewhere they are reported
+SLIVER_CHECK = {"lJAnWNgrrTo"}
 
 
 def eval_dir(arg: str | None) -> Path:
@@ -236,6 +250,21 @@ def gate(kind: str, name: str, reports: list[dict], base: dict, styles: dict) ->
                 out.append(f"{name} {vid}: {v} with {r.get('unwarned')} errors without a notice near their play time")
             if vid in NO_EXTRAS and p.get("extra"):
                 out.append(f"{name} {vid}: {len(p['extra'])} extra measures, none allowed")
+        if kind == "pdf" and r.get("pdf"):
+            m = r["pdf"]
+            if m["cut_ink"] is None or m["cut_ink"] > CUT_INK_MAX:
+                out.append(f"{name} {vid}: cut_ink {m['cut_ink']}, at most {CUT_INK_MAX}")
+            if m["residue_cells"]:
+                out.append(f"{name} {vid}: {len(m['residue_cells'])} measures keep cursor tint")
+            if m["slivers"] and vid in SLIVER_CHECK:
+                out.append(f"{name} {vid}: {len(m['slivers'])} printed measures are slivers")
+            if m["paper"] != 255:
+                out.append(f"{name} {vid}: paper prints at {m['paper']}, not white")
+            if m["cut_staff"]:
+                out.append(f"{name} {vid}: {len(m['cut_staff'])} printed measures lost their staff")
+            # Widening the print area lowers cut ink and can raise spill; spill may not grow past the reference
+            if m["spill"] is not None and m["reference_spill"] is not None and m["spill"] > m["reference_spill"] + 0.005:
+                out.append(f"{name} {vid}: spill {m['spill']} above the reference {m['reference_spill']}")
         if kind == "accept":
             glide = "smooth_scroll" in styles.get(vid, [])
             if glide:
@@ -267,6 +296,55 @@ def print_table(name: str, reports: list[dict], base: dict) -> None:
     print(f"total {total:.1f}" + (f" (reference {ref:.1f})" if ref is not None else ""))
 
 
+def tint_share(img: np.ndarray, gap: float) -> tuple[float, bool]:
+    """(share of solid light-gray area, whether a light-gray vertical line runs through) for a printed measure.
+    Staff lines and the soft edges of digits are thin, so an opening of about half a line gap removes them first."""
+    light = ((img >= TINT_LO) & (img < TINT_HI)).astype(np.uint8)
+    k = max(3, int(0.5 * gap))
+    solid = cv2.morphologyEx(light, cv2.MORPH_OPEN, np.ones((k, k), np.uint8))
+    return float(solid.mean()), bool((light.mean(axis=0) > LINE_SHARE).any())
+
+
+def pdf_metrics(ev: Path, truth, result: dict, folder: Path) -> dict:
+    """Cut ink and spill of the print area against the truth panel, and printed measures that keep tint or are
+    cut short, for one video."""
+    ci = load(ev / "mediator" / "pdfpass" / "cut_ink.py", "frozen_cut_ink")
+    times = ci.sample_times(truth.data)
+    frames = ci.read_frames(CACHE / f"{truth.id}.mp4", [t for t, _ in times])
+    cuts, spills = [], []
+    for t, tp in times:
+        f = frames.get(t)
+        if f is None:
+            continue
+        cut, _, spill, _, _ = ci.measure(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY), tp["box"],
+                                         ci.side_box_at(result.get("panels", []), t), tp["polarity"])
+        if cut is not None:
+            cuts.append(cut)
+        if spill is not None:
+            spills.append(spill)
+    meta = read_json(folder / "meta.json") or {"measures": []}
+    residue, slivers = [], []
+    images = [(m, cv2.imread(str(folder / m["image"]), cv2.IMREAD_GRAYSCALE)) for m in meta["measures"]]
+    # Widths in tab line gaps, so measures from layouts of different sizes compare
+    widths = [img.shape[1] / m["gap"] for m, img in images]
+    typical = float(np.median(widths)) if widths else 0.0
+    for (m, img), w in zip(images, widths):
+        share, line = tint_share(img, m["gap"])
+        if share > RESIDUE_SHARE or line:
+            residue.append(f"{m['image']} (t {m['t']}, label {m['label']})")
+        if not m["complete"] and w < SLIVER_SHARE * typical:
+            slivers.append(f"{m['image']} (t {m['t']}, {w:.1f} gaps wide)")
+    from youtabber.staff import find_staffs
+    cut_staff = [m["image"] for m, img in images if not any(len(st.lines) >= 4 for st in find_staffs(img))]
+    reference = read_json(ev / "mediator" / "pdfpass" / "cut_ink.json") or {"videos": {}}
+    ref_spill = reference["videos"].get(truth.id, {}).get("opus", {}).get("mean_spill_nonpaper")
+    return {"cut_ink": round(float(np.mean(cuts)), 4) if cuts else None,
+            "spill": round(float(np.mean(spills)), 4) if spills else None,
+            "reference_spill": ref_spill,
+            "paper": min((int(np.percentile(img, 90)) for _, img in images), default=255),
+            "residue_cells": residue, "slivers": slivers, "cut_staff": cut_staff}
+
+
 def cmd_score(a) -> None:
     ev = eval_dir(a.eval)
     sc = load(ev / "mediator" / "score.py", "frozen_score")
@@ -282,10 +360,19 @@ def cmd_score(a) -> None:
             result = sc.load_result(a.out / name, truth.id)
             rep = sc.score_video(truth, result)
             rep["unwarned"] = unwarned(sc, truth, result, rep)
+            if name == "confirm" and result and result.get("outcome") == "tab":
+                rep["pdf"] = pdf_metrics(ev, truth, result, a.out / name / truth.id)
             reports.append(rep)
         (a.out / f"score-{name}.json").write_text(json.dumps(
             {"total_points": sum(r["points"] for r in reports), "videos": reports}, indent=1, default=str))
         print_table(name, reports, base)
+        if name == "confirm":
+            print(f"{'video':<12} {'cut_ink':>7} {'spill':>6} {'ref':>6} {'paper':>5} {'tint':>4} {'sliv':>4} {'staff':>5}")
+            for r in reports:
+                m = r.get("pdf")
+                if m:
+                    print(f"{r['id']:<12} {m['cut_ink']!s:>7} {m['spill']!s:>6} {m['reference_spill']!s:>6} "
+                          f"{m['paper']:>5} {len(m['residue_cells']):>4} {len(m['slivers']):>4} {len(m['cut_staff']):>5}")
         if a.gate:
             problems += gate(a.gate, name, reports, base, styles)
     if a.gate:
