@@ -105,7 +105,7 @@ def clean(band: np.ndarray, seg: Segment, gap: float, cols: tuple[int, int] | No
     a, b = cols or (0, band.shape[1])
     out = np.full(band.shape[:2], 255, np.uint8)
     # OpenCV crashes on an empty image
-    if b <= a:
+    if b <= a or band.shape[0] == 0:
         return out
     part = band[:, a:b]
     gray = to_gray(part, seg.polarity).astype(np.float32)
@@ -133,11 +133,16 @@ def print_cell(o: Obs, c: Cell, seg: Segment) -> PrintCell:
     i = next(k for k, (x, _, _) in enumerate(parts) if x is c)
     _, left_bar, first_col = parts[i]
     starts = [p[1] for p in parts]
+    st = ps.system.tab
     b0, b1 = c.band
     # Only the paper panel counts: footage left or right of it would skew the paper level
     px0, _, px1, _ = o.print_rect
-    gray = clean(o.image[b0:b1], seg, c.gap, (px0, px1))
-    st = ps.system.tab
+    if b1 > b0:
+        gray = clean(o.image[b0:b1], seg, c.gap, (px0, px1))
+    else:
+        # A band with no rows prints as blank paper as tall as the staff, since the page layout needs an image to place
+        b0, b1 = int(st.top), int(np.ceil(st.bottom)) + 1
+        gray = np.full((b1 - b0, o.image.shape[1]), 255, np.uint8)
     sys_top = int(round((ps.system.notation or st).top)) - b0
     sys_bottom = int(round(st.bottom)) - b0
     # Mark rows reach close to the outer staff lines, so a number sitting on the staff is labeled whole

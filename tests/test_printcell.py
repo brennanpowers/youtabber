@@ -1,9 +1,10 @@
 import cv2
 import numpy as np
 
+from youtabber.assemble import Obs
 from youtabber.observe import panel_rect
-from youtabber.parse import Cell
-from youtabber.printcell import clean, joined_cells, mark_groups, owner
+from youtabber.parse import Cell, parse_view
+from youtabber.printcell import clean, joined_cells, mark_groups, owner, print_cell
 from youtabber.scan import Segment
 
 
@@ -84,6 +85,21 @@ def test_an_empty_column_range_prints_white():
     band = np.full((40, 100, 3), 30, np.uint8)
     seg = Segment(0.0, 1.0, 10.0, "dark", paper=np.array([250.0, 250.0, 250.0]))
     assert (clean(band, seg, 10.0, (60, 60)) == 255).all()
+
+
+def test_a_measure_with_an_empty_band_prints_as_blank_paper():
+    img = np.full((200, 800, 3), 255, np.uint8)
+    for i in range(6):
+        cv2.line(img, (20, 60 + i * 14), (780, 60 + i * 14), (60, 60, 60), 1)
+    for x in (100, 400, 700):
+        cv2.line(img, (x, 60), (x, 130), (0, 0, 0), 2)
+    systems = parse_view(0, img, (0, 0, 800, 200), "dark", 140.0, 229.0, 14.0)
+    c = next(x for x in systems[0].cells if x.kind == "full")
+    c.band = (140, 40)
+    o = Obs(0, 0.0, 1.0, systems[0].cells, [], 0, (0, 0), image=img, systems=systems, print_rect=(0, 0, 800, 200))
+    seg = Segment(0.0, 1.0, 14.0, "dark", paper=np.array([255.0, 255.0, 255.0]))
+    pc = print_cell(o, c, seg)
+    assert pc.image.shape[0] >= 70 and (pc.image == 255).all()
 
 
 def strip_frame(left_strip: bool) -> tuple[np.ndarray, tuple[int, int, int, int]]:

@@ -266,8 +266,11 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
     sub[ry1:] = paper
     sub[:, :rx0] = paper
     sub[:, rx1:] = paper
+    # A staff with no rows inside the print area is not on the paper, such as the strings of a fretboard drawn
+    # below it
+    px0, py0, px1, py1 = print_rect or rect
+    syss = [s for s in systems_in(sub) if s.top < py1 and s.tab.bottom > py0]
     # A "tab staff" spaced much closer than the view's widest-spaced one is beams or text lines, not a staff
-    syss = systems_in(sub)
     widest = max((s.tab.gap for s in syss), default=0.0)
     syss = [s for s in syss if s.tab.gap >= CLOSE_STAFF_SHARE * widest]
     colored_plate = colored(plate)
@@ -281,7 +284,6 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
     faint &= ~cv2.dilate(ink.astype(np.uint8), np.ones((7, 7), np.uint8)).astype(bool)
     # Marks that may be printed with a system: everything visible on the unpainted plate inside the print area,
     # colored marks left out
-    px0, py0, px1, py1 = print_rect or rect
     print_marks = np.zeros_like(ink)
     print_marks[py0:py1, px0:px1] = ink_map(to_gray(plate, polarity), fthr, gap, plate)[py0:py1, px0:px1]
     out: list[ParsedSystem] = []
