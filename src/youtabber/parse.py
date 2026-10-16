@@ -38,7 +38,6 @@ class Cell:
     mid_y: float = 0.0                      # middle of the tab staff, crop coordinates
     tint: np.ndarray | None = None          # colored (cursor-tinted) pixels in the cell box
     number: int | None = None
-    number_text: str | None = None
     slot: int | None = None
     glided: bool = False                    # read from a glide mosaic
     # Between two barlines, or a system's own first or last measure; False when the panel edge cuts it

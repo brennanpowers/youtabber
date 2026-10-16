@@ -38,7 +38,6 @@ class Mosaic:
     offsets: np.ndarray         # how far the band has moved since the first sampled frame, per frame
     times: np.ndarray           # time of each sampled frame
     ref_x: float                # screen x (crop coordinates) where measures are said to be played
-    slit: int                   # screen x of the reading column
     lead: int                   # canvas columns that sat left of ref_x in the first frame
     seeded: int = 0             # canvas columns taken from the first frame alone
     tail_from: int = 0          # first canvas column taken from the last frame alone
@@ -117,5 +116,5 @@ def build(path: Path, crop: tuple[int, int, int, int], rows: tuple[int, int], st
     # Music already left of the slit in the first frame, and still right of it in the last, never crossed it
     start = max(0, int(ref_x - SEED_BACK_GAPS * gap)) if ref_x < slit else slit
     image = np.concatenate([first[:, start:slit]] + strips + [last[:, slit:]], axis=1)
-    return Mosaic(image, y0, np.array(offsets), np.array(times), ref_x, slit, int(ref_x) - start, slit - start,
+    return Mosaic(image, y0, np.array(offsets), np.array(times), ref_x, int(ref_x) - start, slit - start,
                   image.shape[1] - (last.shape[1] - slit))

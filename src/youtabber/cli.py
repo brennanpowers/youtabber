@@ -98,20 +98,43 @@ def run(args: argparse.Namespace, config: dict) -> int:
         print(f"  {fmt(n.t0)}-{fmt(n.t1)}  {n.text}")
     if reading.outcome == "fail":
         raise SystemExit(f"{reading.message}\nDetails are in {out / 'meta.json'}")
-    print(reading.message)
+    print(run_message(reading, passes))
     for p in pdfs:
         print(f"Wrote {p}")
         if pdf_dir:
             pdf_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(p, pdf_dir / p.name)
             print(f"Copied to {pdf_dir / p.name}")
-    return EXIT_CHECK if reading.notices or len(pdfs) > 1 else EXIT_CLEAN
+    return EXIT_CHECK if to_check(reading, passes) or len(pdfs) > 1 else EXIT_CLEAN
+
+
+def printed_candidates(reading: pipeline.Reading, passes: str) -> list[pipeline.Candidate]:
+    """The readings that get a PDF: the every-pass one in all mode, else the main one and any folded one."""
+    return reading.every_pass if passes == "all" else reading.candidates
+
+
+def run_message(reading: pipeline.Reading, passes: str) -> str:
+    """The run's summary line. Pipeline's message describes the once-mode PDFs, so it is kept only when those
+    two PDFs were written."""
+    cands = printed_candidates(reading, passes)
+    if reading.outcome == "tab" and len(cands) == 1:
+        return f"Read {len(cands[0].measures)} measures."
+    return reading.message
+
+
+def to_check(reading: pipeline.Reading, passes: str) -> list[pipeline.Notice]:
+    """Notices that mean the run needs checking. A notice without doubt is about the folded PDF, which all mode
+    doesn't write."""
+    return [n for n in reading.notices if n.doubt or passes != "all"]
 
 
 def write_outputs(reading: pipeline.Reading, src: source.Source, out: Path, name: str, passes: str,
                   upscale: enhance.Upscaler | None, started: float | None = None) -> list[Path]:
     """Write the PDFs, meta.json, measures/ and views/ for one reading. Returns the PDFs written."""
     out.mkdir(parents=True, exist_ok=True)
+    # A PDF left from an earlier run of the same video would sit beside a meta.json that doesn't list it
+    for old in (f"{name}.pdf", f"{name}-folded.pdf"):
+        (out / old).unlink(missing_ok=True)
     for folder in ("measures", "views"):
         (out / folder).mkdir(exist_ok=True)
         for old in (out / folder).glob("*.png"):
@@ -119,7 +142,7 @@ def write_outputs(reading: pipeline.Reading, src: source.Source, out: Path, name
     pdfs: list[Path] = []
     printed: list[printcell.PrintCell] = []
     if reading.outcome == "tab":
-        cands = reading.every_pass if passes == "all" else reading.candidates
+        cands = printed_candidates(reading, passes)
         spots = spot_lines(reading.notices)
         for k, cand in enumerate(cands):
             cells = [printcell.print_cell(reading.views[m.view], m.cell, reading.segments[reading.views[m.view].seg])
@@ -205,8 +228,8 @@ def meta(reading: pipeline.Reading, src: source.Source, passes: str, pdfs: list[
          printed: list[printcell.PrintCell], started: float | None = None) -> dict:
     """Everything read from the video, to check a result without rerunning it and for later tools."""
     A = reading.assembly
-    status = "failed" if reading.outcome == "fail" else ("warn" if reading.notices or len(pdfs) > 1 else "ok")
-    cands = reading.every_pass if passes == "all" else reading.candidates
+    status = "failed" if reading.outcome == "fail" else ("warn" if to_check(reading, passes) or len(pdfs) > 1 else "ok")
+    cands = printed_candidates(reading, passes)
     views = []
     for o in reading.views:
         # Still views are in crop coordinates; adding the crop's corner gives source pixels
@@ -235,7 +258,7 @@ def meta(reading: pipeline.Reading, src: source.Source, passes: str, pdfs: list[
     return {
         "version": 2,
         "source": {"id": src.id, "url": src.url, "title": src.title, "credit": src.credit},
-        "outcome": {"status": status, "reason": reading.fail_reason, "message": reading.message,
+        "outcome": {"status": status, "reason": reading.fail_reason, "message": run_message(reading, passes),
                     "pdfs": [p.name for p in pdfs]},
         "passes": passes,
         "numbering": reading.numbering,

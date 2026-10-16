@@ -5,7 +5,7 @@ import shutil
 import pytest
 
 from synth import Song, write_video
-from youtabber import cli
+from youtabber import cli, pipeline
 
 pytestmark = pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")
 
@@ -57,3 +57,27 @@ def test_region_around_the_tab_reads_it(video, tmp_path):
 def test_pdfs_are_copied_to_pdf_dir(video, tmp_path):
     cli.run(args(video, tmp_path / "out"), {"pdf_dir": str(tmp_path / "copies")})
     assert (tmp_path / "copies" / "song.pdf").exists()
+
+
+@pytest.fixture(scope="module")
+def folded_reading(video):
+    """The video's reading with a second, folded reading added, as when a replay can't be told from a repeat."""
+    r = pipeline.read(video)
+    r.candidates.append(pipeline.Candidate("folded", "once", list(r.candidates[0].measures)))
+    r.notices.append(pipeline.Notice(1.0, 2.0, "unresolved_fold", "These measures repeat.", False))
+    r.message = "Wrote two PDFs."
+    return r
+
+
+def test_all_mode_writes_one_pdf_and_says_so(folded_reading, video, tmp_path, monkeypatch):
+    monkeypatch.setattr(cli.pipeline, "read", lambda path, region=None: folded_reading)
+    out = tmp_path / "out"
+    assert cli.run(args(video, out), {}) == cli.EXIT_CHECK
+    assert sorted(p.name for p in out.glob("*.pdf")) == ["song-folded.pdf", "song.pdf"]
+    # Rerun into the same folder: the folded PDF from the first run is gone, and the fold choice alone is no
+    # reason to check
+    assert cli.run(args(video, out, passes="all"), {}) == cli.EXIT_CLEAN
+    meta = json.loads((out / "meta.json").read_text())
+    assert [p.name for p in out.glob("*.pdf")] == meta["outcome"]["pdfs"] == ["song.pdf"]
+    assert meta["outcome"]["status"] == "ok"
+    assert "two PDFs" not in meta["outcome"]["message"]

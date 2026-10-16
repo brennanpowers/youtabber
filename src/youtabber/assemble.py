@@ -44,7 +44,7 @@ NAV_WORDS = ("D.S", "DS.", "D.C", "DC.", "CODA", "FINE", "SEGNO")
 
 @dataclass
 class Obs:
-    """One still view, ready for assembly."""
+    """One still view or one glide mosaic, ready for assembly."""
     index: int
     t0: float
     t1: float

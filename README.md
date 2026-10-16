@@ -34,8 +34,9 @@ youtabber URL --passes all             # print every pass of a replayed section
 youtabber URL --no-enhance             # skip sharpening, for a smaller file
 ```
 
-The output folder holds the PDF, `meta.json` (what was read, with times), and `views/` (each screen
-it read, with the measures it found boxed), so you can check a PDF that looks wrong against the video.
+The output folder holds the PDF, `meta.json` (what was read, with times), `measures/` (one image per
+printed measure), and `views/` (each screen it read, with the measures it found boxed), so you can check a
+PDF that looks wrong against the video.
 
 It exits with 0 when the PDF is clean, 1 when no PDF was made, and 3 when the PDF has spots to check
 (listed on its last page) or a second PDF was written with replayed sections printed once.

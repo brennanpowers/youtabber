@@ -410,7 +410,8 @@ def play_path(A: Assembly, obs: list[Obs]) -> list[tuple[int, int, int, float]]:
         sl = list(sl)
         known = [i for i, s in enumerate(sl) if s is not None]
         for a, b in zip(known, known[1:]):
-            # A replayed measure the alignment left out, between two it placed, is the slot between theirs
+            # A cell left unplaced between two placed cells whose slots are as far apart as the cells takes the
+            # slot between theirs
             if b - a > 1 and sl[b] - sl[a] == b - a:
                 for k in range(a + 1, b):
                     sl[k] = sl[a] + (k - a)
@@ -422,7 +423,7 @@ def play_path(A: Assembly, obs: list[Obs]) -> list[tuple[int, int, int, float]]:
                 played = {x[0] for x in path}
                 head = [x for x in step if x[2] < min(seen)]
                 if all(x[0] in played for x in head):
-                    # Measures left of where the playhead first appears were played before this view
+                    # Measures left of the leftmost cell the playhead touched were played before this view
                     step = [x for x in step if x[2] >= min(seen)]
         tied = A.view_links.get(o.index)
         if tied is not None:
