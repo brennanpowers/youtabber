@@ -101,11 +101,15 @@ def run(args: argparse.Namespace, config: dict) -> int:
     print(run_message(reading, passes))
     for p in pdfs:
         print(f"Wrote {p}")
-        # When -o is already pdf_dir, the PDF is in place and copying it onto itself would fail.
-        if pdf_dir and (pdf_dir / p.name).resolve() != p.resolve():
-            pdf_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(p, pdf_dir / p.name)
-            print(f"Copied to {pdf_dir / p.name}")
+        if not pdf_dir:
+            continue
+        target = pdf_dir / p.name
+        # When -o is already pdf_dir, however it is spelled, the PDF is in place and copying it onto itself fails
+        if target.exists() and target.samefile(p):
+            continue
+        pdf_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(p, target)
+        print(f"Copied to {target}")
     return EXIT_CHECK if to_check(reading, passes) or len(pdfs) > 1 else EXIT_CLEAN
 
 

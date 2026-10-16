@@ -59,10 +59,21 @@ def test_pdfs_are_copied_to_pdf_dir(video, tmp_path):
     assert (tmp_path / "copies" / "song.pdf").exists()
 
 
-def test_pdf_dir_same_as_out_skips_the_copy(video, tmp_path):
+def test_pdf_dir_same_as_out_skips_the_copy(video, tmp_path, capsys):
     code = cli.run(args(video, tmp_path / "out"), {"pdf_dir": str(tmp_path / "out")})
     assert code in (cli.EXIT_CLEAN, cli.EXIT_CHECK)
     assert (tmp_path / "out" / "song.pdf").exists()
+    assert "Copied to" not in capsys.readouterr().out
+
+
+def test_pdf_dir_spelled_in_other_case_skips_the_copy(video, tmp_path, capsys):
+    (tmp_path / "out").mkdir()
+    if not (tmp_path / "OUT").exists():
+        pytest.skip("filesystem is case-sensitive")
+    code = cli.run(args(video, tmp_path / "out"), {"pdf_dir": str(tmp_path / "OUT")})
+    assert code in (cli.EXIT_CLEAN, cli.EXIT_CHECK)
+    assert (tmp_path / "out" / "song.pdf").exists()
+    assert "Copied to" not in capsys.readouterr().out
 
 
 @pytest.fixture(scope="module")
