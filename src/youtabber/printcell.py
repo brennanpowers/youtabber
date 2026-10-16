@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 
 from youtabber.assemble import Obs
-from youtabber.observe import to_gray
+from youtabber.observe import chroma, set_paper, to_gray
 from youtabber.parse import Cell
 from youtabber.scan import Segment
 
@@ -17,6 +17,14 @@ WHITE_FROM = 240
 NUMBER_REACH = 1.5
 # Anything this much darker than white, once the paper is whitened, is a mark
 MARK_LEVEL = 235
+# Tinted areas at least this many square line gaps big, or taller than three gaps, are cursor boxes, highlight
+# bars or playhead lines; smaller colored marks, such as red measure numbers, are ink
+TINT_AREA_GAPS = 2.0
+# Color spread, after dividing out the paper's color, above which a pixel is tinted. Gray staff lines on yellow
+# paper come out of video compression at about 31, so the limit sits above that.
+PRINT_COLOR_SAT = 40
+# Share of the paper level a tinted pixel may be darker than its area's typical gray and still count as tint
+LIFT_SLACK = 0.1
 
 
 @dataclass
@@ -70,11 +78,26 @@ def mark_groups(marks: np.ndarray, x_off: int, starts: list[int], gap: float) ->
 
 
 def clean(band: np.ndarray, seg: Segment, gap: float, cols: tuple[int, int] | None = None) -> np.ndarray:
-    """Gray image of a band with dark ink on white paper. Only columns cols (the paper panel) are kept; the rest
-    print white."""
+    """Gray image of a band with dark ink on white paper, with cursor and highlight tint lifted to paper. Only
+    columns cols (the paper panel) are kept; the rest print white."""
+    set_paper(seg.paper)
     a, b = cols or (0, band.shape[1])
+    part = band[:, a:b]
+    gray = to_gray(part, seg.polarity).astype(np.float32)
+    paper = float(np.median(gray))
+    tinted = (chroma(part) > PRINT_COLOR_SAT).astype(np.uint8)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(tinted, connectivity=8)
+    big = [j for j in range(1, n) if stats[j][4] >= TINT_AREA_GAPS * gap * gap or stats[j][3] >= 3 * gap]
+    # On dark themes the ink itself is colored, so nothing is lifted
+    if seg.polarity != "light":
+        for j in big:
+            body = labels == j
+            # Only the light body of a box becomes paper. Ink keeps its darkness: lines and digits under a box are
+            # darker than the box, and a tinted barline is darker than half the paper.
+            level = float(np.median(gray[body])) - LIFT_SLACK * paper
+            gray[body & (gray >= level) & (gray > 0.5 * paper)] = paper
     out = np.full(band.shape[:2], 255, np.uint8)
-    out[:, a:b] = whiten(to_gray(band[:, a:b], seg.polarity))
+    out[:, a:b] = whiten(gray.astype(np.uint8))
     return out
 
 
