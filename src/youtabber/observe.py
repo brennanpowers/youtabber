@@ -14,6 +14,9 @@ MIN_VIEW_SECONDS = 1.2
 SETTLE_FRAMES = 2
 # Frames kept per view for the median; more adds time, not quality
 MAX_PLATE_FRAMES = 48
+# Frames whose pictures a view keeps (64 s at 6 fps); past this, pictures are thinned so a page held for minutes
+# doesn't fill memory with full-size frames
+MAX_VIEW_FRAMES = 8 * MAX_PLATE_FRAMES
 # Ink is darker than this share of the way from the darkest ink to the paper
 INK_LEVEL = 0.55
 # Pixels that differ from the plate by this much (any color channel) are cursor, not paper
@@ -240,27 +243,63 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
     cand = None      # a new picture that may be the next view
     held: list = []  # frames that match cand, waiting to see whether it holds
     thr = fthr = None
+    # A long view keeps the picture of every `stride`-th frame only; the other frames keep their playhead,
+    # found against the plate so far, in `points`
+    stride = 1
+    points: dict[float, tuple[float, float] | None] = {}
+    so_far = None    # (plate, panel rect) of the view's frames when it was last thinned
 
-    def build(chunk) -> View:
-        step = max(1, len(chunk) // MAX_PLATE_FRAMES)
-        plate = np.median(np.stack([f for _, f, _, _ in chunk[::step]]), axis=0).astype(np.uint8)
-        rect = tuple(int(np.median([c[2][i] for c in chunk])) for i in range(4))
+    def plate_of(chunk) -> np.ndarray:
+        kept = [f for _, f, _, _ in chunk if f is not None]
+        step = max(1, len(kept) // MAX_PLATE_FRAMES)
+        return np.median(np.stack(kept[::step]), axis=0).astype(np.uint8)
+
+    def rect_of(chunk) -> tuple[int, int, int, int]:
+        return tuple(int(np.median([c[2][i] for c in chunk])) for i in range(4))
+
+    def playhead_at(f, plate, rect) -> tuple[float, float] | None:
+        x0, y0, x1, y1 = rect
+        dev = (np.abs(f[y0:y1, x0:x1].astype(np.int16) - plate[y0:y1, x0:x1].astype(np.int16)).max(axis=2)
+               > CURSOR_DIFF).astype(np.uint8)
+        dev = cv2.morphologyEx(dev, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        ys, xs = np.nonzero(dev)
+        if len(xs) < 0.3 * gap * gap:
+            return None
+        # The middle of everything that differs from the plate: a line, a box outline, a filled
+        # highlight or recolored notes all center on the beat being played
+        return float(np.median(xs)) + x0, float(np.median(ys)) + y0
+
+    def add(c) -> None:
+        """Append a frame to the current view, dropping pictures the view can't keep."""
+        nonlocal stride, so_far
+        cur.append(c)
+        if (len(cur) - 1) % stride:
+            drop(len(cur) - 1)
+        elif -(-len(cur) // stride) > MAX_VIEW_FRAMES:
+            # Keep every other picture of those kept so far
+            stride *= 2
+            so_far = plate_of(cur), rect_of(cur)
+            for k in range(len(cur)):
+                if k % stride and cur[k][1] is not None:
+                    drop(k)
+
+    def drop(k) -> None:
+        t, f, rect, seed = cur[k]
+        points[t] = playhead_at(f, *so_far)
+        cur[k] = (t, None, rect, seed)
+
+    def build(chunk, plate=None) -> View:
+        plate = plate_of(chunk) if plate is None else plate
+        rect = rect_of(chunk)
         v = View(chunk[0][0], chunk[-1][0] + 1 / OBS_FPS, plate, times=[t for t, _, _, _ in chunk], rect=rect)
         mid_seed = chunk[len(chunk) // 2][3]
         # On a dark theme, footage in a dark room looks like paper, so the print area keeps the panel's reach
         above, below = (ABOVE_GAPS, BELOW_GAPS) if polarity == "light" else (PRINT_ABOVE_GAPS, PRINT_BELOW_GAPS)
         v.print_rect = panel_rect(plate, paper, mid_seed, gap, above, below, for_print=True)
-        x0, y0, x1, y1 = rect
         for t, f, _, _ in chunk:
-            dev = (np.abs(f[y0:y1, x0:x1].astype(np.int16) - plate[y0:y1, x0:x1].astype(np.int16)).max(axis=2)
-                   > CURSOR_DIFF).astype(np.uint8)
-            dev = cv2.morphologyEx(dev, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
-            ys, xs = np.nonzero(dev)
-            if len(xs) < 0.3 * gap * gap:
-                continue
-            # The middle of everything that differs from the plate: a line, a box outline, a filled
-            # highlight or recolored notes all center on the beat being played
-            v.playhead.append((t, float(np.median(xs)) + x0, float(np.median(ys)) + y0))
+            p = points.get(t) if f is None else playhead_at(f, plate, rect)
+            if p is not None:
+                v.playhead.append((t, *p))
         return v
 
     def wraps(v: View) -> list[float]:
@@ -294,16 +333,18 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
     def close() -> None:
         if not cur or cur[-1][0] - cur[0][0] + 1 / OBS_FPS < MIN_VIEW_SECONDS:
             return
-        v = build(cur)
-        cuts = wraps(v) if use_playhead else []
+        whole = build(cur)
+        cuts = wraps(whole) if use_playhead else []
         if not cuts:
-            views.append(v)
+            views.append(whole)
             return
         bounds = [cur[0][0]] + cuts + [cur[-1][0] + 1]
+        # A thinned view keeps few pictures per pass; all passes show the same page, so they share its plate
+        shared = whole.plate if stride > 1 else None
         for n, (a, b) in enumerate(zip(bounds, bounds[1:])):
             chunk = [c for c in cur if a <= c[0] < b]
             if chunk and chunk[-1][0] - chunk[0][0] + 1 / OBS_FPS >= MIN_VIEW_SECONDS:
-                v = build(chunk)
+                v = build(chunk, shared)
                 v.wrapped = n > 0
                 views.append(v)
 
@@ -341,6 +382,7 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         if seed is None:
             close()
             cur, ref, cand, held = [], None, None, []
+            stride, points = 1, {}
             continue
         g = to_gray(f, polarity)
         if thr is None:
@@ -348,21 +390,21 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         rect = panel_rect(f, paper, seed, gap)
         if ref is None:
             ref = start(t, f, g, rect, seed)
-            cur = [(t, f, rect, seed)]
+            cur, stride, points = [(t, f, rect, seed)], 1, {}
             continue
         changed, _ = compare(ref, f, g, rect)
         if not changed:
             # Frames held while a possible change was checked were blips (a cursor crossing a beam)
-            cur.extend(held)
+            for c in held + [(t, f, rect, seed)]:
+                add(c)
             held, cand = [], None
-            cur.append((t, f, rect, seed))
             continue
         if cand is not None and not compare(cand, f, g, rect)[0]:
             held.append((t, f, rect, seed))
             if len(held) >= SETTLE_FRAMES:
                 # The new picture held steady: the view ended where it began
                 close()
-                cur, ref = held, cand
+                cur, ref, stride, points = held, cand, 1, {}
                 held, cand = [], None
             continue
         # Changed from the view, and not yet steady: the start of a possible new view
