@@ -82,9 +82,9 @@ def mark_groups(marks: np.ndarray, x_off: int, starts: list[int], gap: float) ->
 
 def joined_cells(cells: list[Cell], kept: list[Cell]) -> list[tuple[Cell, int, int]]:
     """A system's cells as printed, left to right: each cell, the column its printed measure starts at, and the
-    first column it prints. A short complete cell left out of the measure list, alone between kept cells (a clef
-    or time signature set off by a barline of its own), prints with the measure after it, so its measure number
-    and signature print whole."""
+    first column it prints. A short complete cell left out of the measure list, with no other left-out cell next to
+    it (a clef or time signature set off by a barline of its own), prints with the measure after it, so its measure
+    number and signature print whole."""
     ids = {id(x) for x in kept}
     dropped = [id(x) not in ids for x in cells]
     out, carry = [], None
@@ -142,8 +142,8 @@ def print_cell(o: Obs, c: Cell, seg: Segment) -> PrintCell:
     sys_bottom = int(round(st.bottom)) - b0
     # Mark rows reach close to the outer staff lines, so a number sitting on the staff is labeled whole
     margin = max(2, int(0.15 * c.gap))
-    # The measure's own columns: its left edge (a system's first measure keeps the margin before it) through
-    # its right barline
+    # The measure's own columns: its left edge through its right barline. A system's first measure keeps the
+    # margin before it, and a measure joined with a clef or time signature cell starts at that cell
     x0 = first_col
     x1 = next((q for p, q in ps.bars if p == c.x1), c.x1) + 1
     # Marks are looked at between the neighbors' far edges, so a mark's left edge is never cut off

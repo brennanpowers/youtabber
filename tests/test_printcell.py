@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 
+from youtabber.observe import panel_rect
 from youtabber.parse import Cell
 from youtabber.printcell import clean, joined_cells, mark_groups, owner
 from youtabber.scan import Segment
@@ -83,3 +84,26 @@ def test_an_empty_column_range_prints_white():
     band = np.full((40, 100, 3), 30, np.uint8)
     seg = Segment(0.0, 1.0, 10.0, "dark", paper=np.array([250.0, 250.0, 250.0]))
     assert (clean(band, seg, 10.0, (60, 60)) == 255).all()
+
+
+def strip_frame(left_strip: bool) -> tuple[np.ndarray, tuple[int, int, int, int]]:
+    """Paper with staffs between x 26 and 274, line gap 14, and a 5 px dark strip just left or right of them."""
+    frame = np.full((200, 300, 3), 250, np.uint8)
+    if left_strip:
+        frame[40:160, 16:21] = 0
+    else:
+        frame[40:160, 279:284] = 0
+    return frame, (26, 50, 274, 150)
+
+
+def test_the_print_area_steps_over_a_bracket_left_of_the_staffs():
+    frame, seed = strip_frame(True)
+    paper = np.array([250, 250, 250], np.uint8)
+    assert panel_rect(frame, paper, seed, 14.0)[0] == 21
+    assert panel_rect(frame, paper, seed, 14.0, for_print=True)[0] == 0
+
+
+def test_the_print_area_stops_at_a_dark_strip_right_of_the_staffs():
+    frame, seed = strip_frame(False)
+    paper = np.array([250, 250, 250], np.uint8)
+    assert panel_rect(frame, paper, seed, 14.0, for_print=True)[2] == 279
