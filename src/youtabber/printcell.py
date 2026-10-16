@@ -46,6 +46,29 @@ def owner(left: int, right: int, starts: list[int], gap: float) -> int:
     return k
 
 
+def mark_groups(marks: np.ndarray, x_off: int, starts: list[int], gap: float) -> list[tuple[np.ndarray, int, int, int]]:
+    """The words and numbers in marks, a 0/1 image of marks above or below the staffs whose column 0 is image
+    column x_off. For each: its own pixels, its left and right image columns, and the measure it belongs to."""
+    # Thin long strokes, such as the edge of a staff line, print in the measure's own columns like the staff
+    # and never join a word
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(marks, connectivity=8)
+    thin = (stats[:, cv2.CC_STAT_HEIGHT] < 0.2 * gap) & (stats[:, cv2.CC_STAT_WIDTH] > gap)
+    thin[0] = False
+    marks = np.where(thin[labels], 0, marks).astype(np.uint8)
+    # The digits of a number and the letters of a word are a few pixels apart: smear the marks sideways so
+    # each word is one group, then keep only the marks' own pixels in each group
+    grouped = cv2.dilate(marks, np.ones((1, max(3, int(0.3 * gap) | 1)), np.uint8))
+    n, labels = cv2.connectedComponents(grouped, connectivity=8)
+    labels[marks == 0] = 0
+    groups = []
+    for j in range(1, n):
+        mask = labels == j
+        cols = np.flatnonzero(mask.any(axis=0))
+        left, right = int(cols[0]) + x_off, int(cols[-1]) + x_off + 1
+        groups.append((mask, left, right, owner(left, right, starts, gap)))
+    return groups
+
+
 def clean(band: np.ndarray, seg: Segment, gap: float, cols: tuple[int, int] | None = None) -> np.ndarray:
     """Gray image of a band with dark ink on white paper. Only columns cols (the paper panel) are kept; the rest
     print white."""
@@ -68,7 +91,8 @@ def print_cell(o: Obs, c: Cell, seg: Segment) -> PrintCell:
     st = ps.system.tab
     sys_top = int(round((ps.system.notation or st).top)) - b0
     sys_bottom = int(round(st.bottom)) - b0
-    margin = max(1, int(0.5 * c.gap))
+    # Mark rows reach close to the outer staff lines, so a number sitting on the staff is labeled whole
+    margin = max(2, int(0.15 * c.gap))
     # The measure's own columns: its left edge (a system's first measure keeps the margin before it) through
     # its right barline
     x0 = c.print_x0 if i == 0 else c.x0
@@ -84,14 +108,11 @@ def print_cell(o: Obs, c: Cell, seg: Segment) -> PrintCell:
         # OpenCV crashes on an empty image: a band with no room above or below the staffs has no marks there
         if marks.size == 0:
             continue
-        n, labels, stats, _ = cv2.connectedComponentsWithStats(marks, connectivity=8)
         part = keep[rows, w0:w1]
-        for j in range(1, n):
-            x, _, w, _, _ = stats[j]
-            mine = owner(x + w0, x + w0 + w, starts, c.gap) == i
-            part[labels == j] = mine
-            if mine:
-                xa, xb = min(xa, x + w0), max(xb, x + w0 + w)
+        for mask, left, right, k in mark_groups(marks, w0, starts, c.gap):
+            part[mask] = k == i
+            if k == i:
+                xa, xb = min(xa, left), max(xb, right)
     out = np.where(keep, gray, 255).astype(np.uint8)[:, xa:xb]
     # Overhang is measured from the left barline (a system's first measure: its staff start)
     return PrintCell(out, c.gap, c.y0 + c.ref_y - b0, c.x0 - xa, c.x1 - c.x0)
