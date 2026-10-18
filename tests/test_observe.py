@@ -1,0 +1,51 @@
+"""Still views from a fake frame stream: a long-held page keeps a bounded number of frames in memory."""
+import weakref
+
+import numpy as np
+
+from synth import Song, draw_measures
+from youtabber import observe
+
+PAPER = np.array([255, 255, 255], np.uint8)
+SONG = Song(notation=False, measures=4)
+PAGE = draw_measures(SONG, 0, 4, 1280)
+STAFFS = (0, 70, 1280, 160)
+
+
+def held_page(n: int, sweep: int, alive: list[int]):
+    """A fake `frames`: one page held for n frames, with a cursor crossing it every `sweep` frames.
+
+    At each new frame, appends to `alive` how many of the frames handed out so far are still in memory.
+    """
+    handed = []
+
+    def frames(path, fps, crop=None, start=0.0, length=None):
+        for i in range(n):
+            f = PAGE.copy()
+            x = 20 + int(1200 * (i % sweep) / sweep)
+            f[:, x:x + 8] = (f[:, x:x + 8] * 0.5 + np.array(SONG.cursor) * 0.5).astype(np.uint8)
+            handed.append(weakref.ref(f))
+            alive.append(sum(r() is not None for r in handed))
+            yield i / fps, f
+    return frames
+
+
+def held_views(monkeypatch, n: int, bound: int, alive: list[int]):
+    monkeypatch.setattr(observe, "frames", held_page(n, 90, alive))
+    monkeypatch.setattr(observe, "MAX_VIEW_FRAMES", bound)
+    observe.set_paper(PAPER)
+    return observe.views_in(None, (0, 0, 1280, 270), "dark", 18.0, PAPER, lambda t: STAFFS, 0.0, n / 6)[0]
+
+
+def test_long_held_page_keeps_few_frames(monkeypatch):
+    alive: list[int] = []
+    views = held_views(monkeypatch, 400, 40, alive)
+    # The bound, plus the frame being read and the reference frames compared against
+    assert max(alive) <= 40 + 3
+    unbounded = held_views(monkeypatch, 400, 1000, [])
+    # The same passes over the page, each with a clean plate and the playhead in every frame
+    assert len(views) == len(unbounded) == 5
+    for v, w in zip(views, unbounded):
+        assert (v.t0, v.t1, v.wrapped, v.times) == (w.t0, w.t1, w.wrapped, w.times)
+        assert np.array_equal(v.plate, PAGE)
+        assert v.playhead == w.playhead and len(v.playhead) == len(v.times)
