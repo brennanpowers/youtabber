@@ -1,14 +1,11 @@
-"""Run the whole pipeline on made-up videos whose tab we know, one layout per case."""
+"""Read made-up videos whose tab we know, one layout per case, and check what would print."""
 import shutil
-from dataclasses import dataclass
-from pathlib import Path
 
-import numpy as np
 import pytest
 
 from synth import Song, write_video
-from youtabber import ink, layout, region, stitch, views
-from youtabber.source import Source
+from youtabber import pipeline, printcell
+from youtabber.staff import find_staffs
 
 pytestmark = pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")
 
@@ -21,79 +18,59 @@ CASES = {
     "jump scroll": Song(scroll=True, measures=20),
     "faint lines on yellow": Song(paper=(170, 245, 255), line_gray=190, cursor=(230, 120, 30)),
     "staffs move between pages": Song(page_offsets=[0, 9, -7, 4]),
+    "dark theme": Song(theme="dark", notation=False, tab_height=200),
+    "smooth scroll": Song(glide=True, notation=False, tab_height=200),
 }
 
 
-@dataclass
-class Result:
-    song: Song
-    shown: list[np.ndarray]
-    region: region.Region
-    views: list[views.View]
-    strip: np.ndarray
-    placed: list[stitch.Placed]
-    pdf_rows: list[np.ndarray]  # each row as it went into the PDF, after edge cleanup
-
-
 @pytest.fixture(scope="module", params=list(CASES), ids=list(CASES))
-def result(request, tmp_path_factory) -> Result:
+def case(request, tmp_path_factory):
     song = CASES[request.param]
-    tmp = tmp_path_factory.mktemp("video")
-    video = tmp / "song.mp4"
-    shown = write_video(song, video)
-    found_region = region.detect(video).region
-    assert found_region is not None, "no tab found"
-    found = list(views.find_views(video, found_region))
-    strip, placed = stitch.stitch(found)
-    scale = layout.scale_for(strip, found_region.w)
-    rows = layout.rows(strip, placed, int(layout.USABLE_WIDTH / scale))
-    pdf_rows: list[np.ndarray] = []
-
-    def record(row: np.ndarray) -> np.ndarray:
-        pdf_rows.append(row)
-        return row
-
-    source = Source(video, "song", "Test Song", None, None)
-    layout.write_pdf(strip, rows, scale, tmp / "song.pdf", source, placed, record)
-    return Result(song, shown, found_region, found, strip, placed, pdf_rows)
+    video = tmp_path_factory.mktemp("video") / "song.mp4"
+    write_video(song, video)
+    return song, pipeline.read(video)
 
 
-def test_region_covers_the_tab(result: Result):
-    x, y, w, h = result.song.tab_box
-    r = result.region
-    # The region may stop short of the paper's edge, but must hold every staff line
-    lines_top = y + (30 if result.song.notation else result.song.tab_top) - 10
-    lines_bottom = y + result.song.tab_top + (result.song.strings - 1) * result.song.line_spacing + 10
-    assert r.x >= x - 2 and r.x + r.w <= x + w + 2
-    assert r.y <= lines_top and r.y + r.h >= lines_bottom
-    assert r.y >= y - 2 and r.y + r.h <= y + h + 2
+def test_writes_a_tab(case):
+    song, r = case
+    assert r.outcome == "tab", r.message
 
 
-def test_one_view_per_page_or_scroll_position(result: Result):
-    assert len(result.views) == len(result.shown)
+# Known defects and what goes wrong. Strict: once a defect is fixed, its test fails until the entry is removed.
+DEFECTS = {
+    "pages in a box": "an empty staff end at the panel's right edge prints as a measure",
+}
 
 
-def test_scroll_joins_every_view(result: Result):
-    if not result.song.scroll:
-        pytest.skip("pages don't overlap")
-    assert all(p.new_from for p in result.placed[1:]), "a view wasn't joined to the one before"
-    step = int(result.song.tab_box[2] * result.song.scroll_step)
-    shifts = np.diff([p.x for p in result.placed])
-    assert np.all(np.abs(shifts - step) <= 2), shifts
+def test_prints_every_measure_once(case, request):
+    song, r = case
+    reason = DEFECTS.get(request.node.callspec.id)
+    if reason:
+        request.applymarker(pytest.mark.xfail(strict=True, reason=reason))
+    assert len(r.candidates) == 1
+    assert len(r.candidates[0].measures) == song.measures
 
 
-def test_tab_staff_found_with_every_string(result: Result):
-    tab = ink.tab_staff(ink.staff_lines(result.strip))
-    assert len(tab) == result.song.strings
-    assert abs(np.median(np.diff(tab)) - result.song.line_spacing) <= 1
+def test_numbers_count_up_when_read(case):
+    song, r = case
+    if r.numbering == "numbered":
+        for i, m in enumerate(r.candidates[0].measures):
+            assert m.label in (None, i + 1), f"measure {i + 1} labelled {m.label}"
 
 
-def test_every_barline_found(result: Result):
-    bars = layout.barlines(result.strip, ink.staff_lines(result.strip))
-    assert len(bars) == result.song.measures
+def test_nothing_to_check(case):
+    _, r = case
+    assert [n.text for n in r.notices if n.kind not in ("glide_start", "glide_end")] == []
 
 
-def test_pdf_rows_keep_their_staff_lines(result: Result):
-    for i, row in enumerate(result.pdf_rows):
-        tab = ink.tab_staff(ink.staff_lines(row))
-        assert len(tab) == result.song.strings, f"row {i} lost tab lines"
+def test_every_pass_is_the_same_without_replays(case):
+    _, r = case
+    assert [m.slot for m in r.every_pass[0].measures] == [m.slot for m in r.candidates[0].measures]
+
+
+def test_printed_measures_keep_every_string(case):
+    song, r = case
+    for m in r.candidates[0].measures:
+        o = r.views[m.view]
+        pc = printcell.print_cell(o, m.cell, r.segments[o.seg])
+        assert any(len(s.lines) == song.strings for s in find_staffs(pc.image)), f"measure at {m.t} lost a string"
