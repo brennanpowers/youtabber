@@ -55,3 +55,9 @@ def test_a_blank_sliver_between_a_barline_and_a_stem_is_not_an_empty_bar():
 def test_a_short_empty_bar_is_kept_and_a_short_bar_with_notes_is_not():
     short_empty, short_notes, wide = cell(60, marks=False, above=True), cell(60, marks=True), cell(300, marks=True)
     assert kept_cells([short_empty, short_notes, wide], typical=300) == [short_empty, wide]
+
+
+def test_a_clef_cell_of_a_system_cut_by_the_panel_top_is_not_an_empty_bar():
+    cut = cell(60, marks=False, clef=True)
+    cut.top_y = -5
+    assert not empty_bar(cut)

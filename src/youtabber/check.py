@@ -72,19 +72,23 @@ WIDE_RATIO = 1.7
 
 
 def odd_widths(obs) -> list[dict]:
-    """Measures much wider than usual, where a barline was likely missed and a measure may be lost."""
-    widths = [c.x1 - c.x0 for o in obs for c in o.cells if c.kind == "full"]
+    """Measures much wider than usual, where a barline was likely missed and a measure may be lost. Widths are
+    counted in line gaps, so tab drawn at different sizes compares fairly. A still view gets one notice however
+    many of its measures are wide; a glide gets one per wide measure, at its play time."""
+    widths = [(c.x1 - c.x0) / c.gap for o in obs for c in o.cells if c.kind == "full"]
     if not widths:
         return []
     typical = float(np.median(widths))
     out = []
     for o in obs:
         for c in o.cells:
-            if c.kind == "full" and c.x1 - c.x0 > WIDE_RATIO * typical:
+            if c.kind == "full" and (c.x1 - c.x0) / c.gap > WIDE_RATIO * typical:
                 t = o.mosaic.time_at((c.x0 + c.x1) / 2) if o.mosaic is not None else (o.t0 + o.t1) / 2
-                out.append({"t0": round(max(t - 3, o.t0), 2), "t1": round(min(t + 3, o.t1), 2), "kind": "wide_measure",
-                            "text": f"A measure around {fmt(t)} is much wider than the others; a barline may have "
-                                    f"been missed there."})
+                w = {"t0": round(max(t - 3, o.t0), 2), "t1": round(min(t + 3, o.t1), 2), "kind": "wide_measure",
+                     "text": f"A measure around {fmt(t)} is much wider than the others; a barline may have been "
+                             f"missed there."}
+                if w not in out:
+                    out.append(w)
     return out
 
 # Glided measures repeat an earlier stretch of the same glide when this many in a row look alike
@@ -283,9 +287,18 @@ def screen_breaks(A, obs) -> list[dict]:
             # A screen that shows earlier measures again is a replay, which has notices of its own
             if shared[o.index] or any(sid is not None and A.slots[sid].obs != o.index for sid in A.view_slots[o.index]):
                 continue
-            out.append(part_switch(p.t1, o.t1, o.t0, "the screen there shares no measure with the one before it, "
-                                                     "though the screens around it overlap"))
+            if view_numbers(A, o) & view_numbers(A, p):
+                why = "the screen there repeats measure numbers from the one before it, but with different music"
+            else:
+                why = "the screen there shares no measure with the one before it, though the screens around it overlap"
+            out.append(part_switch(p.t1, o.t1, o.t0, why))
     return out
+
+
+def view_numbers(A, o) -> set[int]:
+    """The printed measure numbers read on a view's slots."""
+    return {A.slots[sid].number for sid in A.view_slots[o.index]
+            if sid is not None and A.slots[sid].number is not None}
 
 
 def part_switch(t0: float, t1: float, at: float, why: str) -> dict:

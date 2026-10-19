@@ -34,7 +34,8 @@ NOTATION_SHARE = 0.85
 
 
 def lone_notation(s: System, notation_gaps: list[float], widest: float) -> bool:
-    """True when a "tab staff" with no notation of its own has at most 5 lines spaced like the view's notation."""
+    """True when a "tab staff" with no notation of its own has at most 5 lines, spaced like the view's notation and
+    closer together than the view's widest tab staff."""
     if s.notation is not None or len(s.tab.lines) > 5 or not notation_gaps or s.tab.gap >= NOTATION_SHARE * widest:
         return False
     return any(abs(s.tab.gap - g) <= NOTATION_MATCH * g for g in notation_gaps)

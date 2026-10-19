@@ -107,8 +107,9 @@ def joined_cells(cells: list[Cell], kept: list[Cell]) -> list[tuple[Cell, int, i
 def clean(band: np.ndarray, seg: Segment, gap: float, cols: tuple[int, int] | None = None,
           paper: float | None = None) -> np.ndarray:
     """Gray image of a band with dark ink on white paper, with cursor and highlight tint lifted to paper. Only
-    columns cols (the paper panel) are kept; the rest print white. `paper` is the paper's gray level when the band
-    is a piece of a wider one, else it is taken from the band."""
+    columns cols (the paper panel) are kept; the rest print white. `paper` is the paper gray level that tint is
+    lifted to: the wider band's when this band is a piece of one, else this band's median. whiten() then scales by
+    this band's own median either way."""
     set_paper(seg.paper)
     a, b = cols or (0, band.shape[1])
     out = np.full(band.shape[:2], 255, np.uint8)
@@ -121,7 +122,8 @@ def clean(band: np.ndarray, seg: Segment, gap: float, cols: tuple[int, int] | No
     tinted = color_test(part, lambda c: c > PRINT_COLOR_SAT).astype(np.uint8)
     n, labels, stats, _ = cv2.connectedComponentsWithStats(tinted, connectivity=8)
     big = [j for j in range(1, n) if stats[j][4] >= TINT_AREA_GAPS * gap * gap or stats[j][3] >= 3 * gap]
-    # On dark themes the ink itself is colored, so nothing is lifted
+    # Tint is lifted only for dark ink on light paper. On dark themes ("light" ink on dark paper) the ink itself is
+    # colored, so nothing is lifted
     if seg.polarity != "light":
         for j in big:
             body = labels == j
@@ -156,8 +158,8 @@ def cleaned(o: Obs, ps, rows: tuple[int, int], seg: Segment, gap: float, cols: t
 
 def drop_widgets(gray: np.ndarray, top: int, bottom: int, x0: int, x1: int, gap: float) -> np.ndarray:
     """The band with screen widgets (a timer, a play button) made paper: solid dark blocks away from the staffs, or
-    reaching the staffs' left end. Rows top..bottom and columns x0..x1 hold the staffs, where solid note heads and
-    clef panels belong."""
+    reaching the staffs' left end. Rows top..bottom and columns x0..x1 hold the staffs, where solid note heads
+    belong; a solid block at the staffs' left end is a button drawn over them."""
     out = gray.copy()
     dark = (gray < 128).astype(np.uint8)
     k = max(3, int(0.5 * gap))
@@ -188,8 +190,9 @@ def drop_widgets(gray: np.ndarray, top: int, bottom: int, x0: int, x1: int, gap:
     return out
 
 
-# A glide mosaic wider than this many columns prints each measure from a piece of its band around the measure, with
-# the paper level of the whole band, so printing never holds a cleaned copy of the whole glide
+# A glide mosaic wider than this many columns prints each measure from a piece of its band around the measure, so
+# printing never holds a cleaned copy of the whole glide. The whole band's paper level sets the tint lift; each
+# piece is whitened by its own median.
 PRINT_PIECE = 40000
 # The paper level of the band last asked for: (image, rows, level)
 _paper_level: tuple | None = None

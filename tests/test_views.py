@@ -59,6 +59,28 @@ def test_a_view_with_a_card_over_the_page_is_covered():
     assert covered(banded(card), banded(page, (50.0, 80.0)))
 
 
+def bars(chords: int, first: int) -> np.ndarray:
+    """A page of three systems of tab with barlines every 160 px and a measure number above each, counting from
+    first. Each measure holds this many chords of fret digits, spread across it."""
+    ink = np.zeros((330, 1200), bool)
+    rng = np.random.default_rng(1)
+    for top in (60, 160, 260):
+        for x in range(0, 1200, 160):
+            ink[top:top + 51, x + 4:x + 6] = True
+            ink[top - 14:top - 4, x + 6:x + 10 + 4 * ((first + x // 160) % 3)] = True
+            for k in range(chords):
+                at = x + 20 + 130 * k // chords
+                for line in rng.choice(6, 2, replace=False):
+                    ink[top + 10 * line - 4:top + 10 * line + 4, at:at + 6] = True
+    return ink
+
+
+def test_a_page_of_music_before_a_page_of_empty_bars_in_the_same_layout_is_not_covered():
+    tops = (60.0, 160.0, 260.0)
+    for chords in (1, 2, 6):
+        assert not covered(banded(bars(chords, 1), tops), banded(bars(0, 25), tops))
+
+
 def test_the_best_sighting_shows_the_tab_then_follows_the_view_before():
     A = Assembly()
     # Slot 0 is seen on view 1 as notation only and on view 2 whole; slot 1 is seen alike on both

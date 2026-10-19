@@ -1,6 +1,8 @@
 import numpy as np
 
-from youtabber.check import empty_stretches, glide_gaps, glide_number_gaps, glide_repeats, number_checks, pieces
+from youtabber.check import (empty_stretches, glide_gaps, glide_number_gaps, glide_repeats, number_checks,
+                             odd_widths, pieces)
+from youtabber.assemble import Obs
 from youtabber.parse import Cell
 
 
@@ -73,7 +75,6 @@ def test_more_measures_than_numbers():
     assert "count_over" in kinds
 
 
-
 def test_numbers_that_skip_in_a_glide_warn():
     cells = [cell(x, x + 100) for x in range(0, 500, 100)]
     # Measures 7 and 8 print as one cell, so the numbers read go 6, 7, 9; across an unread number, 9 to 11 is no skip
@@ -82,3 +83,25 @@ def test_numbers_that_skip_in_a_glide_warn():
     (w,) = glide_number_gaps(FakeView(cells))
     assert (w["kind"], w["t0"], w["t1"]) == ("glide_number_gap", 1.5, 2.5)
     assert "from 7 to 9" in w["text"]
+
+
+def still(index: int, gap: float, widths: list[int]) -> Obs:
+    """A still view held 5 s whose measures are drawn at line gap gap, with these widths in pixels."""
+    cells, x = [], 0
+    for w in widths:
+        c = cell(x, x + w)
+        c.gap = gap
+        cells.append(c)
+        x += w
+    return Obs(index, 5.0 * index, 5.0 * index + 5, cells, [], 0, (0, 0))
+
+
+def test_wide_measures_are_judged_in_line_gaps_with_one_notice_per_view():
+    # Tab drawn at twice the size has measures twice as wide in pixels, which is no missed barline
+    small = [still(i, 8.0, [120, 130, 125]) for i in range(3)]
+    big = [still(i, 16.0, [250, 240, 260]) for i in range(3, 5)]
+    assert odd_widths(small + big) == []
+    # Two wide measures on one screen make one notice
+    missed = still(5, 16.0, [500, 510, 250])
+    (w,) = odd_widths(small + big + [missed])
+    assert (w["kind"], w["t0"], w["t1"]) == ("wide_measure", 25.0, 30.0)

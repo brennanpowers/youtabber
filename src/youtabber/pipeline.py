@@ -52,8 +52,12 @@ TURN_SECONDS = 1.0
 # A view is covered by a title card or photo when at least this share of its marks are missing from the next view
 # of the same page...
 COVER_EXTRA = 0.4
-# ...and at most this share of the next view's marks are missing from it
+# ...and at most this share of the next view's marks are missing from it...
 COVER_MISSING = 0.1
+# ...and at least this share of its inked tiles (COVER_TILE line gaps tall and wide) match the next view, under
+# COVER_TILE_EXTRA of a tile's marks missing there. A card lies over part of the page; a page of music followed by
+# a page of empty bars drawn on the same barlines differs in nearly every tile
+COVER_MATCHED, COVER_TILE, COVER_TILE_EXTRA = 0.28, (4, 8), 0.2
 # A straight edge is a row where the gray level steps by more than EDGE_STEP across at least EDGE_SHARE_WIDTH of the
 # frame; a screen with EDITOR_EDGES or more of them around its tab is a program's window
 EDGE_STEP, EDGE_SHARE_WIDTH, EDITOR_EDGES = 25, 1 / 6, 4
@@ -142,8 +146,8 @@ def read(path: Path, region: Region | None = None) -> Reading:
         segments = [s for s in segments if not editor_screen(path, s)]
         r.segments = segments
         if not segments:
-            return r.fail("no_tab", f"Tab shows only in short pieces ({held:.0f} s of {info.duration:.0f} s), inside "
-                                    f"the panels and menus of an editing program, as when a tab editor is recorded "
+            return r.fail("no_tab", f"Tab shows only in short pieces ({held:.0f} s of {info.duration:.0f} s), on "
+                                    f"screens that look like a program's window, as when a tab editor is recorded "
                                     f"while someone types. youtabber reads play-along videos, where the tab stays "
                                     f"on screen while the song plays.")
         clips = (segments[0].t0, segments[-1].t1)
@@ -329,9 +333,9 @@ def read(path: Path, region: Region | None = None) -> Reading:
     r.tab_spans.sort()
     if clips is not None:
         notices.append(Notice(round(clips[0], 2), round(clips[1], 2), "short_tab",
-                              f"Only a short stretch of this video shows tab ({fmt(clips[0])}-{fmt(clips[1])}); the "
-                              f"rest shows an editing program, which is not printed. Check that this is the music "
-                              f"you wanted.", True))
+                              f"Only one stretch of this video was read as play-along tab "
+                              f"({fmt(clips[0])}-{fmt(clips[1])}); nothing else is printed. Check that this is the "
+                              f"music you wanted.", True))
     r.notices = sorted(notices, key=lambda w: (w.t0, w.t1))
 
     n = len(r.candidates[0].measures)
@@ -354,8 +358,8 @@ def read(path: Path, region: Region | None = None) -> Reading:
 
 
 def covered(p: Obs, o: Obs) -> bool:
-    """True when still view p shows staffs of the next view o plus many marks o doesn't have, while nearly all of
-    o's marks are in p. The card can hide a staff of p, so p may show fewer."""
+    """True when still view p shows staffs of the next view o plus many marks o doesn't have, gathered over part of
+    the page, while nearly all of o's marks are in p. The card can hide a staff of p, so p may show fewer."""
     if p.seg != o.seg or p.mosaic is not None or o.mosaic is not None or not p.systems:
         return False
     # A next view fainter than p is fading out: it lost p's marks to the fade, not to a card
@@ -366,9 +370,26 @@ def covered(p: Obs, o: Obs) -> bool:
         return False
     a, b = p.band, o.band
     near = np.ones((5, 5), np.uint8)
-    only_p = (a & ~cv2.dilate(b.astype(np.uint8), near).astype(bool)).sum() / max(int(a.sum()), 1)
+    extra = a & ~cv2.dilate(b.astype(np.uint8), near).astype(bool)
+    only_p = extra.sum() / max(int(a.sum()), 1)
     only_o = (b & ~cv2.dilate(a.astype(np.uint8), near).astype(bool)).sum() / max(int(b.sum()), 1)
-    return only_p >= COVER_EXTRA and only_o <= COVER_MISSING
+    if only_p < COVER_EXTRA or only_o > COVER_MISSING:
+        return False
+    return matched_share(a, extra, p.systems[0].system.tab.gap) >= COVER_MATCHED
+
+
+def matched_share(ink: np.ndarray, extra: np.ndarray, gap: float) -> float:
+    """The share of the band's inked tiles in which few of its marks are extra marks."""
+    th, tw = max(1, int(COVER_TILE[0] * gap)), max(1, int(COVER_TILE[1] * gap))
+    matched = inked = 0
+    for y in range(0, ink.shape[0], th):
+        for x in range(0, ink.shape[1], tw):
+            n = int(ink[y:y + th, x:x + tw].sum())
+            # A tile with less ink than a square line gap holds no mark worth judging
+            if n >= gap * gap:
+                inked += 1
+                matched += int(extra[y:y + th, x:x + tw].sum()) < COVER_TILE_EXTRA * n
+    return matched / max(inked, 1)
 
 
 def scroll_times(scrolls: list[tuple[float, float]]) -> str:
@@ -418,7 +439,8 @@ def empty_bar(c: Cell) -> bool:
     end = c.ink.shape[1] - 2
     bottom = int(round(2 * c.mid_y)) - (c.y0 + c.ref_y) - c.y0
     tab = c.ink[c.ref_y:bottom + 1, start:end].sum()
-    notation = c.ink[c.top_y:c.ref_y, start:end].sum()
+    # A system cut by the panel top starts above the cell box; its notation rows then start at the box top
+    notation = c.ink[max(0, c.top_y):c.ref_y, start:end].sum()
     return tab < EMPTY_BAR_INK * c.gap * c.gap and notation < EMPTY_NOTATION_INK * c.gap * c.gap
 
 
@@ -553,9 +575,9 @@ def parse_mosaic(index: int, image: np.ndarray, rect: tuple[int, int, int, int],
     """parse_view of a glide mosaic. A long one is parsed in overlapping pieces, so memory doesn't grow with the
     glide's length: each piece keeps the cells and barlines of its middle, and the pieces' systems are joined."""
     h, w = image.shape[:2]
-    # Glides draw notes as tiles over the barlines more often than pages do. A mosaic joins stretches whose staff
-    # can sit at different heights, so its lines break up where there are no chord diagrams
     if w <= MOSAIC_PIECE:
+        # Glides draw notes as tiles over the barlines more often than pages do. A mosaic joins stretches whose
+        # staff can sit at different heights, so its lines break up where there are no chord diagrams
         return parse_view(index, image, rect, polarity, thr, fthr, gap, (0, 0, w, h), hidden_bars=True,
                           whole_lines=False)
     x0, y0, x1, y1 = rect

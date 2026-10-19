@@ -156,6 +156,7 @@ def test_a_band_is_cleaned_once_for_all_the_measures_printed_from_it():
     other = cleaned(o, ps, (20, 90), seg, 10.0, (0, 400))
     assert other is not first and other.shape == (70, 400)
 
+
 def test_a_long_mosaic_prints_each_measure_from_a_piece_of_its_band(monkeypatch):
     image = np.full((130, 3000, 3), 255, np.uint8)
     for i in range(6):

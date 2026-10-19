@@ -217,9 +217,9 @@ def scan(path: Path, width: int, height: int, region: tuple[int, int, int, int] 
             for a, b in zip(st.lines, st.lines[1:]):
                 row = f[int(round((a + b) / 2)), st.x0:st.x1]
                 papers.append((t, np.median(row, axis=0)))
+    scrolls = vertical_scrolls(found)
     # Tab holds still between page turns; guitar strings and other lines in the footage wobble.
     # Keep a system only if the frame before or after shows it in the same place.
-    scrolls = vertical_scrolls(found)
     times = sorted(found)
     steady: dict[float, list[System]] = {}
     for k, t in enumerate(times):

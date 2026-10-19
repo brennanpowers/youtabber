@@ -81,3 +81,9 @@ def test_another_part_showing_the_numbers_of_the_screen_before_gets_measures_of_
 def test_measures_of_the_screen_before_cut_at_the_top_by_the_screen_edge_are_the_same_music():
     assert slots(run("a", 1, 4), run("a", 3, 6), run("cut", 5, 6) + run("a", 7, 8)) == [[0, 1, 2, 3], [2, 3, 4, 5],
                                                                                          [4, 5, 6, 7]]
+
+
+def test_one_measure_drawn_differently_where_the_screens_overlap_is_not_another_part():
+    # Measure 6, the only one this screen shares with the screen before, is drawn differently there
+    assert slots(run("a", 1, 4), run("a", 3, 6), [("x", 6)] + run("a", 7, 9)) == [[0, 1, 2, 3], [2, 3, 4, 5],
+                                                                                   [5, 6, 7, 8]]

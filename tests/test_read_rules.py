@@ -54,9 +54,9 @@ def test_a_measure_with_only_staff_lines_and_a_number_is_empty():
     assert [empty(o, c) for c in o.cells] == [False, True]
 
 
-def screens(slots: list[list[int]]) -> tuple[Assembly, list[Obs]]:
+def screens(slots: list[list[int]], numbers: dict[int, int] | None = None) -> tuple[Assembly, list[Obs]]:
     """Views 0, 1, ... of one segment, 5 s each, showing measures with notes in the given slots; each slot is first
-    seen where it first appears."""
+    seen where it first appears and carries its printed number from numbers, if any."""
     full = view(notes=True)
     obs = []
     for i, s in enumerate(slots):
@@ -67,7 +67,7 @@ def screens(slots: list[list[int]]) -> tuple[Assembly, list[Obs]]:
     for i, s in enumerate(slots):
         for sid in s:
             first.setdefault(sid, i)
-    A = Assembly(slots=[Slot(sid, None, first[sid], None) for sid in sorted(first)],
+    A = Assembly(slots=[Slot(sid, None, first[sid], (numbers or {}).get(sid)) for sid in sorted(first)],
                  view_slots={i: list(s) for i, s in enumerate(slots)})
     return A, obs
 
@@ -76,6 +76,16 @@ def test_a_screen_sharing_nothing_with_overlapping_neighbors_is_pointed_out():
     A, obs = screens([[0, 1, 2], [1, 2, 3], [2, 3, 4], [5, 6, 7], [6, 7, 8]])
     (w,) = screen_breaks(A, obs)
     assert (w["t0"], w["t1"], w["kind"]) == (15.0, 20.0, "part_switch")
+    assert "shares no measure with the one before it" in w["text"]
+
+
+def test_a_screen_reusing_the_numbers_before_it_with_other_music_says_so():
+    # Slots 5-7 are another part's measures, numbered 4-6 while the screen before shows 3-5
+    numbers = {0: 1, 1: 2, 2: 3, 3: 4, 4: 5, 5: 4, 6: 5, 7: 6, 8: 7}
+    A, obs = screens([[0, 1, 2], [1, 2, 3], [2, 3, 4], [5, 6, 7], [6, 7, 8]], numbers)
+    (w,) = screen_breaks(A, obs)
+    assert (w["t0"], w["t1"], w["kind"]) == (15.0, 20.0, "part_switch")
+    assert "repeats measure numbers from the one before it, but with different music" in w["text"]
 
 
 def test_page_turns_with_no_overlap_are_not_pointed_out():

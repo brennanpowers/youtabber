@@ -35,7 +35,6 @@ def test_staffs_without_measures_fail_as_tab_youtabber_cant_read(tmp_path, monke
     assert "text tab" in r.message
 
 
-
 def still_view(t0: float, t1: float) -> View:
     return View(t0, t1, np.full((360, 640, 3), 255, np.uint8), rect=(0, 0, 640, 360), print_rect=(0, 0, 640, 360))
 

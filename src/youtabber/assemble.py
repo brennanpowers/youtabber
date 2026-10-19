@@ -545,7 +545,8 @@ def place_numbered(o, slot_of, A, prev, prev_slots, gap, seg_of) -> None:
 
 
 def switched_part(o, A, by_number, prev, prev_slots, gap, seg_of) -> bool:
-    """Whether most measures a screen shows again, by number, hold other music than before on the same layout."""
+    """Whether most measures a screen shows again, by number, hold other music than before on the same layout,
+    judged on at least two of them."""
     shown = [A.slots[s].number for s in prev_slots if s is not None and A.slots[s].number is not None]
     alike = []
     for c in o.cells:
@@ -568,7 +569,8 @@ def switched_part(o, A, by_number, prev, prev_slots, gap, seg_of) -> bool:
         earlier = same_layout(A, sid, o, seg_of)
         if earlier:
             alike.append(seen_before(c, earlier, gap))
-    return bool(alike) and 2 * sum(alike) < len(alike)
+    # A single measure that differs may just be drawn again differently, which is no evidence of another part
+    return len(alike) >= 2 and 2 * sum(alike) < len(alike)
 
 
 def same_layout(A, sid, o, seg_of) -> list:
