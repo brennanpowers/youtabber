@@ -1,6 +1,6 @@
 import numpy as np
 
-from youtabber.check import empty_stretches, glide_gaps, glide_repeats, number_checks, pieces
+from youtabber.check import empty_stretches, glide_gaps, glide_number_gaps, glide_repeats, number_checks, pieces
 from youtabber.parse import Cell
 
 
@@ -71,3 +71,14 @@ def test_more_measures_than_numbers():
     labels = [(0.0, 1)] + [(float(t), None) for t in range(1, 5)] + [(5.0, 2)]
     kinds = [w["kind"] for w in number_checks(labels, True, 10.0)]
     assert "count_over" in kinds
+
+
+
+def test_numbers_that_skip_in_a_glide_warn():
+    cells = [cell(x, x + 100) for x in range(0, 500, 100)]
+    # Measures 7 and 8 print as one cell, so the numbers read go 6, 7, 9; across an unread number, 9 to 11 is no skip
+    for c, n in zip(cells, [6, 7, 9, None, 11]):
+        c.read = n
+    (w,) = glide_number_gaps(FakeView(cells))
+    assert (w["kind"], w["t0"], w["t1"]) == ("glide_number_gap", 1.5, 2.5)
+    assert "from 7 to 9" in w["text"]

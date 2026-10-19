@@ -1,10 +1,11 @@
 import cv2
 import numpy as np
 
+from youtabber import printcell
 from youtabber.assemble import Obs
 from youtabber.observe import panel_rect
 from youtabber.parse import Cell, parse_view
-from youtabber.printcell import clean, joined_cells, mark_groups, owner, print_cell
+from youtabber.printcell import clean, cleaned, joined_cells, mark_groups, owner, print_cell
 from youtabber.scan import Segment
 
 
@@ -140,3 +141,33 @@ def test_a_closing_barline_past_the_print_area_prints_with_the_last_measure():
     # The thick line's columns, counted from the measure's left barline
     thick = pc.image[pc.top + 5:pc.top + 65, pc.left + 708 - c.x0:pc.left + 715 - c.x0]
     assert thick.shape[1] == 7 and (thick < 60).all()
+
+
+def test_a_band_is_cleaned_once_for_all_the_measures_printed_from_it():
+    image = np.full((100, 400, 3), 250, np.uint8)
+    o = Obs(0, 0.0, 1.0, [], [], 0, (0, 0), image)
+    o.image = image
+    seg = Segment(0.0, 1.0, 10.0, "dark", paper=np.array([250.0, 250.0, 250.0]))
+    first = cleaned(o, (10, 60), seg, 10.0, (0, 400))
+    assert cleaned(o, (10, 60), seg, 10.0, (0, 400)) is first
+    other = cleaned(o, (10, 50), seg, 10.0, (0, 400))
+    assert other is not first and other.shape == (40, 400) and (other == 255).all()
+
+
+def test_a_long_mosaic_prints_each_measure_from_a_piece_of_its_band(monkeypatch):
+    image = np.full((130, 3000, 3), 255, np.uint8)
+    for i in range(6):
+        cv2.line(image, (0, 30 + i * 14), (2999, 30 + i * 14), (60, 60, 60), 1)
+    for x in range(100, 3000, 150):
+        cv2.line(image, (x, 30), (x, 100), (0, 0, 0), 2)
+        cv2.putText(image, "7", (x + 60, 77), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+    systems = parse_view(0, image, (0, 0, 3000, 130), "dark", 140.0, 229.0, 14.0, (0, 0, 3000, 130))
+    cells = systems[0].cells
+    o = Obs(0, 0.0, 1.0, cells, [], 0, (0, 0), image)
+    o.image, o.systems, o.print_rect, o.mosaic = image, systems, (0, 0, 3000, 130), object()
+    seg = Segment(0.0, 1.0, 14.0, "dark", paper=np.array([255.0, 255.0, 255.0]))
+    whole = [print_cell(o, c, seg) for c in cells[5:8]]
+    monkeypatch.setattr(printcell, "PRINT_PIECE", 1000)
+    pieces = [print_cell(o, c, seg) for c in cells[5:8]]
+    for a, b in zip(whole, pieces):
+        assert np.array_equal(a.image, b.image) and (a.left, a.advance, a.top) == (b.left, b.advance, b.top)

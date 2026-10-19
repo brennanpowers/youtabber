@@ -93,11 +93,33 @@ def same_part(part, whole, gap: float, align: str, trim: float = 1.0) -> bool:
     return not significant_change(ia[2:-2, 2:-2], cb, gap)
 
 
-def resemble(a, b, gap: float, any_kind: bool = False) -> float:
+# Side of the squares the quick test below counts ink in. Marks in squares that aren't neighbours are at least this
+# many pixels apart, more than the shifts and the one-pixel slack of `resemble` can close.
+FAR_BLOCK = 4
+
+
+def far_ink(a: np.ndarray, b: np.ndarray) -> int:
+    """Pixels of map a with no pixel of map b in their own FAR_BLOCK square or a neighbouring one."""
+    k = FAR_BLOCK
+    if a.size == 0:
+        return 0
+    # Blank padding up to whole squares keeps the edge pixels of both maps in the count without adding ink
+    pad = ((0, -a.shape[0] % k), (0, -a.shape[1] % k))
+    a, b = np.pad(a, pad), np.pad(b, pad)
+    h, w = a.shape
+    # Averages over whole squares, scaled back up, are the squares' pixel counts
+    count_a = cv2.resize(a.astype(np.float32), (w // k, h // k), interpolation=cv2.INTER_AREA) * (k * k)
+    has_b = cv2.resize(b.astype(np.float32), (w // k, h // k), interpolation=cv2.INTER_AREA) > 0
+    near_b = cv2.dilate(has_b.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+    return int(round(float(count_a[~near_b].sum())))
+
+
+def resemble(a, b, gap: float, any_kind: bool = False, limit: float | None = None) -> float:
     """Share of the two cells' solid ink that finds no partner in the other, at the best small shift.
 
     A loose measure of likeness for the checker: low values mean the cells may be the same measure even
-    when `same` says no.
+    when `same` says no. With a `limit`, cells that are plainly further apart than it are answered from a quick
+    count, with a share of at least `limit`.
     """
     if (a.kind != b.kind and not any_kind) or abs(a.gap - b.gap) > 0.1 * gap:
         return 1.0
@@ -111,12 +133,34 @@ def resemble(a, b, gap: float, any_kind: bool = False) -> float:
         return 1.0
     core_a = ia[m:h - m, m:w - m]
     total = max(int(core_a.sum()) + int(ib[m:h - m, m:w - m].sum()), 1)
+    if limit is not None:
+        # Ink with nothing of the other cell within a few pixels is unmatched at every shift. Cell b's ink counts
+        # only where every shift's crop keeps it.
+        inner_a = np.zeros_like(ia)
+        inner_a[m:h - m, m:w - m] = core_a
+        inner_b = np.zeros_like(ib)
+        e = m + max(SHIFTS)
+        inner_b[e:h - e, e:w - e] = ib[e:h - e, e:w - e]
+        far = far_ink(inner_a, ib) + far_ink(inner_b, ia)
+        if far >= limit * total:
+            return far / total
     best = min(int(unmatched(core_a, ib[m + dy:h - m + dy, m + dx:w - m + dx], 1).sum())
                for dy in SHIFTS for dx in SHIFTS)
     return best / total
 
 
-def resemble_scaled(a, b, gap: float) -> float:
+class Stretched:
+    """A cell's ink and tint stretched to another width, as `resemble` reads a cell."""
+
+    def __init__(self, b, width: int):
+        size = (width, b.ink.shape[0])
+        self.ink = cv2.resize(b.ink.astype(np.uint8), size, interpolation=cv2.INTER_NEAREST).astype(bool)
+        self.faint = np.zeros_like(self.ink)
+        self.tint = cv2.resize(b.tint.astype(np.uint8), size, interpolation=cv2.INTER_NEAREST).astype(bool)
+        self.ref_y, self.gap, self.kind = b.ref_y, b.gap, b.kind
+
+
+def resemble_scaled(a, b, gap: float, limit: float | None = None) -> float:
     """`resemble` after stretching b to a's width, for mosaics whose measured scroll speed differs a little
     between two glides of the same music."""
     if abs(a.gap - b.gap) > 0.1 * gap:
@@ -124,12 +168,6 @@ def resemble_scaled(a, b, gap: float) -> float:
     wa, wb = a.ink.shape[1], b.ink.shape[1]
     if not 0.85 < wa / max(wb, 1) < 1.15:
         return 1.0
-
-    class Scaled:
-        pass
-    s = Scaled()
-    s.ink = cv2.resize(b.ink.astype(np.uint8), (wa, b.ink.shape[0]), interpolation=cv2.INTER_NEAREST).astype(bool)
-    s.faint = np.zeros_like(s.ink)
-    s.tint = cv2.resize(b.tint.astype(np.uint8), (wa, b.ink.shape[0]), interpolation=cv2.INTER_NEAREST).astype(bool)
-    s.ref_y, s.gap, s.kind = b.ref_y, b.gap, a.kind
-    return resemble(a, s, gap)
+    s = Stretched(b, wa)
+    s.kind = a.kind
+    return resemble(a, s, gap, limit=limit)

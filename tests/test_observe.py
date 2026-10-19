@@ -68,3 +68,12 @@ def test_paper_rect_counts_pixels_within_the_tolerance():
     frame[:10] = 255 - (observe.PAPER_TOL - 1)
     frame[30:] = 255 - observe.PAPER_TOL
     assert observe.panel_rect(frame, PAPER.astype(np.float64), (10, 15, 50, 25), 10.0) == (0, 0, 60, 30)
+
+
+def test_color_is_judged_the_same_on_a_wide_image_in_pieces():
+    rng = np.random.default_rng(3)
+    wide = rng.integers(0, 256, (20, observe.COLOR_PIECE * 2 + 37, 3), dtype=np.uint8)
+    observe.set_paper(np.array([200.0, 240.0, 250.0]))
+    assert np.array_equal(observe.colored(wide), observe.chroma(wide) > observe.COLOR_SAT)
+    assert np.array_equal(observe.gray_pixels(wide), observe.chroma(wide) < observe.GRAY_SAT)
+    observe.set_paper(PAPER)

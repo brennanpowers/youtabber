@@ -115,9 +115,9 @@ def number_views(obs: list[Obs], read) -> str:
     for o in obs:
         reads = []
         for i, c in enumerate(o.cells):
-            c.number = None
+            c.number = c.read = None
             if c.number_crop is not None:
-                n = read(c.number_crop)
+                n = c.read = read(c.number_crop)
                 if n is not None:
                     reads.append((i, n))
         o.start = None

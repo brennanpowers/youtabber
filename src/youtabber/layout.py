@@ -129,7 +129,7 @@ def _latin1(text: str) -> str:
 
 
 def _draw_page(pdf: FPDF, page: list[tuple[np.ndarray, float, float]], top: float, bottom: float,
-               spread: bool) -> None:
+               spread: bool, upscale: Upscaler | None = None) -> None:
     gap = ROW_GAP
     if spread and len(page) > 1:
         # Share the leftover space between rows so full pages end at the same place
@@ -137,7 +137,8 @@ def _draw_page(pdf: FPDF, page: list[tuple[np.ndarray, float, float]], top: floa
         gap = min(ROW_GAP + spare / (len(page) - 1), ROW_GAP * MAX_GAP_STRETCH)
     y = top
     for img, w, h in page:
-        pdf.image(Image.fromarray(img), x=MARGIN, y=y, w=w, h=h)
+        # Rows are upscaled only as they are drawn, so a long song never holds every upscaled row at once
+        pdf.image(Image.fromarray(upscale(img) if upscale else img), x=MARGIN, y=y, w=w, h=h)
         y += h + gap
 
 
@@ -156,19 +157,17 @@ def write_pdf(cells: list[PrintCell], breaks: set[int], out: Path, source: Sourc
         h = img.shape[0] * TAB_LINE_SPACING / g
         # A row too wide or too tall for the page shrinks to fit
         fit = min(1.0, USABLE_WIDTH / w, (bottom - top) / h)
-        if upscale:
-            img = upscale(img)
         placed.append((img, w * fit, h * fit))
     page: list = []
     for item in placed:
         if page and y + item[2] > bottom:
-            _draw_page(pdf, page, top, bottom, spread=True)
+            _draw_page(pdf, page, top, bottom, spread=True, upscale=upscale)
             pdf.add_page()
             top = y = pdf.get_y()
             page = []
         page.append(item)
         y += item[2] + ROW_GAP
-    _draw_page(pdf, page, top, bottom, spread=False)
+    _draw_page(pdf, page, top, bottom, spread=False, upscale=upscale)
     if spots:
         pdf.add_page()
         pdf.set_auto_page_break(True, MARGIN + FOOTER)

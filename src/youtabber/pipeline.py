@@ -7,12 +7,13 @@ import numpy as np
 
 from youtabber import glide, ocr
 from youtabber.assemble import Assembly, Obs, assemble, cell_at, number_views
-from youtabber.check import (dwell, empty_stretches, fmt, glide_gaps, glide_repeats, number_checks, odd_widths,
-                             possible_duplicates, too_few)
-from youtabber.observe import ABOVE_GAPS, BELOW_GAPS, PRINT_ABOVE_GAPS, ink_map, set_paper, to_gray, views_in
+from youtabber.check import (dwell, empty_stretches, fmt, glide_gaps, glide_number_gaps, glide_repeats, number_checks,
+                             odd_widths, possible_duplicates, too_few)
+from youtabber.observe import (ABOVE_GAPS, BELOW_GAPS, OBS_FPS, PRINT_ABOVE_GAPS, ink_map, ink_threshold, set_paper,
+                               to_gray, views_in)
 from youtabber.parse import Cell, parse_view
 from youtabber.scan import SCAN_FPS, Segment, scan
-from youtabber.video import probe
+from youtabber.video import frames, probe
 
 # Every kind of evidence the assembler can weigh
 EVIDENCE = {"numbers", "playhead", "navigation"}
@@ -20,10 +21,18 @@ EVIDENCE = {"numbers", "playhead", "navigation"}
 EDGE_SHARE = 0.25
 # A view whose ink contrast is below this share of its segment's typical contrast is mid-fade
 FADE_SHARE = 0.85
-# A segment at least GLIDE_MIN_SECONDS long whose still views cover less than GLIDE_SHARE of it glides
-GLIDE_MIN_SECONDS, GLIDE_SHARE = 20.0, 0.4
+# Only a segment at least this long is tested for gliding; shorter moves are page-turn animations
+GLIDE_MIN_SECONDS = 20.0
+# Such a segment that doesn't glide but whose still views cover less than this share of it can't be read
+HELD_SHARE = 0.4
 # Staff positions tried for a glide, most often seen first
 GLIDE_GROUPS = 3
+# A glide mosaic wider than this many columns is parsed in pieces this wide...
+MOSAIC_PIECE = 40000
+# ...overlapping by this many columns, several times the widest measure
+MOSAIC_OVERLAP = 8000
+# A glide's last cell with less ink than this share of its width times the line gap is blank staff, not a measure
+BLANK_TAIL_INK = 0.02
 # Frame-fixed ink: inked in this share of a segment's views, which must number at least FIXED_MIN_VIEWS
 FIXED_SHARE, FIXED_MIN_VIEWS = 0.85, 4
 # A page turn between two views takes less than this
@@ -104,19 +113,29 @@ def read(path: Path, region: Region | None = None) -> Reading:
     for si, seg in enumerate(segments):
         crop = (seg.x0, seg.y0, seg.x1 - seg.x0, seg.y1 - seg.y0)
         set_paper(seg.paper)
-        views, thr, fthr = views_in(path, crop, seg.polarity, seg.gap, seg.paper, seed_function(found, seg),
-                                    seg.t0, seg.t1, "playhead" in EVIDENCE)
         r.tab_spans.append((round(seg.t0, 2), round(seg.t1, 2)))
-        held = sum(v.t1 - v.t0 for v in views)
-        if seg.t1 - seg.t0 >= GLIDE_MIN_SECONDS and held < GLIDE_SHARE * (seg.t1 - seg.t0):
+        seed_at = seed_function(found, seg)
+        if seg.t1 - seg.t0 >= GLIDE_MIN_SECONDS and glide.glides(path, crop, seg.polarity, seg.paper, seg.t0, seg.t1,
+                                                                bands_function(found, seg), seg.gap):
             # The tab glides past a playhead instead of holding still: read it from a mosaic
+            thr, fthr = first_thresholds(path, crop, seg, seed_at)
             o = glide_obs(path, crop, seg, si, found, thr, fthr, len(obs))
-            if o is not None:
-                obs.append(o)
-                r.panels.append({"t0": round(seg.t0, 2), "t1": round(seg.t1, 2),
-                                 "box": [seg.x0, seg.y0 + o.rows[0], seg.x1 - seg.x0, o.rows[1] - o.rows[0]]})
-                gaps.append(seg.gap)
-                continue
+            if o is None:
+                return r.fail("check_failed", f"The tab scrolls smoothly from {fmt(seg.t0)} to {fmt(seg.t1)}, but the "
+                                              f"moving band could not be put together, so no PDF was written.")
+            obs.append(o)
+            r.panels.append({"t0": round(seg.t0, 2), "t1": round(seg.t1, 2),
+                             "box": [seg.x0, seg.y0 + o.rows[0], seg.x1 - seg.x0, o.rows[1] - o.rows[0]]})
+            gaps.append(seg.gap)
+            continue
+        views, thr, fthr = views_in(path, crop, seg.polarity, seg.gap, seg.paper, seed_at, seg.t0, seg.t1,
+                                    "playhead" in EVIDENCE)
+        held = sum(v.t1 - v.t0 for v in views)
+        if seg.t1 - seg.t0 >= GLIDE_MIN_SECONDS and held < HELD_SHARE * (seg.t1 - seg.t0):
+            # Tab that keeps changing without holding still or scrolling smoothly: the still views miss most of it
+            return r.fail("check_failed", f"The tab at {fmt(seg.t0)}-{fmt(seg.t1)} holds still for only {held:.0f} of "
+                                          f"{seg.t1 - seg.t0:.0f} s and doesn't scroll smoothly either, so most of it "
+                                          f"can't be read; no PDF was written.")
         still = []
         for v in views:
             o = plate_obs(v, seg, si, thr, fthr, len(obs))
@@ -150,14 +169,6 @@ def read(path: Path, region: Region | None = None) -> Reading:
             for o in group:
                 if o.contrast < FADE_SHARE * typical:
                     o.all_cells = []
-    # Tab that glides but couldn't be put together into a mosaic: say so rather than print the few still moments
-    for si, seg in enumerate(segments):
-        held = sum(o.t1 - o.t0 for o in obs if o.seg == si)
-        if (seg.t1 - seg.t0 >= GLIDE_MIN_SECONDS and held < GLIDE_SHARE * (seg.t1 - seg.t0)
-                and not any(o.mosaic is not None for o in obs if o.seg == si)):
-            return r.fail("check_failed", f"The tab scrolls smoothly from {fmt(seg.t0)} to {fmt(seg.t1)} (it holds "
-                                          f"still for only {held:.0f} of {seg.t1 - seg.t0:.0f} s). The moving band "
-                                          f"could not be put together, so no PDF was written.")
     # Ink at the same screen place in nearly every view of a segment is fixed to the frame (a clef and key
     # panel that stays while the music scrolls behind it)
     for si in range(len(segments)):
@@ -165,8 +176,11 @@ def read(path: Path, region: Region | None = None) -> Reading:
         if len(group) >= FIXED_MIN_VIEWS:
             share = np.mean([o.band for o in group], axis=0)
             fixed = cv2.dilate((share >= FIXED_SHARE).astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
+        elif group and group[0].mosaic is None:
+            fixed = np.zeros_like(group[0].band)
         else:
-            fixed = np.zeros_like(group[0].band) if group else None
+            # A glide's mosaic is never lined up with another view, so it needs no map of frame-fixed ink
+            fixed = None
         for o in group:
             o.fixed = fixed
     # A cell much narrower than a typical measure is not one: a clef and key signature before a
@@ -240,7 +254,7 @@ def read(path: Path, region: Region | None = None) -> Reading:
                         "This smooth scroll ended with staff still ahead of the playhead, and no measure was read "
                         "from it; check that the last measures are all printed.")
                 notices.append(Notice(round(t0, 2), round(o.t1, 2), "glide_end", text, True))
-            for w in glide_repeats(o, gap) + glide_gaps(o):
+            for w in glide_repeats(o, gap) + glide_gaps(o) + glide_number_gaps(o):
                 notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
     primary = r.candidates[0].measures
     for w in (empty_stretches(r.tab_spans, [m.play_t for m in primary])
@@ -277,6 +291,28 @@ def seed_function(found, seg):
         return (int(min(x.tab.x0 for x in sy)) - seg.x0, int(min(x.top for x in sy)) - seg.y0,
                 int(max(x.tab.x1 for x in sy)) - seg.x0, int(max(x.tab.bottom for x in sy)) - seg.y0)
     return seed_at
+
+
+def bands_function(found, seg):
+    """Crop rows (top, bottom) of each staff system the scan saw near time t."""
+    def bands_at(t):
+        best = min(found, key=lambda k: abs(k - t))
+        if abs(best - t) > 0.6:
+            return []
+        h = seg.y1 - seg.y0
+        out = [(max(0, int(s.top) - seg.y0), min(h, int(s.tab.bottom) + 1 - seg.y0)) for s in found[best]]
+        return [(a, b) for a, b in out if b - a >= 4]
+    return bands_at
+
+
+def first_thresholds(path: Path, crop, seg: Segment, seed_at) -> tuple[float, float]:
+    """Ink thresholds from the segment's first frame with a staff, as views_in takes them."""
+    for t, f in frames(path, OBS_FPS, crop=crop, start=seg.t0, length=seg.t1 - seg.t0):
+        seed = seed_at(t)
+        if seed is not None:
+            g = to_gray(f, seg.polarity)
+            return ink_threshold(g[max(0, seed[1]):seed[3], max(0, seed[0]):seed[2]], seg.paper, seg.polarity)
+    return 128.0, 230.0
 
 
 def plate_obs(v, seg: Segment, si: int, thr: float, fthr: float, index: int) -> Obs:
@@ -327,17 +363,21 @@ def glide_obs(path: Path, crop, seg: Segment, si: int, found, thr: float, fthr: 
         staff_rows = (max(rows[0], int(top)), min(rows[1], int(bottom) + 1))
         # The mosaic reaches up to the chord names and labels; the playhead and the motion use the analysis rows
         print_rows = (max(0, int(top - PRINT_ABOVE_GAPS * g)), rows[1])
+        staff_x = (int(np.median([s.tab.x0 for s in group])) - seg.x0,
+                   int(np.median([s.tab.x1 for s in group])) - seg.x0)
         m = glide.build(path, crop, print_rows, staff_rows, seg.polarity, thr, seg.gap, seg.t0, seg.t1,
-                        analysis_rows=rows)
+                        analysis_rows=rows, staff_x=staff_x)
         if m is not None:
             break
     if m is None:
         return None
     h, w = m.image.shape[:2]
     print_top = print_rows[0]
-    systems = parse_view(index, m.image, (0, rows[0] - print_top, w, rows[1] - print_top), seg.polarity, thr, fthr,
-                         seg.gap, (0, 0, w, h))
-    cells = [c for ps in systems for c in ps.cells]
+    systems = parse_mosaic(index, m.image, (0, rows[0] - print_top, w, rows[1] - print_top), seg.polarity, thr, fthr,
+                           seg.gap)
+    # Blank staff that scrolls on after the last barline is read as a tail cell holding only line residue
+    cells = [c for ps in systems for c in ps.cells
+             if not (c.kind == "tail" and c.ink.sum() < BLANK_TAIL_INK * (c.x1 - c.x0) * c.gap)]
     for c in cells:
         c.glided = True
     o = Obs(index, seg.t0, seg.t1, cells, [], si, (seg.x0, seg.y0), m.image)
@@ -355,6 +395,48 @@ def glide_obs(path: Path, crop, seg: Segment, si: int, found, thr: float, fthr: 
     o.systems = systems
     o.print_rect = (0, 0, w, h)
     return o
+
+
+def parse_mosaic(index: int, image: np.ndarray, rect: tuple[int, int, int, int], polarity: str, thr: float,
+                 fthr: float, gap: float) -> list:
+    """parse_view of a glide mosaic. A long one is parsed in overlapping pieces, so memory doesn't grow with the
+    glide's length: each piece keeps the cells and barlines of its middle, and the pieces' systems are joined."""
+    h, w = image.shape[:2]
+    # Glides draw notes as tiles over the barlines more often than pages do
+    if w <= MOSAIC_PIECE:
+        return parse_view(index, image, rect, polarity, thr, fthr, gap, (0, 0, w, h), hidden_bars=True)
+    x0, y0, x1, y1 = rect
+    joined: list = []
+    for a in range(0, w - MOSAIC_OVERLAP, MOSAIC_PIECE - MOSAIC_OVERLAP):
+        b = min(w, a + MOSAIC_PIECE)
+        # The piece's middle: half an overlap in from each cut, so no measure kept was cut by the piece's edge
+        lo = a + MOSAIC_OVERLAP // 2 if a > 0 else 0
+        hi = b - MOSAIC_OVERLAP // 2 if b < w else w
+        piece = parse_view(index, image[:, a:b], (max(0, x0 - a), y0, min(b, x1) - a, y1), polarity, thr, fthr, gap,
+                           (0, 0, b - a, h), hidden_bars=True)
+        for ps in piece:
+            # The same system in an earlier piece: the one whose tab staff sits at the same height
+            into = next((q for q in joined if abs(q.system.tab.top - ps.system.tab.top) < ps.system.tab.gap), None)
+            for c in ps.cells:
+                c.x0, c.x1, c.print_x0 = c.x0 + a, c.x1 + a, c.print_x0 + a
+            cells = [c for c in ps.cells if lo <= (c.x0 + c.x1) / 2 < hi]
+            bars = [(p + a, q + a) for p, q in ps.bars if lo <= p + a < hi]
+            if into is None:
+                ps.cells, ps.bars = cells, bars
+                ps.system.tab.x0 += a
+                ps.system.tab.x1 += a
+                joined.append(ps)
+            else:
+                into.cells += cells
+                into.bars += bars
+                into.system.tab.x1 = ps.system.tab.x1 + a
+                into.band = (min(into.band[0], ps.band[0]), max(into.band[1], ps.band[1]))
+                into.repeat_end = into.repeat_end or ps.repeat_end
+    joined.sort(key=lambda ps: ps.system.tab.top)
+    for si, ps in enumerate(joined):
+        for k, c in enumerate(ps.cells):
+            c.system, c.index, c.band = si, k, ps.band
+    return joined
 
 
 def index_of(o: Obs, c: Cell) -> int:
@@ -380,10 +462,16 @@ def measure_at(sid: int, o: Obs, c: Cell, play: list[float]) -> Measure:
     """A printed measure for slot sid, seen as cell c of view o."""
     if o.mosaic is not None:
         m = o.mosaic
-        # A glided measure is placed when its center crossed the playhead (or the slit when no playhead was found)
+        # A glided measure is placed when its center crossed the playhead (the panel centre when none was found)
         when = round(m.time_at((c.x0 + c.x1) / 2), 2)
-        return Measure(sid, o.index, c, when, when, round(m.ref_x + o.offset[0], 1),
-                       round(c.mid_y + o.offset[1] + m.y0, 1), when, c.number, not c.complete)
+        y = round(c.mid_y + o.offset[1] + m.y0, 1)
+        seen = m.seen_at((c.x0 + c.x1) / 2)
+        if seen is not None:
+            # Never crossed the play column while the band moved: placed where it sat on that still screen
+            return Measure(sid, o.index, c, round(seen[0], 2), when, round(seen[1] + o.offset[0], 1), y, None,
+                           c.number, not c.complete)
+        return Measure(sid, o.index, c, when, when, round(m.ref_x + o.offset[0], 1), y, when, c.number,
+                       not c.complete)
     return Measure(sid, o.index, c, round((o.t0 + o.t1) / 2, 2), round(play[index_of(o, c)], 2),
                    round((c.x0 + c.x1) / 2 + o.offset[0], 1), round(c.mid_y + o.offset[1], 1), None, c.number,
                    not c.complete)

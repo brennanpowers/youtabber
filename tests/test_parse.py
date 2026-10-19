@@ -126,3 +126,16 @@ def test_a_closing_barline_just_past_the_panel_edge_ends_the_last_measure():
 def test_a_line_past_the_panel_edge_with_footage_after_it_is_no_barline():
     last = closing_cells("footage").cells[-1]
     assert last.kind == "tail" and not last.complete
+
+
+def test_a_barline_partly_behind_a_note_tile_counts_in_a_glide():
+    img = plate(light_line=False)
+    # A note tile, paper-colored inside, drawn over the middle barline on one string
+    cv2.rectangle(img, (392, 98), (408, 104), (255, 255, 255), -1)
+
+    def bars(hidden):
+        systems = parse_view(0, img, (0, 0, 800, 200), "dark", 140.0, 229.0, 14.0, hidden_bars=hidden)
+        return [c.x0 for ps in systems for c in ps.cells if c.kind == "full"]
+    assert len(bars(False)) == 1
+    xs = bars(True)
+    assert len(xs) == 2 and abs(xs[1] - 400) <= 2

@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 
 from youtabber.assemble import Obs
-from youtabber.observe import chroma, set_paper, to_gray
+from youtabber.observe import color_test, set_paper, to_gray
 from youtabber.parse import Cell
 from youtabber.scan import Segment
 
@@ -98,9 +98,11 @@ def joined_cells(cells: list[Cell], kept: list[Cell]) -> list[tuple[Cell, int, i
     return out
 
 
-def clean(band: np.ndarray, seg: Segment, gap: float, cols: tuple[int, int] | None = None) -> np.ndarray:
+def clean(band: np.ndarray, seg: Segment, gap: float, cols: tuple[int, int] | None = None,
+          paper: float | None = None) -> np.ndarray:
     """Gray image of a band with dark ink on white paper, with cursor and highlight tint lifted to paper. Only
-    columns cols (the paper panel) are kept; the rest print white."""
+    columns cols (the paper panel) are kept; the rest print white. `paper` is the paper's gray level when the band
+    is a piece of a wider one, else it is taken from the band."""
     set_paper(seg.paper)
     a, b = cols or (0, band.shape[1])
     out = np.full(band.shape[:2], 255, np.uint8)
@@ -109,8 +111,8 @@ def clean(band: np.ndarray, seg: Segment, gap: float, cols: tuple[int, int] | No
         return out
     part = band[:, a:b]
     gray = to_gray(part, seg.polarity).astype(np.float32)
-    paper = float(np.median(gray))
-    tinted = (chroma(part) > PRINT_COLOR_SAT).astype(np.uint8)
+    paper = float(np.median(gray)) if paper is None else paper
+    tinted = color_test(part, lambda c: c > PRINT_COLOR_SAT).astype(np.uint8)
     n, labels, stats, _ = cv2.connectedComponentsWithStats(tinted, connectivity=8)
     big = [j for j in range(1, n) if stats[j][4] >= TINT_AREA_GAPS * gap * gap or stats[j][3] >= 3 * gap]
     # On dark themes the ink itself is colored, so nothing is lifted
@@ -123,6 +125,37 @@ def clean(band: np.ndarray, seg: Segment, gap: float, cols: tuple[int, int] | No
             gray[body & (gray >= level) & (gray > 0.5 * paper)] = paper
     out[:, a:b] = whiten(gray.astype(np.uint8))
     return out
+
+
+# The band cleaned last, with what it was cleaned from. A view's measures print from a few bands, one per system, so
+# each band is cleaned once; a glide mosaic holds the whole song in one band.
+_cleaned: tuple | None = None
+
+
+def cleaned(o: Obs, rows: tuple[int, int], seg: Segment, gap: float, cols: tuple[int, int]) -> np.ndarray:
+    """clean() of rows of a view's image, reused while the next measure prints from the same band."""
+    global _cleaned
+    key = (rows, cols, gap)
+    if _cleaned is None or _cleaned[0] is not o.image or _cleaned[1] != key:
+        _cleaned = (o.image, key, clean(o.image[rows[0]:rows[1]], seg, gap, cols))
+    return _cleaned[2]
+
+
+# A glide mosaic wider than this many columns prints each measure from a piece of its band around the measure, with
+# the paper level of the whole band, so printing never holds a cleaned copy of the whole glide
+PRINT_PIECE = 40000
+# The paper level of the band last asked for: (image, rows, level)
+_paper_level: tuple | None = None
+
+
+def band_paper(o: Obs, rows: tuple[int, int], seg: Segment) -> float:
+    """The paper's gray level over rows of a view's image, as clean() would take it from the whole band."""
+    global _paper_level
+    if _paper_level is None or _paper_level[0] is not o.image or _paper_level[1] != rows:
+        x0, _, x1, _ = o.print_rect
+        gray = to_gray(o.image[rows[0]:rows[1], x0:x1], seg.polarity)
+        _paper_level = (o.image, rows, float(np.median(gray)))
+    return _paper_level[2]
 
 
 def print_cell(o: Obs, c: Cell, seg: Segment) -> PrintCell:
@@ -139,35 +172,46 @@ def print_cell(o: Obs, c: Cell, seg: Segment) -> PrintCell:
     # margin before it, and a measure joined with a clef or time signature cell starts at that cell
     x0 = first_col
     x1 = next((q for p, q in ps.bars if p == c.x1), c.x1) + 1
+    # Marks are looked at between the neighbors' far edges, so a mark's left edge is never cut off
+    w0 = starts[i - 1] if i > 0 else max(0, x0 - int(3 * c.gap))
+    w1 = starts[i + 2] if i + 2 < len(starts) else o.image.shape[1]
+    # A long mosaic is printed from a piece of its band; columns below are counted from the piece's left edge
+    lo, hi = 0, o.image.shape[1]
+    if o.mosaic is not None and hi > PRINT_PIECE:
+        lo, hi = max(0, min(w0, x0) - int(3 * c.gap)), min(hi, max(w1, x1) + int(3 * c.gap))
+    x0, x1, w0, w1, left_bar, right_bar = x0 - lo, x1 - lo, w0 - lo, w1 - lo, left_bar - lo, c.x1 - lo
+    starts = [s - lo for s in starts]
     # Only the paper panel counts: footage left or right of it would skew the paper level. A closing barline
     # can lie just past the panel's right edge, and prints too
     px0, _, px1, _ = o.print_rect
-    if b1 > b0:
-        gray = clean(o.image[b0:b1], seg, c.gap, (px0, max(px1, x1)))
+    cols = (max(0, px0 - lo), max(px1 - lo, x1))
+    if b1 > b0 and lo == 0 and hi == o.image.shape[1]:
+        gray = cleaned(o, (b0, b1), seg, c.gap, cols)
+    elif b1 > b0:
+        gray = clean(o.image[b0:b1, lo:hi], seg, c.gap, cols, band_paper(o, (b0, b1), seg))
     else:
         # A band with no rows prints as blank paper as tall as the staff, since the page layout needs an image to place
         b0, b1 = int(st.top), int(np.ceil(st.bottom)) + 1
-        gray = np.full((b1 - b0, o.image.shape[1]), 255, np.uint8)
+        gray = np.full((b1 - b0, hi - lo), 255, np.uint8)
     sys_top = int(round((ps.system.notation or st).top)) - b0
     sys_bottom = int(round(st.bottom)) - b0
     # Mark rows reach close to the outer staff lines, so a number sitting on the staff is labeled whole
     margin = max(2, int(0.15 * c.gap))
-    # Marks are looked at between the neighbors' far edges, so a mark's left edge is never cut off
-    w0 = starts[i - 1] if i > 0 else max(0, x0 - int(3 * c.gap))
-    w1 = starts[i + 2] if i + 2 < len(starts) else gray.shape[1]
-    keep = np.zeros(gray.shape, bool)
-    keep[:, x0:x1] = True
+    # Only the columns the measure and its marks can reach are looked at
+    k0, k1 = min(w0, x0), min(max(w1, x1), gray.shape[1])
+    keep = np.zeros((gray.shape[0], k1 - k0), bool)
+    keep[:, x0 - k0:x1 - k0] = True
     xa, xb = x0, x1
     for rows in (slice(0, max(0, sys_top - margin)), slice(min(gray.shape[0], sys_bottom + margin), gray.shape[0])):
         marks = (gray[rows, w0:w1] < MARK_LEVEL).astype(np.uint8)
         # OpenCV crashes on an empty image: a band with no room above or below the staffs has no marks there
         if marks.size == 0:
             continue
-        part = keep[rows, w0:w1]
+        part = keep[rows, w0 - k0:w1 - k0]
         for mask, left, right, k in mark_groups(marks, w0, starts, c.gap):
             part[mask] = k == i
             if k == i:
                 xa, xb = min(xa, left), max(xb, right)
-    out = np.where(keep, gray, 255).astype(np.uint8)[:, xa:xb]
+    out = np.where(keep, gray[:, k0:k1], 255).astype(np.uint8)[:, xa - k0:xb - k0]
     # Overhang is measured from the left barline (a system's first measure: its staff start)
-    return PrintCell(out, c.gap, c.y0 + c.ref_y - b0, left_bar - xa, c.x1 - left_bar)
+    return PrintCell(out, c.gap, c.y0 + c.ref_y - b0, left_bar - xa, right_bar - left_bar)

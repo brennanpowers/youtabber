@@ -38,6 +38,7 @@ class Cell:
     mid_y: float = 0.0                      # middle of the tab staff, crop coordinates
     tint: np.ndarray | None = None          # colored (cursor-tinted) pixels in the cell box
     number: int | None = None
+    read: int | None = None                 # the number OCR read from number_crop, trusted or not
     slot: int | None = None
     glided: bool = False                    # read from a glide mosaic
     # Between two barlines, or a system's own first or last measure; False when the panel edge cuts it
@@ -57,18 +58,30 @@ class ParsedSystem:
     band: tuple[int, int] = (0, 0)   # rows to print, crop coordinates
 
 
+# In a glide, a barline drawn behind the note tiles covers less of the staff: a thin line covering this share
+# counts too, when the columns on each side of it are inked in less than THIN_BESIDE of the rows the line is inked
+# in (the edge of a column of digits is inked on one side)
+HIDDEN_BAR_COVER, THIN_BESIDE = 0.85, 0.5
+
+
 def barlines(dark: np.ndarray, tab_top: float, tab_bottom: float, gap: float, x0: int, x1: int,
-             notation: tuple[float, float] | None) -> list[tuple[int, int]]:
+             notation: tuple[float, float] | None, hidden: bool = False) -> list[tuple[int, int]]:
     """(first, last) columns of each barline across the tab staff.
 
     With a notation staff, a barline also crosses the middle of that staff (its outer lines may be ledger or
-    beam rows found as lines).
+    beam rows found as lines). With `hidden`, thin lines partly covered by notes count as barlines too.
     """
     a, b = int(round(tab_top)), int(round(tab_bottom))
     band = dark[a:b + 1, x0:x1]
     if band.size == 0:
         return []
-    full = band.mean(axis=0) >= BAR_COVER
+    cover = band.mean(axis=0)
+    full = cover >= BAR_COVER
+    if hidden:
+        inked = np.maximum(band.sum(axis=0), 1)
+        left, right = ((sum((band & np.roll(band, d, axis=1)).sum(axis=0) for d in side) / (2 * inked))
+                       for side in ((2, 3), (-2, -3)))
+        full |= (cover >= HIDDEN_BAR_COVER) & (np.maximum(left, right) < THIN_BESIDE)
     if notation is None:
         # In tab with rhythm stems below it, a barline stops at the bottom line; a stem that starts on the
         # top string runs on down to its beam
@@ -278,7 +291,8 @@ def print_band(marks: np.ndarray, top: float, bottom: float, gap: float, lo: int
 
 
 def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], polarity: str, thr: float, fthr: float,
-               gap: float, print_rect: tuple[int, int, int, int] | None = None) -> list[ParsedSystem]:
+               gap: float, print_rect: tuple[int, int, int, int] | None = None,
+               hidden_bars: bool = False) -> list[ParsedSystem]:
     g = to_gray(plate, polarity)
     rx0, ry0, rx1, ry1 = rect
     sub = g.copy()
@@ -321,7 +335,8 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
             prev.y1 = min(prev.y1, mid)
         st.x0, st.x1 = staff_extent(faint_struct, st.lines, max(st.x0, rx0), min(st.x1, rx1), st.gap)
         notation = (s.notation.lines[1], s.notation.lines[-2]) if s.notation else None
-        bars = barlines(faint_struct, st.top, st.bottom, st.gap, max(rx0, st.x0 - 2), min(rx1, st.x1 + 3), notation)
+        bars = barlines(faint_struct, st.top, st.bottom, st.gap, max(rx0, st.x0 - 2), min(rx1, st.x1 + 3), notation,
+                        hidden_bars)
         bar_sub = sub
         # The panel's edge search stops at a double or thick closing barline, so a staff that runs to the panel's
         # right edge may end on a barline just past it: those columns are read from the plate as it is

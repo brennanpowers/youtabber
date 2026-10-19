@@ -90,9 +90,22 @@ def chroma(frame: np.ndarray) -> np.ndarray:
     return cv2.subtract(cv2.max(cv2.max(b, g), r), cv2.min(cv2.min(b, g), r))
 
 
+# Wider images have their color judged this many columns at a time, so a long glide mosaic never needs float copies
+# of the whole image at once
+COLOR_PIECE = 4096
+
+
+def color_test(frame: np.ndarray, test) -> np.ndarray:
+    """test() applied to each pixel's color spread, a piece of columns at a time."""
+    if frame.shape[1] <= COLOR_PIECE:
+        return test(chroma(frame))
+    return np.concatenate([test(chroma(frame[:, a:a + COLOR_PIECE])) for a in range(0, frame.shape[1], COLOR_PIECE)],
+                          axis=1)
+
+
 def colored(frame: np.ndarray) -> np.ndarray:
     """Strongly colored pixels: cursor boxes, highlights and recolored notes rather than printed ink."""
-    return chroma(frame) > COLOR_SAT
+    return color_test(frame, lambda c: c > COLOR_SAT)
 
 
 def ink_map(gray: np.ndarray, thr: float, gap: float, frame: np.ndarray | None = None) -> np.ndarray:
@@ -106,7 +119,7 @@ def ink_map(gray: np.ndarray, thr: float, gap: float, frame: np.ndarray | None =
 
 def gray_pixels(frame: np.ndarray) -> np.ndarray:
     """Pixels without strong color. Faint gray marks are numbers; faint colored ones are highlights."""
-    return chroma(frame) < GRAY_SAT
+    return color_test(frame, lambda c: c < GRAY_SAT)
 
 
 def alone(faint: np.ndarray, ink: np.ndarray) -> np.ndarray:

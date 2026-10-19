@@ -119,7 +119,7 @@ def glide_repeats(o, gap: float) -> list[dict]:
 
     def alike(i: int, j: int) -> bool:
         if (i, j) not in like:
-            like[(i, j)] = resemble_scaled(cells[j], cells[i], gap) < REPEAT_RESEMBLE
+            like[(i, j)] = resemble_scaled(cells[j], cells[i], gap, REPEAT_RESEMBLE) < REPEAT_RESEMBLE
         return like[(i, j)]
 
     repeating = set()
@@ -158,6 +158,26 @@ def glide_gaps(o) -> list[dict]:
             out.append({"t0": round(times[k], 2), "t1": round(times[k + 1], 2), "kind": "glide_gap",
                         "text": f"Playback takes {v:.1f} s from the measure at {fmt(times[k])} to the next, about "
                                 f"{v / med:.1f} measures' time; measures may be missing there."})
+    return out
+
+
+# Neighbouring numbers read further apart than this are a misreading, not lost measures
+NUMBER_JUMP_MAX = 8
+
+
+def glide_number_gaps(o) -> list[dict]:
+    """Places in a glide where neighbouring cells' measure numbers, as read, skip a number: a barline was missed
+    and two measures print as one. Only neighbours count, since some videos number only the first measure of
+    each line. One view can't vouch for its numbers, so they only warn."""
+    out = []
+    for c, d in zip(o.cells, o.cells[1:]):
+        if c.read is None or d.read is None or not 2 <= d.read - c.read <= NUMBER_JUMP_MAX:
+            continue
+        ta = o.mosaic.time_at((c.x0 + c.x1) / 2)
+        tb = o.mosaic.time_at((d.x0 + d.x1) / 2)
+        out.append({"t0": round(ta, 2), "t1": round(tb, 2), "kind": "glide_number_gap",
+                    "text": f"The measure numbers read between {fmt(ta)} and {fmt(tb)} skip from {c.read} to {d.read}; "
+                            f"a barline was likely missed there, so a measure may be printed joined to another."})
     return out
 
 

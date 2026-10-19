@@ -2,6 +2,7 @@ import json
 import subprocess
 from collections.abc import Iterator
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +20,16 @@ class VideoError(Exception):
 
 
 def probe(path: Path) -> VideoInfo:
+    """Size and length of a video. Asked many times per run, so each file is probed once while it is unchanged."""
+    try:
+        st = Path(path).stat()
+    except OSError as e:
+        raise VideoError(f"Can't read {path} as a video: {e.strerror}")
+    return _probe(str(path), st.st_mtime_ns, st.st_size)
+
+
+@lru_cache(maxsize=64)
+def _probe(path: str, mtime_ns: int, size: int) -> VideoInfo:
     result = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0",
          "-show_entries", "stream=width,height:format=duration", "-of", "json", str(path)],
