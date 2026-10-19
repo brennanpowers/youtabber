@@ -139,3 +139,55 @@ def test_a_barline_partly_behind_a_note_tile_counts_in_a_glide():
     assert len(bars(False)) == 1
     xs = bars(True)
     assert len(xs) == 2 and abs(xs[1] - 400) <= 2
+
+
+def test_an_arpeggio_squiggle_is_not_a_barline():
+    img = plate(light_line=False)
+    # A wavy vertical stroke across the staff, as an arpeggio sign is drawn
+    pts = np.array([(250 + (3 if (y // 4) % 2 else -3), y) for y in range(56, 136, 4)], np.int32)
+    cv2.polylines(img, [pts], False, (0, 0, 0), 3)
+    assert full_cells(img) == full_cells(plate(light_line=False))
+
+
+def test_blurred_barlines_still_make_measures():
+    img = cv2.GaussianBlur(plate(light_line=False), (0, 0), 2.0)
+    assert full_cells(img) == [97, 397]
+
+
+def test_a_glide_barline_behind_a_tile_with_ink_beside_it_stays():
+    # Gap 30: the columns checked for paper beside a barline lie 4 px out, inside the note tiles of a glide
+    img = np.full((260, 800, 3), 255, np.uint8)
+    for i in range(6):
+        cv2.line(img, (20, 60 + i * 30), (780, 60 + i * 30), (60, 60, 60), 1)
+    for x in (100, 400, 700):
+        cv2.line(img, (x, 60), (x, 210), (0, 0, 0), 2)
+    # A tile hides part of the middle barline, and its edges run down both sides of it
+    img[130:148, 395:406] = 255
+    for x in (396, 404):
+        cv2.line(img, (x, 60), (x, 160), (0, 0, 0), 1)
+    systems = parse_view(0, img, (0, 0, 800, 260), "dark", 140.0, 229.0, 30.0, hidden_bars=True)
+    assert [c.x0 for ps in systems for c in ps.cells if c.kind == "full"] == [99, 400]
+
+
+def notation_page(lone: bool) -> np.ndarray:
+    """A system of notation (gap 10) over tab (gap 14), and optionally the next system's notation staff alone at
+    the bottom, its tab below the panel."""
+    img = np.full((400, 800, 3), 255, np.uint8)
+    for i in range(5):
+        cv2.line(img, (20, 40 + i * 10), (780, 40 + i * 10), (60, 60, 60), 1)
+    for i in range(6):
+        cv2.line(img, (20, 140 + i * 14), (780, 140 + i * 14), (60, 60, 60), 1)
+    for x in (100, 400, 700):
+        cv2.line(img, (x, 40), (x, 210), (0, 0, 0), 2)
+    if lone:
+        for i in range(5):
+            cv2.line(img, (20, 320 + i * 10), (780, 320 + i * 10), (60, 60, 60), 1)
+        for x in (100, 400, 700):
+            cv2.line(img, (x, 320), (x, 360), (0, 0, 0), 2)
+    return img
+
+
+def test_a_notation_staff_without_its_tab_gives_notation_only_cells():
+    top, bottom = parse_view(0, notation_page(True), (0, 0, 800, 400), "dark", 140.0, 229.0, 14.0)
+    assert top.system.notation is not None and not any(c.notation_only for c in top.cells)
+    assert bottom.system.notation is None and len(bottom.cells) == 4 and all(c.notation_only for c in bottom.cells)

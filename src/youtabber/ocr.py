@@ -22,14 +22,15 @@ def engine():
 
 
 def prepare(gray: np.ndarray) -> np.ndarray:
-    """Stretch the crop's contrast to full black on white, scale the digits to TARGET_HEIGHT, binarize, pad."""
+    """Stretch the crop's contrast to full black on white, scale the digits to TARGET_HEIGHT, and pad.
+
+    The crop stays gray: thresholding it breaks light-gray digits into pieces the recognizer misreads."""
     g = gray.astype(np.float32)
     paper = float(np.percentile(g, 90))
     ink = float(g.min())
     n = np.clip((g - ink) / max(paper - ink, 1.0) * 255, 0, 255).astype(np.uint8)
     scale = TARGET_HEIGHT / max(n.shape[0], 1)
     big = cv2.resize(n, None, fx=scale, fy=scale, interpolation=cv2.INTER_LANCZOS4)
-    big = np.where(big < 140, 0, 255).astype(np.uint8)
     return cv2.copyMakeBorder(big, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255)
 
 

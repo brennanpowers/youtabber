@@ -27,3 +27,15 @@ def test_reads_without_the_network(monkeypatch):
     monkeypatch.setattr(socket, "socket", refuse)
     ocr._engine = None
     assert ocr.read_number(drawn("17")) == 17
+
+
+def soft(text: str) -> np.ndarray:
+    """A light-gray number 17 px tall with blurred strokes, as small measure numbers come out of a video."""
+    big = np.full((80, 45 * len(text) + 20), 245, np.uint8)
+    cv2.putText(big, text, (10, 62), cv2.FONT_HERSHEY_SIMPLEX, 2.0, 110, 2, cv2.LINE_AA)
+    big = cv2.GaussianBlur(big, (0, 0), 5)
+    return cv2.resize(big, None, fx=17 / 80, fy=17 / 80, interpolation=cv2.INTER_AREA)
+
+
+def test_reads_soft_light_gray_numbers():
+    assert [ocr.read_number(soft(str(n))) for n in range(1, 30)] == list(range(1, 30))

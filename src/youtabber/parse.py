@@ -13,12 +13,29 @@ BAR_COVER = 0.92
 BAR_WIDTH = 0.6
 # Barline columns closer than this many gaps belong to one barline
 BAR_MERGE = 0.7
+# The columns this many line gaps either side of a barline are checked for ink...
+BAR_SIDE_GAPS = 0.12
+# ...and a stroke with more than this share of the tab staff's rows inked there on both sides is not a barline
+BAR_SIDE_INK = 0.45
 # A measure is at least this many gaps wide
 MIN_CELL = 1.5
 # A staff that starts or ends this many line gaps inside the panel starts or ends there, not at the panel edge
 INSIDE_GAPS = 1.0
 # Line groups spaced closer than this share of the view's widest-spaced tab staff are not tab staffs
 CLOSE_STAFF_SHARE = 0.6
+
+
+# A notation staff's line spacing is within this share of the other notation staffs in the same view
+NOTATION_MATCH = 0.15
+# ...and below this share of the view's widest tab staff
+NOTATION_SHARE = 0.85
+
+
+def lone_notation(s: System, notation_gaps: list[float], widest: float) -> bool:
+    """True when a "tab staff" with no notation of its own has at most 5 lines spaced like the view's notation."""
+    if s.notation is not None or len(s.tab.lines) > 5 or not notation_gaps or s.tab.gap >= NOTATION_SHARE * widest:
+        return False
+    return any(abs(s.tab.gap - g) <= NOTATION_MATCH * g for g in notation_gaps)
 
 
 @dataclass
@@ -45,6 +62,7 @@ class Cell:
     complete: bool = True
     band: tuple[int, int] = (0, 0)          # rows to print, crop coordinates
     print_x0: int = 0                       # first column to print, crop coordinates
+    notation_only: bool = False             # on a notation staff whose tab staff is out of the panel
 
 
 @dataclass
@@ -103,7 +121,16 @@ def barlines(dark: np.ndarray, tab_top: float, tab_bottom: float, gap: float, x0
             bars[-1][1] = x
         else:
             bars.append([x, x])
-    return [(p, q) for p, q in bars if q - p <= BAR_WIDTH * gap * 2.5]
+    bars = [(p, q) for p, q in bars if q - p <= BAR_WIDTH * gap * 2.5]
+    # In a glide the note tiles crowd the barlines, so ink beside a line proves nothing there
+    if hidden:
+        return bars
+    # A barline is a straight stroke with paper beside it; an arpeggio squiggle or a letter stroke has ink on
+    # both sides
+    d = max(2, int(round(BAR_SIDE_GAPS * gap)))
+    return [(p, q) for p, q in bars
+            if not (p - d >= 0 and q + d < dark.shape[1] and dark[a:b + 1, p - d].mean() > BAR_SIDE_INK
+                    and dark[a:b + 1, q + d].mean() > BAR_SIDE_INK)]
 
 
 # A staff running to the panel's right edge has its barlines looked for up to this many line gaps past that edge
@@ -309,6 +336,10 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
     # A "tab staff" spaced much closer than the view's widest-spaced one is beams or text lines, not a staff
     widest = max((s.tab.gap for s in syss), default=0.0)
     syss = [s for s in syss if s.tab.gap >= CLOSE_STAFF_SHARE * widest]
+    # A lone staff of 5 lines or fewer, spaced like this view's notation staffs and closer than its tab staffs, is
+    # a notation staff whose tab is below the panel
+    notation_gaps = [s.notation.gap for s in syss if s.notation is not None]
+    lone = [lone_notation(s, notation_gaps, widest) for s in syss]
     colored_plate = colored(plate)
     # Where a cursor or highlight tinted the page, ink can't be compared between sightings
     tint = cv2.dilate(colored_plate.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
@@ -397,5 +428,6 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
                                  gap=st.gap, ref_y=int(round(st.top)) - ps.y0, mid_y=(st.top + st.bottom) / 2,
                                  tint=box_tint,
                                  complete=kind == "full" or (kind == "lead" and starts_inside)
-                                 or (kind == "tail" and ends_inside), band=ps.band, print_x0=print_x0))
+                                 or (kind == "tail" and ends_inside), band=ps.band, print_x0=print_x0,
+                                 notation_only=lone[si]))
     return out

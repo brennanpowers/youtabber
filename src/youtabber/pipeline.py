@@ -8,7 +8,7 @@ import numpy as np
 from youtabber import glide, ocr
 from youtabber.assemble import Assembly, Obs, assemble, cell_at, number_views
 from youtabber.check import (dwell, empty_stretches, fmt, glide_gaps, glide_number_gaps, glide_repeats, number_checks,
-                             odd_widths, possible_duplicates, too_few)
+                             numbers_against_cells, odd_widths, possible_duplicates, too_few)
 from youtabber.observe import (ABOVE_GAPS, BELOW_GAPS, OBS_FPS, PRINT_ABOVE_GAPS, ink_map, ink_threshold, set_paper,
                                to_gray, views_in)
 from youtabber.parse import Cell, parse_view
@@ -37,6 +37,11 @@ BLANK_TAIL_INK = 0.02
 FIXED_SHARE, FIXED_MIN_VIEWS = 0.85, 4
 # A page turn between two views takes less than this
 TURN_SECONDS = 1.0
+# A view is covered by a title card or photo when at least this share of its marks are missing from the next view
+# of the same page...
+COVER_EXTRA = 0.4
+# ...and at most this share of the next view's marks are missing from it
+COVER_MISSING = 0.1
 
 Region = tuple[int, int, int, int]
 
@@ -160,6 +165,11 @@ def read(path: Path, region: Region | None = None) -> Reading:
         gaps.append(seg.gap)
     r.views = obs
     gap = float(np.median(gaps))
+    # A title card or photo laid over the first screen of a page adds marks the next screen doesn't have; the
+    # same music shows clean on that next screen, so the covered view gives no measures
+    for p, o in zip(obs, obs[1:]):
+        if covered(p, o):
+            p.all_cells = []
     # A view caught in a fade has weak contrast and loses its barlines; its music is shown again at full
     # contrast, so it is left out
     for si in range(len(segments)):
@@ -191,6 +201,9 @@ def read(path: Path, region: Region | None = None) -> Reading:
         o.cells = [c for c in o.all_cells if (c.x1 - c.x0) >= EDGE_SHARE * typical]
         o.bars = sorted({c.x0 for c in o.all_cells if c.kind != "lead"} | {c.x1 for c in o.all_cells if c.kind != "tail"})
     r.numbering = number_views(obs, ocr.read_number)
+    # A measure seen only on its notation staff, its tab out of the panel, can be placed by its number alone
+    for o in obs:
+        o.cells = [c for c in o.cells if not c.notation_only or c.number is not None]
 
     def words_of(o: Obs) -> list[str]:
         return ocr.find_words(o.plate) if o.plate is not None else []
@@ -217,7 +230,7 @@ def read(path: Path, region: Region | None = None) -> Reading:
                               f"The measures at {fmt(t0)}-{fmt(t1)} repeat ones first shown at "
                               f"{fmt(first_seen.t0)}-{fmt(first_seen.t1)}, with no sign whether the song plays "
                               f"them again or the video replays them.", False))
-    for w in possible_duplicates(main, obs, gap) + dwell(obs) + odd_widths(obs):
+    for w in possible_duplicates(main, obs, gap) + dwell(obs) + odd_widths(obs) + numbers_against_cells(obs):
         notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
     for o in obs:
         if o.mosaic is not None:
@@ -279,6 +292,24 @@ def read(path: Path, region: Region | None = None) -> Reading:
     r.path = play_path(main, obs)
     r.every_pass = [Candidate("primary", "all", path_measures(main, obs, r.path))]
     return r
+
+
+def covered(p: Obs, o: Obs) -> bool:
+    """True when still view p shows the same staffs as the next view o plus many marks o doesn't have, while
+    nearly all of o's marks are in p."""
+    if p.seg != o.seg or p.mosaic is not None or o.mosaic is not None or not p.systems:
+        return False
+    # A next view fainter than p is fading out: it lost p's marks to the fade, not to a card
+    if o.contrast < FADE_SHARE * p.contrast:
+        return False
+    if len(p.systems) != len(o.systems) or any(abs(a.system.tab.top - b.system.tab.top) > 0.25 * a.system.tab.gap
+                                               for a, b in zip(p.systems, o.systems)):
+        return False
+    a, b = p.band, o.band
+    near = np.ones((5, 5), np.uint8)
+    only_p = (a & ~cv2.dilate(b.astype(np.uint8), near).astype(bool)).sum() / max(int(a.sum()), 1)
+    only_o = (b & ~cv2.dilate(a.astype(np.uint8), near).astype(bool)).sum() / max(int(b.sum()), 1)
+    return only_p >= COVER_EXTRA and only_o <= COVER_MISSING
 
 
 def seed_function(found, seg):
@@ -479,13 +510,16 @@ def measure_at(sid: int, o: Obs, c: Cell, play: list[float]) -> Measure:
 
 def measures_of(A: Assembly, obs: list[Obs], order: list[int]) -> list[Measure]:
     """The measures to print for the slots in `order`, each from its best sighting: a complete one when there
-    is one, then one between two barlines, then the widest, then the earliest."""
+    is one, then one showing its tab staff, then one between two barlines, then the widest, then one from the view
+    the measure before printed from, then the earliest."""
     times = {o.index: play_times(o) for o in obs}
     out = []
+    prev = None
     for sid in order:
-        vi, c = max(A.sightings[sid], key=lambda vc: (vc[1].complete, vc[1].kind == "full", vc[1].x1 - vc[1].x0,
-                                                      -vc[0]))
+        vi, c = max(A.sightings[sid], key=lambda vc: (vc[1].complete, not vc[1].notation_only, vc[1].kind == "full",
+                                                      vc[1].x1 - vc[1].x0, vc[0] == prev, -vc[0]))
         out.append(measure_at(sid, obs[vi], c, times[vi]))
+        prev = vi
     return out
 
 

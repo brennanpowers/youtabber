@@ -221,3 +221,23 @@ def number_checks(labels: list[tuple[float, int | None]], once: bool, duration: 
             out.append({"t0": round(tb - 2, 2), "t1": round(tb + 2, 2), "kind": "number_again",
                         "text": f"Measure {b} is printed again at {fmt(tb)}."})
     return out
+
+
+def numbers_against_cells(obs) -> list[dict]:
+    """Views whose trusted measure numbers disagree with the measures found between their barlines: a number read
+    over a cell that the count from the view's other numbers gives another number. A barline was likely missed or
+    found where there is none, so measures there may be cut in two or merged."""
+    out = []
+    for o in obs:
+        if not o.number_conflicts:
+            continue
+        if o.mosaic is not None:
+            times = [o.mosaic.time_at((c.x0 + c.x1) / 2) for c, _ in o.number_conflicts]
+            t0, t1 = max(o.t0, min(times) - 3), min(o.t1, max(times) + 3)
+        else:
+            t0, t1 = o.t0, o.t1
+        read = ", ".join(str(n) for _, n in o.number_conflicts[:4])
+        out.append({"t0": round(t0, 2), "t1": round(t1, 2), "kind": "numbers_disagree",
+                    "text": f"Measure numbers read at {fmt(t0)}-{fmt(t1)} ({read}) don't match the measures found "
+                            f"between the barlines there; a measure may be cut in two or two merged into one."})
+    return out

@@ -39,6 +39,8 @@ GLIDE_RESEMBLE = 0.15
 GLIDE_CONTINUE = 0.4
 # A glide counts as played again when this share of its measures align with an earlier glide
 GLIDE_RESTART_SHARE = 0.6
+# A number read this many measures or fewer off its view's count points at a missed or extra barline
+CONFLICT_SPAN = 2
 NAV_WORDS = ("D.S", "DS.", "D.C", "DC.", "CODA", "FINE", "SEGNO")
 
 
@@ -71,6 +73,7 @@ class Obs:
     image: np.ndarray | None = None      # the whole plate or mosaic that cell coordinates refer to
     systems: list = field(default_factory=list)   # the view's parsed systems, top to bottom
     print_rect: tuple = (0, 0, 0, 0)     # paper area to print from (x0, y0, x1, y1), crop coordinates
+    number_conflicts: list = field(default_factory=list)   # (cell, number read) where the count gives another
 
 
 @dataclass
@@ -112,8 +115,10 @@ def number_views(obs: list[Obs], read) -> str:
     on one starting number for the run of cells. Returns "numbered" or "unnumbered".
     """
     consistent = checked = 0
+    all_reads = []
     for o in obs:
         reads = []
+        all_reads.append(reads)
         for i, c in enumerate(o.cells):
             c.number = c.read = None
             if c.number_crop is not None:
@@ -121,6 +126,7 @@ def number_views(obs: list[Obs], read) -> str:
                 if n is not None:
                     reads.append((i, n))
         o.start = None
+        o.number_conflicts = []
         if len(reads) < 2:
             continue
         checked += 1
@@ -129,10 +135,13 @@ def number_views(obs: list[Obs], read) -> str:
             consistent += 1
             o.start = start
     numbered = checked >= 3 and consistent >= 0.6 * checked
-    for o in obs:
+    for o, reads in zip(obs, all_reads):
         if numbered and o.start is not None:
             for i, c in enumerate(o.cells):
                 c.number = o.start + i
+            # A number a measure or two off the count means a barline was missed or added; one further off is a
+            # misread, such as one digit of a two-digit number or a fret number taken for one
+            o.number_conflicts = [(o.cells[i], n) for i, n in reads if 0 < abs(n - o.start - i) <= CONFLICT_SPAN]
     if numbered:
         borrow_numbers(obs)
     return "numbered" if numbered else "unnumbered"
