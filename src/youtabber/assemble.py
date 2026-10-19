@@ -5,7 +5,7 @@ scrolled, the lower line rolled up, or a measure was previewed at the edge). Cel
 explain are new music, or a replay of earlier slots (REVISIT), which folds only with evidence.
 """
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -34,6 +34,8 @@ TRACKED_SHARE = 0.5
 SYSTEM_START_GAPS = 3.0
 # Two sightings this alike (share of unmatched ink) can lend a measure number from one to the other
 BORROW_RESEMBLE = 0.05
+# A numbered measure met again on a later screen is the same music when this alike (share of unmatched ink)
+REPLAY_RESEMBLE = 0.3
 # Glided measures this alike after scaling (share of unmatched ink) count as the same measure in a run
 GLIDE_RESEMBLE = 0.15
 GLIDE_CONTINUE = 0.4
@@ -68,6 +70,7 @@ class Obs:
     mosaic: object = None                # the glide mosaic this view was read from, if any
     all_cells: list = field(default_factory=list)   # every parsed cell, before narrow ones are dropped
     contrast: float = 0.0                # paper against the darkest ink, to spot views caught in a fade
+    line_contrast: float = 0.0           # paper against the tab staff lines, to spot views caught in a fade
     start: int | None = None             # number of the view's first cell, when its numbers count up
     rows: tuple[int, int] = (0, 0)       # crop rows a glide mosaic was built from
     image: np.ndarray | None = None      # the whole plate or mosaic that cell coordinates refer to
@@ -433,7 +436,7 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
     """Place views into the score. `use` names the evidence allowed ("numbers", "playhead", "navigation");
     `fold_unresolved` says how to read a re-shown run with no evidence (the main reading prints it again)."""
     A = Assembly()
-    by_index = {o.index: o for o in obs}
+    seg_of = {o.index: o.seg for o in obs}
     prev: Obs | None = None
     prev_slots: list = []
     last_end = None
@@ -455,7 +458,7 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
             continue
         slot_of: list = [None] * len(cells)
         if "numbers" in use and all(c.number is not None for c in cells):
-            place_numbered(o, slot_of, A, prev, prev_slots, gap)
+            place_numbered(o, slot_of, A, prev, prev_slots, gap, seg_of)
         else:
             links: dict = {}
             if prev is not None and prev.seg == o.seg and not o.wrapped:
@@ -487,11 +490,10 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
             if "numbers" in use:
                 carry_numbers(slot_of, A)
         A.view_slots[o.index] = list(slot_of)
-        prev, prev_slots = o, slot_of
-    for vi, sl in A.view_slots.items():
-        for c, sid in zip(by_index[vi].cells, sl):
+        for c, sid in zip(cells, slot_of):
             if sid is not None:
-                A.sightings.setdefault(sid, []).append((vi, c))
+                A.sightings.setdefault(sid, []).append((o.index, c))
+        prev, prev_slots = o, slot_of
     A.order = [s.id for s in A.slots]
     return A
 
@@ -509,16 +511,21 @@ def carry_numbers(slot_of, A) -> None:
             A.slots[s].number = n0 + (i - i0)
 
 
-def place_numbered(o, slot_of, A, prev, prev_slots, gap) -> None:
+def place_numbered(o, slot_of, A, prev, prev_slots, gap, seg_of) -> None:
     """Map each cell to the slot with its measure number, making slots for numbers not seen before.
 
     A number seen on an earlier view (not the one just before, whose overlap is expected) means the video
-    went back: a replay with printed-number evidence, folded.
+    went back: a replay with printed-number evidence, folded. When the music there differs, another part (a
+    second guitar track) reuses the numbers, and its measures get slots of their own.
     """
     by_number = {s.number: s.id for s in A.slots if s.number is not None}
+    other_part = switched_part(o, A, by_number, prev, prev_slots, gap, seg_of)
     replayed = False
     for i, c in enumerate(o.cells):
         sid = by_number.get(c.number)
+        if other_part and sid is not None and not (sid in prev_slots
+                                                   and seen_before(c, same_layout(A, sid, o, seg_of), gap)):
+            sid = None
         if sid is None and prev is not None:
             # The view before may have had no readable numbers; a measure it showed takes this number
             for pc, ps in zip(prev.cells, prev_slots):
@@ -535,6 +542,65 @@ def place_numbered(o, slot_of, A, prev, prev_slots, gap) -> None:
         slot_of[i] = sid
     if replayed:
         A.decisions.append(Decision(o.t0, "fold", "fold", ["new"], "numbers", True))
+
+
+def switched_part(o, A, by_number, prev, prev_slots, gap, seg_of) -> bool:
+    """Whether most measures a screen shows again, by number, hold other music than before on the same layout."""
+    shown = [A.slots[s].number for s in prev_slots if s is not None and A.slots[s].number is not None]
+    alike = []
+    for c in o.cells:
+        sid = by_number.get(c.number)
+        if sid is None:
+            continue
+        if sid in prev_slots:
+            # The screen before showed this number too: compare the two sightings where both are whole measures
+            # drawn at about one width, as `resemble` needs; a cut or squeezed one can't be told from other music
+            if prev.seg == o.seg and c.kind == "full":
+                w = c.ink.shape[1]
+                earlier = [x for x, s in zip(prev.cells, prev_slots) if s == sid and x.kind == "full"
+                           and abs(x.ink.shape[1] - w) <= max(3 * WIDTH_PX, 3 * WIDTH_SHARE * w)]
+                if earlier:
+                    alike.append(seen_before(c, earlier, gap))
+            continue
+        # A number past the screen before carries the music on; an earlier glimpse of it may look different
+        if shown and c.number > max(shown):
+            continue
+        earlier = same_layout(A, sid, o, seg_of)
+        if earlier:
+            alike.append(seen_before(c, earlier, gap))
+    return bool(alike) and 2 * sum(alike) < len(alike)
+
+
+def same_layout(A, sid, o, seg_of) -> list:
+    """The earlier sightings of a slot drawn in the same layout as view o."""
+    return [x for vi, x in A.sightings.get(sid, []) if seg_of[vi] == o.seg]
+
+
+def seen_before(c, earlier, gap) -> bool:
+    """Whether a cell shows the music of some earlier sighting."""
+    return any(alike_music(x, c, gap) for x in earlier)
+
+
+def alike_music(a, b, gap: float) -> bool:
+    """Whether two sightings show the same music, allowing for small differences in how they are drawn."""
+    if (a.index == 0) != (b.index == 0) and a.kind == b.kind == "full":
+        # Only one starts a system, where a clef and key are drawn: compare the music after them
+        part, whole = (a, b) if a.ink.shape[1] <= b.ink.shape[1] else (b, a)
+        if whole.ink.shape[1] - part.ink.shape[1] > 3 * gap:
+            return False
+        return same_part(part, whole, gap, "right", trim=SYSTEM_START_GAPS)
+    if same_cell(a, b, gap):
+        return True
+    # A staff whose top line is cut off by the screen edge is placed from its next line down, so the two
+    # sightings are also lined up with one moved by up to two line gaps
+    reach = int(2 * gap)
+    return any(resemble(a, staff_moved(b, dy), gap, any_kind=True) <= REPLAY_RESEMBLE
+               for dy in range(-reach, reach + 1, 2))
+
+
+def staff_moved(c, dy: int):
+    """A copy of cell c whose tab staff is taken to start dy rows lower."""
+    return replace(c, ref_y=c.ref_y + dy)
 
 
 def place_rest(o, slot_of, A, gap, gap_before, prev, use, words_of, fold_unresolved, scrolling) -> None:

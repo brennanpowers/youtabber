@@ -5,7 +5,7 @@ from youtabber import printcell
 from youtabber.assemble import Obs
 from youtabber.observe import panel_rect
 from youtabber.parse import Cell, parse_view
-from youtabber.printcell import clean, cleaned, joined_cells, mark_groups, owner, print_cell
+from youtabber.printcell import clean, cleaned, drop_widgets, joined_cells, mark_groups, owner, print_cell
 from youtabber.scan import Segment
 
 
@@ -145,14 +145,16 @@ def test_a_closing_barline_past_the_print_area_prints_with_the_last_measure():
 
 def test_a_band_is_cleaned_once_for_all_the_measures_printed_from_it():
     image = np.full((100, 400, 3), 250, np.uint8)
+    for i in range(6):
+        cv2.line(image, (20, 30 + i * 10), (380, 30 + i * 10), (60, 60, 60), 1)
     o = Obs(0, 0.0, 1.0, [], [], 0, (0, 0), image)
     o.image = image
     seg = Segment(0.0, 1.0, 10.0, "dark", paper=np.array([250.0, 250.0, 250.0]))
-    first = cleaned(o, (10, 60), seg, 10.0, (0, 400))
-    assert cleaned(o, (10, 60), seg, 10.0, (0, 400)) is first
-    other = cleaned(o, (10, 50), seg, 10.0, (0, 400))
-    assert other is not first and other.shape == (40, 400) and (other == 255).all()
-
+    ps = parse_view(0, image, (0, 0, 400, 100), "dark", 140.0, 229.0, 10.0)[0]
+    first = cleaned(o, ps, (10, 90), seg, 10.0, (0, 400))
+    assert cleaned(o, ps, (10, 90), seg, 10.0, (0, 400)) is first
+    other = cleaned(o, ps, (20, 90), seg, 10.0, (0, 400))
+    assert other is not first and other.shape == (70, 400)
 
 def test_a_long_mosaic_prints_each_measure_from_a_piece_of_its_band(monkeypatch):
     image = np.full((130, 3000, 3), 255, np.uint8)
@@ -171,3 +173,55 @@ def test_a_long_mosaic_prints_each_measure_from_a_piece_of_its_band(monkeypatch)
     pieces = [print_cell(o, c, seg) for c in cells[5:8]]
     for a, b in zip(whole, pieces):
         assert np.array_equal(a.image, b.image) and (a.left, a.advance, a.top) == (b.left, b.advance, b.top)
+
+
+def test_a_solid_screen_widget_off_the_staffs_is_left_out_of_the_print():
+    band = np.full((120, 300), 255, np.uint8)
+    for i in range(6):
+        cv2.line(band, (60, 40 + i * 14), (299, 40 + i * 14), 60, 1)
+    # A timer box with light text, and below it a play button that touches a bracket line, left of the staff
+    cv2.rectangle(band, (5, 2), (50, 32), 30, -1)
+    cv2.putText(band, "0:07", (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.5, 255, 1)
+    cv2.rectangle(band, (5, 38), (50, 80), 30, -1)
+    cv2.rectangle(band, (18, 50), (37, 68), 160, -1)
+    cv2.line(band, (28, 80), (28, 119), 0, 3)
+    # A chord of solid note heads on the staff, which stays
+    for y in (54, 68, 82):
+        cv2.ellipse(band, (150, y), (9, 7), 0, 0, 360, 0, -1)
+    out = drop_widgets(band, 40, 110, 60, 300, 14.0)
+    assert out[2:81, 5:51].min() == 255
+    assert out[50:90, 140:160].min() == 0
+
+
+def test_a_play_button_over_the_staffs_left_end_is_left_out_of_the_print():
+    band = np.full((120, 300), 255, np.uint8)
+    for i in range(6):
+        cv2.line(band, (56, 40 + i * 14), (299, 40 + i * 14), 60, 1)
+    # A system bracket where the staff starts, and a play button with a gray square inside it, drawn over the
+    # bracket's top and the start of the staff lines
+    cv2.line(band, (56, 70), (56, 119), 0, 3)
+    cv2.rectangle(band, (20, 30), (64, 76), 30, -1)
+    cv2.rectangle(band, (30, 42), (50, 62), 150, -1)
+    # A clef's stroke just right of the button and a chord of solid note heads further on, which stay
+    cv2.line(band, (70, 36), (70, 104), 0, 2)
+    for y in (54, 68, 82):
+        cv2.ellipse(band, (150, y), (9, 7), 0, 0, 360, 0, -1)
+    out = drop_widgets(band, 40, 110, 54, 300, 14.0)
+    assert out[30:77, 20:65].min() == 255
+    assert np.array_equal(out[:, 69:72], band[:, 69:72])
+    assert out[50:90, 140:160].min() == 0
+
+
+def test_a_chord_grid_and_an_outlined_box_off_the_staffs_stay():
+    band = np.full((120, 300), 255, np.uint8)
+    for i in range(6):
+        cv2.line(band, (60, 40 + i * 14), (299, 40 + i * 14), 60, 1)
+    # A chord diagram's grid and a section box outlined around its word, above the staff
+    for k in range(6):
+        cv2.line(band, (70 + k * 8, 2), (70 + k * 8, 34), 0, 1)
+    for k in range(5):
+        cv2.line(band, (70, 2 + k * 8), (110, 2 + k * 8), 0, 1)
+    cv2.rectangle(band, (150, 4), (230, 30), 0, 2)
+    cv2.putText(band, "Chorus", (155, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.5, 0, 1)
+    out = drop_widgets(band, 40, 110, 60, 300, 14.0)
+    assert np.array_equal(out[:36], band[:36])

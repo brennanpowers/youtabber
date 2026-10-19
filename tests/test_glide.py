@@ -148,3 +148,13 @@ def test_a_long_mosaic_parsed_in_pieces_gives_the_cells_of_one_parse(monkeypatch
     assert len(pieces) == len(whole) == 1
     assert [(c.x0, c.x1, c.kind) for c in pieces[0].cells] == [(c.x0, c.x1, c.kind) for c in whole[0].cells]
     assert [c.index for c in pieces[0].cells] == list(range(len(whole[0].cells)))
+
+
+def test_a_mosaic_whose_staff_sits_lower_in_two_stretches_keeps_its_staff():
+    image = sheet(2400)
+    # The staff drawn 3 px lower from x 600 to 1050 and from 1500 to 1950, as when the band moved between frames
+    for a, b in ((600, 1050), (1500, 1950)):
+        image[3:, a:b] = image[:-3, a:b].copy()
+        image[:3, a:b] = 255
+    (ps,) = pipeline.parse_mosaic(0, image, (0, 0, 2400, 130), "dark", 140.0, 229.0, GAP)
+    assert len(ps.system.tab.lines) == 6

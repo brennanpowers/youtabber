@@ -19,6 +19,8 @@ CONFIG = Path.home() / ".config" / "youtabber" / "config.toml"
 # Smallest tab area, in video pixels, that can hold a readable staff
 MIN_REGION = 32
 PASSES = ("once", "all")
+# Notices reported in pieces of one long stretch
+STRETCHES = ("no_measures", "vertical_scroll")
 # Exit codes: a PDF with nothing to check, no PDF, and a PDF with spots to check or a second reading
 EXIT_CLEAN, EXIT_FAILED, EXIT_CHECK = 0, 1, 3
 
@@ -166,15 +168,16 @@ def write_outputs(reading: pipeline.Reading, src: source.Source, out: Path, name
 
 
 def spot_lines(notices: list[pipeline.Notice]) -> list[str]:
-    """The PDF's "Check these spots" lines: each doubtful notice once, in time order. no_measures notices come
-    in short pieces, so pieces that touch end to end print as one line over the whole stretch."""
+    """The PDF's "Check these spots" lines: each doubtful notice once, in time order. no_measures and
+    vertical_scroll notices come in short pieces, so pieces of one kind that touch end to end print as one line over
+    the whole stretch."""
     distinct = sorted({(n.t0, n.t1, n.text): n for n in notices if n.doubt}.values(), key=lambda n: (n.t0, n.t1))
-    spots = [n for n in distinct if n.kind != "no_measures"]
+    spots = [n for n in distinct if n.kind not in STRETCHES]
     stretches: list[pipeline.Notice] = []
     for n in distinct:
-        if n.kind != "no_measures":
+        if n.kind not in STRETCHES:
             continue
-        if stretches and n.t0 <= stretches[-1].t1:
+        if stretches and n.kind == stretches[-1].kind and n.t0 <= stretches[-1].t1:
             last = stretches[-1]
             t1 = max(last.t1, n.t1)
             # The text names the piece's own times; give it the whole stretch's

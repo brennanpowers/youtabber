@@ -7,11 +7,12 @@ import numpy as np
 
 from youtabber import glide, ocr
 from youtabber.assemble import Assembly, Obs, assemble, cell_at, number_views
-from youtabber.check import (dwell, empty_stretches, fmt, glide_gaps, glide_number_gaps, glide_repeats, number_checks,
-                             numbers_against_cells, odd_widths, possible_duplicates, too_few)
+from youtabber.check import (dwell, empty_stretches, fmt, glide_gaps, glide_number_gaps, glide_repeats, layout_changes,
+                             number_checks, numbers_against_cells, odd_widths, pieces, possible_duplicates,
+                             screen_breaks, too_few)
 from youtabber.observe import (ABOVE_GAPS, BELOW_GAPS, OBS_FPS, PRINT_ABOVE_GAPS, ink_map, ink_threshold, set_paper,
                                to_gray, views_in)
-from youtabber.parse import Cell, parse_view
+from youtabber.parse import Cell, line_darkness, parse_view
 from youtabber.scan import SCAN_FPS, Segment, scan
 from youtabber.video import frames, probe
 
@@ -19,8 +20,19 @@ from youtabber.video import frames, probe
 EVIDENCE = {"numbers", "playhead", "navigation"}
 # A cell narrower than this share of a typical measure is a header or a sliver, not a measure
 EDGE_SHARE = 0.25
-# A view whose ink contrast is below this share of its segment's typical contrast is mid-fade
-FADE_SHARE = 0.85
+# ...unless it is an empty bar drawn short: between two barlines, with less ink on its tab staff than this many
+# square line gaps once its left barline is left out...
+EMPTY_BAR_INK = 0.1
+# ...and less than this many on the notation staff above it, room for a rest but not a clef and key signature
+EMPTY_NOTATION_INK = 1.0
+# Line gaps at a cell's left taken up by its barline, a thick or double one included
+BAR_SKIP_GAPS = 0.7
+# An empty bar is drawn at least this many line gaps wide; narrower blank cells sit between a barline and a
+# column of stems or stacked digits that was read as one
+EMPTY_MIN_GAPS = 3.5
+# A view is mid-fade when its ink contrast is below FADE_SHARE of its segment's typical view and its staff lines
+# stand out from the paper by less than FADE_LINE_SHARE of the typical view's
+FADE_SHARE, FADE_LINE_SHARE = 0.85, 0.8
 # Only a segment at least this long is tested for gliding; shorter moves are page-turn animations
 GLIDE_MIN_SECONDS = 20.0
 # Such a segment that doesn't glide but whose still views cover less than this share of it can't be read
@@ -42,6 +54,12 @@ TURN_SECONDS = 1.0
 COVER_EXTRA = 0.4
 # ...and at most this share of the next view's marks are missing from it
 COVER_MISSING = 0.1
+# A straight edge is a row where the gray level steps by more than EDGE_STEP across at least EDGE_SHARE_WIDTH of the
+# frame; a screen with EDITOR_EDGES or more of them around its tab is a program's window
+EDGE_STEP, EDGE_SHARE_WIDTH, EDITOR_EDGES = 25, 1 / 6, 4
+# Tab whose every segment is shorter than SCATTERED_SECONDS, which together cover less than SCATTERED_SHARE of the
+# video, and whose line spacing varies by more than SCATTERED_GAP_RATIO is no play-along
+SCATTERED_SECONDS, SCATTERED_SHARE, SCATTERED_GAP_RATIO = 10.0, 0.25, 1.5
 
 Region = tuple[int, int, int, int]
 
@@ -103,8 +121,12 @@ class Reading:
 def read(path: Path, region: Region | None = None) -> Reading:
     """Everything youtabber reads from one video, ready to print, or the reason it can't be printed."""
     info = probe(path)
-    segments, found = scan(path, info.width, info.height, region)
+    segments, found, scrolls = scan(path, info.width, info.height, region)
     r = Reading(info.duration, segments)
+    if scrolls and not segments:
+        # No tab ever holds still: whether those lines are a scrolling page or footage, there is no tab to read
+        return r.fail("no_tab", f"No tab holds still on screen: the page scrolls up continuously "
+                                f"({scroll_times(scrolls)}), and youtabber can't read a page while it moves.")
     if not segments and region is not None:
         x, y, w, h = region
         return r.fail("no_tab", f"No tab staff inside --region {x},{y},{w},{h}. Leave --region out to let youtabber "
@@ -113,6 +135,18 @@ def read(path: Path, region: Region | None = None) -> Reading:
         return r.fail("no_tab", f"No tab on screen: no steady set of evenly spaced staff lines on paper in "
                                 f"{info.duration:.0f} s of video. youtabber can't read text tab (e|--3--) or tab "
                                 f"drawn see-through over the video either.")
+    # Tab in short scattered pieces may be a screen recording of an editor, with short play-along clips in it
+    clips = None
+    if scattered(segments, info.duration):
+        held = sum(s.t1 - s.t0 for s in segments)
+        segments = [s for s in segments if not editor_screen(path, s)]
+        r.segments = segments
+        if not segments:
+            return r.fail("no_tab", f"Tab shows only in short pieces ({held:.0f} s of {info.duration:.0f} s), inside "
+                                    f"the panels and menus of an editing program, as when a tab editor is recorded "
+                                    f"while someone types. youtabber reads play-along videos, where the tab stays "
+                                    f"on screen while the song plays.")
+        clips = (segments[0].t0, segments[-1].t1)
     obs: list[Obs] = []
     gaps = []
     for si, seg in enumerate(segments):
@@ -171,14 +205,24 @@ def read(path: Path, region: Region | None = None) -> Reading:
         if covered(p, o):
             p.all_cells = []
     # A view caught in a fade has weak contrast and loses its barlines; its music is shown again at full
-    # contrast, so it is left out
-    for si in range(len(segments)):
-        group = [o for o in obs if o.seg == si]
+    # contrast, so it is left out. Both its darkest ink and its staff lines are weak. A segment of one or two views
+    # is judged against the clearest views of its theme.
+    clearest: dict[str, tuple[float, float]] = {}
+    for o in obs:
+        if o.mosaic is None:
+            pol = segments[o.seg].polarity
+            ink, line = clearest.get(pol, (0.0, 0.0))
+            clearest[pol] = (max(ink, o.contrast), max(line, o.line_contrast))
+    for si, seg in enumerate(segments):
+        group = [o for o in obs if o.seg == si and o.mosaic is None]
         if len(group) >= 3:
-            typical = float(np.median([o.contrast for o in group]))
-            for o in group:
-                if o.contrast < FADE_SHARE * typical:
-                    o.all_cells = []
+            ink = float(np.median([o.contrast for o in group]))
+            line = float(np.median([o.line_contrast for o in group]))
+        else:
+            ink, line = clearest.get(seg.polarity, (0.0, 0.0))
+        for o in group:
+            if o.contrast < FADE_SHARE * ink and o.line_contrast < FADE_LINE_SHARE * line:
+                o.all_cells = []
     # Ink at the same screen place in nearly every view of a segment is fixed to the frame (a clef and key
     # panel that stays while the music scrolls behind it)
     for si in range(len(segments)):
@@ -198,7 +242,7 @@ def read(path: Path, region: Region | None = None) -> Reading:
     full_widths = [c.x1 - c.x0 for o in obs for c in o.all_cells if c.kind == "full"]
     typical = float(np.median(full_widths)) if full_widths else 0.0
     for o in obs:
-        o.cells = [c for c in o.all_cells if (c.x1 - c.x0) >= EDGE_SHARE * typical]
+        o.cells = kept_cells(o.all_cells, typical)
         o.bars = sorted({c.x0 for c in o.all_cells if c.kind != "lead"} | {c.x1 for c in o.all_cells if c.kind != "tail"})
     r.numbering = number_views(obs, ocr.read_number)
     # A measure seen only on its notation staff, its tab out of the panel, can be placed by its number alone
@@ -230,7 +274,8 @@ def read(path: Path, region: Region | None = None) -> Reading:
                               f"The measures at {fmt(t0)}-{fmt(t1)} repeat ones first shown at "
                               f"{fmt(first_seen.t0)}-{fmt(first_seen.t1)}, with no sign whether the song plays "
                               f"them again or the video replays them.", False))
-    for w in possible_duplicates(main, obs, gap) + dwell(obs) + odd_widths(obs) + numbers_against_cells(obs):
+    for w in (possible_duplicates(main, obs, gap) + dwell(obs) + odd_widths(obs) + numbers_against_cells(obs)
+              + screen_breaks(main, obs) + layout_changes(segments, obs)):
         notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
     for o in obs:
         if o.mosaic is not None:
@@ -273,6 +318,20 @@ def read(path: Path, region: Region | None = None) -> Reading:
     for w in (empty_stretches(r.tab_spans, [m.play_t for m in primary])
               + number_checks([(m.play_t, m.label) for m in primary], True, info.duration)):
         notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
+    # A page scrolling up is tab on screen that nothing reads. It is reported in pieces, so each points at a
+    # findable part of the video
+    for t0, t1 in scrolls:
+        r.tab_spans.append((round(t0, 2), round(t1, 2)))
+        for p0, p1 in pieces(t0, t1):
+            notices.append(Notice(round(p0, 2), round(p1, 2), "vertical_scroll",
+                                  f"The page scrolls up continuously at {fmt(p0)}-{fmt(p1)}. youtabber can't read a "
+                                  f"page while it moves, so the measures shown there are missing from this PDF.", True))
+    r.tab_spans.sort()
+    if clips is not None:
+        notices.append(Notice(round(clips[0], 2), round(clips[1], 2), "short_tab",
+                              f"Only a short stretch of this video shows tab ({fmt(clips[0])}-{fmt(clips[1])}); the "
+                              f"rest shows an editing program, which is not printed. Check that this is the music "
+                              f"you wanted.", True))
     r.notices = sorted(notices, key=lambda w: (w.t0, w.t1))
 
     n = len(r.candidates[0].measures)
@@ -295,21 +354,78 @@ def read(path: Path, region: Region | None = None) -> Reading:
 
 
 def covered(p: Obs, o: Obs) -> bool:
-    """True when still view p shows the same staffs as the next view o plus many marks o doesn't have, while
-    nearly all of o's marks are in p."""
+    """True when still view p shows staffs of the next view o plus many marks o doesn't have, while nearly all of
+    o's marks are in p. The card can hide a staff of p, so p may show fewer."""
     if p.seg != o.seg or p.mosaic is not None or o.mosaic is not None or not p.systems:
         return False
     # A next view fainter than p is fading out: it lost p's marks to the fade, not to a card
     if o.contrast < FADE_SHARE * p.contrast:
         return False
-    if len(p.systems) != len(o.systems) or any(abs(a.system.tab.top - b.system.tab.top) > 0.25 * a.system.tab.gap
-                                               for a, b in zip(p.systems, o.systems)):
+    if not all(any(abs(a.system.tab.top - b.system.tab.top) <= 0.25 * a.system.tab.gap for b in o.systems)
+               for a in p.systems):
         return False
     a, b = p.band, o.band
     near = np.ones((5, 5), np.uint8)
     only_p = (a & ~cv2.dilate(b.astype(np.uint8), near).astype(bool)).sum() / max(int(a.sum()), 1)
     only_o = (b & ~cv2.dilate(a.astype(np.uint8), near).astype(bool)).sum() / max(int(b.sum()), 1)
     return only_p >= COVER_EXTRA and only_o <= COVER_MISSING
+
+
+def scroll_times(scrolls: list[tuple[float, float]]) -> str:
+    return ", ".join(f"{fmt(a)}-{fmt(b)}" for a, b in scrolls)
+
+
+def scattered(segments: list[Segment], duration: float) -> bool:
+    """True when tab shows only in short pieces covering a small share of the video, drawn at different sizes:
+    a screen recording of a tab editor or a lesson's slides, not a play-along."""
+    longest = max(s.t1 - s.t0 for s in segments)
+    held = sum(s.t1 - s.t0 for s in segments)
+    gaps = [s.gap for s in segments]
+    return (longest < SCATTERED_SECONDS and held < SCATTERED_SHARE * duration
+            and max(gaps) > SCATTERED_GAP_RATIO * min(gaps))
+
+
+def editor_screen(path: Path, seg: Segment) -> bool:
+    """True when the screen around a segment's tab is a program's window: many straight edges (panel borders,
+    toolbars, rows of controls) run across it. Footage of a room can show as many, so this is asked only of tab
+    that shows in short scattered pieces, where a play-along band is the exception."""
+    mid = (seg.t0 + seg.t1) / 2
+    g = next((cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) for _, f in frames(path, 1, start=mid, length=1.0)), None)
+    if g is None:
+        return False
+    steps = np.abs(np.diff(g.astype(np.int16), axis=0)) > EDGE_STEP
+    # The tab's own staff lines don't count
+    steps[max(0, seg.y0 - 2):seg.y1 + 2, seg.x0:seg.x1] = False
+    long_edges = 0
+    for row in steps:
+        d = np.diff(np.concatenate([[0], row.astype(np.int8), [0]]))
+        starts, ends = np.flatnonzero(d == 1), np.flatnonzero(d == -1)
+        if len(starts) and (ends - starts).max() >= EDGE_SHARE_WIDTH * g.shape[1]:
+            long_edges += 1
+    return long_edges >= EDITOR_EDGES
+
+
+def empty_bar(c: Cell) -> bool:
+    """True for a bar with nothing on its tab staff between its two barlines: a rest bar, count-in or closing empty
+    bar, which prints however short it is drawn. A measure number above it doesn't count, nor does a rest on its
+    notation staff, which is smaller than a square line gap; a clef and key signature there are not."""
+    # A notation staff whose tab is out of view says nothing about the tab
+    if c.kind != "full" or not c.complete or c.notation_only or c.x1 - c.x0 < EMPTY_MIN_GAPS * c.gap:
+        return False
+    # The ink box runs from a margin left of the left barline to the right barline's first column; only the
+    # columns between the two barlines count
+    start = c.x0 - (c.x1 + 1 - c.ink.shape[1]) + int(BAR_SKIP_GAPS * c.gap)
+    end = c.ink.shape[1] - 2
+    bottom = int(round(2 * c.mid_y)) - (c.y0 + c.ref_y) - c.y0
+    tab = c.ink[c.ref_y:bottom + 1, start:end].sum()
+    notation = c.ink[c.top_y:c.ref_y, start:end].sum()
+    return tab < EMPTY_BAR_INK * c.gap * c.gap and notation < EMPTY_NOTATION_INK * c.gap * c.gap
+
+
+def kept_cells(cells: list[Cell], typical: float) -> list[Cell]:
+    """The cells that are measures: those at least EDGE_SHARE of a typical measure wide, and empty bars however
+    short."""
+    return [c for c in cells if c.x1 - c.x0 >= EDGE_SHARE * typical or empty_bar(c)]
 
 
 def seed_function(found, seg):
@@ -357,9 +473,13 @@ def plate_obs(v, seg: Segment, si: int, thr: float, fthr: float, index: int) -> 
     o.frames = len(v.times)
     o.rect = v.rect
     o.single = len(systems) == 1
-    panel = to_gray(v.plate, seg.polarity)[y0:y1, x0:x1]
-    # Paper against the darkest ink (the 50th darkest pixel, so a few noisy pixels don't count)
+    # Paper against the darkest ink (the 50th darkest pixel, so a few noisy pixels don't count), and against the
+    # tab staff lines: a sparse page has little solid ink, but a page fading in or out also shows its lines faint
+    gray = to_gray(v.plate, seg.polarity)
+    panel = gray[y0:y1, x0:x1]
     o.contrast = float(np.median(panel) - np.partition(panel.ravel(), 50)[50]) if panel.size > 100 else 0.0
+    levels = [line_darkness(gray, ps.system.tab) for ps in systems]
+    o.line_contrast = float(np.median([paper - line for line, paper in levels])) if levels else 0.0
     o.repeat_end = any(ps.repeat_end for ps in systems)
     band = ink_map(to_gray(v.plate, seg.polarity), thr, seg.gap)
     keep = np.zeros_like(band)
@@ -433,9 +553,11 @@ def parse_mosaic(index: int, image: np.ndarray, rect: tuple[int, int, int, int],
     """parse_view of a glide mosaic. A long one is parsed in overlapping pieces, so memory doesn't grow with the
     glide's length: each piece keeps the cells and barlines of its middle, and the pieces' systems are joined."""
     h, w = image.shape[:2]
-    # Glides draw notes as tiles over the barlines more often than pages do
+    # Glides draw notes as tiles over the barlines more often than pages do. A mosaic joins stretches whose staff
+    # can sit at different heights, so its lines break up where there are no chord diagrams
     if w <= MOSAIC_PIECE:
-        return parse_view(index, image, rect, polarity, thr, fthr, gap, (0, 0, w, h), hidden_bars=True)
+        return parse_view(index, image, rect, polarity, thr, fthr, gap, (0, 0, w, h), hidden_bars=True,
+                          whole_lines=False)
     x0, y0, x1, y1 = rect
     joined: list = []
     for a in range(0, w - MOSAIC_OVERLAP, MOSAIC_PIECE - MOSAIC_OVERLAP):
@@ -444,7 +566,7 @@ def parse_mosaic(index: int, image: np.ndarray, rect: tuple[int, int, int, int],
         lo = a + MOSAIC_OVERLAP // 2 if a > 0 else 0
         hi = b - MOSAIC_OVERLAP // 2 if b < w else w
         piece = parse_view(index, image[:, a:b], (max(0, x0 - a), y0, min(b, x1) - a, y1), polarity, thr, fthr, gap,
-                           (0, 0, b - a, h), hidden_bars=True)
+                           (0, 0, b - a, h), hidden_bars=True, whole_lines=False)
         for ps in piece:
             # The same system in an earlier piece: the one whose tab staff sits at the same height
             into = next((q for q in joined if abs(q.system.tab.top - ps.system.tab.top) < ps.system.tab.gap), None)

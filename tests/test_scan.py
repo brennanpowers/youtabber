@@ -22,7 +22,42 @@ def still_tab(paper: int, ink: int):
 @pytest.mark.parametrize("paper, ink, polarity, gaps", [(255, 60, "dark", PRINT_ABOVE_GAPS), (0, 200, "light", 5)])
 def test_crop_top_reaches_marks_above_the_staff(monkeypatch, paper, ink, polarity, gaps):
     monkeypatch.setattr(scan_module, "frames", still_tab(paper, ink))
-    segments, _ = scan_module.scan(None, 1280, 720)
+    segments, _, _ = scan_module.scan(None, 1280, 720)
     assert len(segments) == 1 and segments[0].polarity == polarity
     # The crop top is rounded down to an even row
     assert TOP - gaps * GAP - 2 <= segments[0].y0 <= TOP - gaps * GAP
+
+
+def staff_at(top: float) -> scan_module.System:
+    return scan_module.System(scan_module.Staff([top + i * GAP for i in range(6)], 100, 1180, GAP, "dark"), None)
+
+
+def test_a_page_moving_steadily_up_is_a_vertical_scroll():
+    # 20 px up every half second for 12 s, then held still for 5 s
+    found = {k / 2: [staff_at(800 - 20 * k)] for k in range(24)}
+    found.update({12 + k / 2: [staff_at(320)] for k in range(10)})
+    assert scan_module.vertical_scrolls(found) == [(0.0, 12.0)]
+
+
+def test_a_page_that_jumps_now_and_then_is_no_vertical_scroll():
+    # Still for 5 s, a jump of 4 gaps, still again
+    found = {k / 2: [staff_at(400 if k < 10 else 344)] for k in range(40)}
+    assert scan_module.vertical_scrolls(found) == []
+
+
+def test_a_short_upward_drift_is_no_vertical_scroll():
+    found = {k / 2: [staff_at(800 - 20 * k)] for k in range(12)}
+    assert scan_module.vertical_scrolls(found) == []
+
+
+def test_a_title_bar_above_the_tab_does_not_set_the_segment_s_theme(monkeypatch):
+    img = np.full((720, 1280, 3), 255, np.uint8)
+    for i in range(6):
+        cv2.line(img, (100, TOP + i * GAP), (1180, TOP + i * GAP), (60, 60, 60), 1)
+    # A dark title bar with light lines in it, found as a close staff of the other polarity above the tab
+    cv2.rectangle(img, (100, 280), (1180, 340), (20, 20, 20), -1)
+    for i in range(5):
+        cv2.line(img, (110, 296 + i * 5), (1170, 296 + i * 5), (200, 200, 200), 1)
+    monkeypatch.setattr(scan_module, "frames", lambda path, fps: [(k / fps, img) for k in range(5 * fps)])
+    segments = scan_module.scan(None, 1280, 720)[0]
+    assert [(s.polarity, s.gap) for s in segments] == [("dark", 14.0)]

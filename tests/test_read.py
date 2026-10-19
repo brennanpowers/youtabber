@@ -43,7 +43,7 @@ def still_view(t0: float, t1: float) -> View:
 def test_a_long_segment_that_neither_holds_still_nor_glides_fails(monkeypatch):
     seg = Segment(0.0, 30.0, 10.0, "dark", paper=np.array([255.0, 255.0, 255.0]), x1=640, y1=360)
     monkeypatch.setattr(pipeline, "probe", lambda path: VideoInfo(640, 360, 30.0))
-    monkeypatch.setattr(pipeline, "scan", lambda path, w, h, region=None: ([seg], {}))
+    monkeypatch.setattr(pipeline, "scan", lambda path, w, h, region=None: ([seg], {}, []))
     monkeypatch.setattr(glide, "glides", lambda *a: False)
     # One still view of 5 s in 30 s of tab
     monkeypatch.setattr(pipeline, "views_in", lambda *a: ([still_view(0.0, 5.0)], 128.0, 230.0))
@@ -55,3 +55,11 @@ def test_a_long_segment_that_neither_holds_still_nor_glides_fails(monkeypatch):
 def test_a_missing_video_is_a_video_error(tmp_path):
     with pytest.raises(VideoError, match="Can't read"):
         probe(tmp_path / "missing.mp4")
+
+
+def test_a_video_whose_only_staffs_scroll_up_fails_as_no_tab(monkeypatch):
+    monkeypatch.setattr(pipeline, "probe", lambda path: VideoInfo(640, 360, 120.0))
+    monkeypatch.setattr(pipeline, "scan", lambda path, w, h, region=None: ([], {}, [(3.0, 98.5)]))
+    r = pipeline.read(Path("unused.mp4"))
+    assert r.outcome == "fail" and r.fail_reason == "no_tab"
+    assert "scrolls up continuously (0:03-1:38)" in r.message

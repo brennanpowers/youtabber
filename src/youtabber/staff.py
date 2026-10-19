@@ -12,8 +12,13 @@ MIN_LINES, MAX_LINES = 4, 6
 GAP_TOLERANCE = 0.18
 # Widest line spacing accepted in a crop, in pixels (a full frame allows a twelfth of its height)
 MAX_GAP_PX = 60
+# A row group taller than this share of the typical distance between row groups is two lines run together by notes
+# filling the space between them; a line thickened by notes stays thinner than that
+MERGED_SHARE = 0.9
 # A line covering less than this share of its staff's typical line is a ledger line or beam row
 WEAK_LINE = 0.5
+# In a run of more than six evenly spaced lines, a staff's own lines cover at least this share of the strongest
+RUN_LINE = 0.8
 
 
 @dataclass
@@ -61,18 +66,55 @@ def line_rows(gray: np.ndarray, polarity: str, min_cover: int) -> list[tuple[flo
     rows = np.flatnonzero(counts >= min_cover)
     out = []
     i = 0
+    groups = []
     while i < len(rows):
         j = i
         while j + 1 < len(rows) and rows[j + 1] <= rows[j] + 1:
             j += 1
-        band = resp[rows[i]:rows[j] + 1].any(axis=0)
-        cols = np.flatnonzero(band)
-        weights = counts[rows[i]:rows[j] + 1].astype(float)
-        y = float((np.arange(rows[i], rows[j] + 1) * weights).sum() / weights.sum())
-        x0, x1 = np.percentile(cols, [2, 98])
-        out.append((y, int(x0), int(x1) + 1, int(rows[j] - rows[i] + 1), int(counts[rows[i]:rows[j] + 1].max())))
+        groups.append((int(rows[i]), int(rows[j]) + 1))
         i = j + 1
+    centers = [(a + b) / 2 for a, b in groups]
+    steps = [q - p for p, q in zip(centers, centers[1:])]
+    tallest = MERGED_SHARE * float(np.median(steps)) if steps else float(len(counts))
+    for a, b in groups:
+        for a, b in split_rows(counts, a, b, tallest):
+            cols = np.flatnonzero(resp[a:b].any(axis=0))
+            weights = counts[a:b].astype(float)
+            y = float((np.arange(a, b) * weights).sum() / weights.sum())
+            x0, x1 = np.percentile(cols, [2, 98])
+            out.append((y, int(x0), int(x1) + 1, b - a, int(counts[a:b].max())))
     return out
+
+
+def split_rows(counts: np.ndarray, a: int, b: int, tallest: float) -> list[tuple[int, int]]:
+    """A row group taller than `tallest` rows, cut between its peaks: two lines whose space is filled with notes."""
+    if b - a <= tallest:
+        return [(a, b)]
+    c = counts[a:b].astype(float)
+    peaks = [k for k in range(len(c)) if c[k] == c[max(0, k - 3):k + 4].max() and c[k] >= 0.8 * c.max()]
+    # Neighboring rows of one flat top count as one peak
+    tops = [k for n, k in enumerate(peaks) if n == 0 or k - peaks[n - 1] > 3]
+    if len(tops) < 2:
+        return [(a, b)]
+    cuts = [a] + [a + (p + q) // 2 for p, q in zip(tops, tops[1:])] + [b]
+    return list(zip(cuts, cuts[1:]))
+
+
+def in_step(lines: list, firm: list[bool], k: int) -> bool:
+    """True when weak line k sits one even step from the strong lines on both sides, and the same step repeats past
+    one of them: a staff line half hidden under stacked fret digits, not a curve or beam between two lines."""
+    ys = [ln[0] for ln, ok in zip(lines, firm) if ok]
+    y = lines[k][0]
+    above = [v for v in ys if v < y]
+    below = [v for v in ys if v > y]
+    if not above or not below:
+        return False
+    d1, d2 = y - above[-1], below[0] - y
+
+    def near(a: float, b: float) -> bool:
+        return abs(a - b) <= GAP_TOLERANCE * max(a, b)
+    return near(d1, d2) and ((len(above) >= 2 and near(above[-1] - above[-2], d1))
+                             or (len(below) >= 2 and near(below[1] - below[0], d2)))
 
 
 def find_staffs(gray: np.ndarray, min_len: int | None = None) -> list[Staff]:
@@ -88,8 +130,9 @@ def find_staffs(gray: np.ndarray, min_len: int | None = None) -> list[Staff]:
     for polarity in ("dark", "light"):
         lines = line_rows(gray, polarity, min_len)
         # A short line between strong ones (a bend curve, a beam, a ledger line) is not a staff line
-        lines = [ln for k, ln in enumerate(lines)
-                 if ln[4] >= WEAK_LINE * max([lines[m][4] for m in (k - 1, k + 1) if 0 <= m < len(lines)] or [0])]
+        firm = [ln[4] >= WEAK_LINE * max([lines[m][4] for m in (k - 1, k + 1) if 0 <= m < len(lines)] or [0])
+                  for k, ln in enumerate(lines)]
+        lines = [ln for k, ln in enumerate(lines) if firm[k] or in_step(lines, firm, k)]
         i = 0
         while i < len(lines):
             chain = [i]
@@ -101,7 +144,8 @@ def find_staffs(gray: np.ndarray, min_len: int | None = None) -> list[Staff]:
                 if ov < 0.7 * min(prev[2] - prev[1], cand[2] - cand[1]) or gap > max_gap:
                     break
                 if len(chain) >= 2:
-                    ref = lines[chain[1]][0] - lines[chain[0]][0]
+                    # The mean step so far: notes along a line shift its center by a pixel or two
+                    ref = (lines[chain[-1]][0] - lines[chain[0]][0]) / (len(chain) - 1)
                     if abs(gap - ref) > GAP_TOLERANCE * ref:
                         # A row of fret digits can pose as a weak line between two staff lines; step over it
                         strong = np.median([lines[c][4] for c in chain])
@@ -121,12 +165,18 @@ def find_staffs(gray: np.ndarray, min_len: int | None = None) -> list[Staff]:
                 i += 1
                 continue
             i = chain[-1] + 1
-            # More than six evenly spaced lines is a pattern (planks, blinds, ruled paper), not a staff
             if len(chain) > MAX_LINES:
-                continue
+                # Ledger and beam rows can carry on a staff's even spacing; its own lines are the ones drawn across
+                # the whole staff. More than six such lines is a pattern (planks, blinds, ruled paper), not a staff.
+                top = max(lines[c][4] for c in chain)
+                run = [c for c in chain if lines[c][4] >= RUN_LINE * top]
+                if not (MIN_LINES <= len(run) <= MAX_LINES and run == list(range(run[0], run[-1] + 1))):
+                    continue
+                chain = run
             ys = [lines[c][0] for c in chain]
             gap = float(np.median(np.diff(ys)))
-            thick = float(np.median([lines[c][3] for c in chain]))
+            # The thinnest line: notes and ties drawn along a line thicken it, beams and boxes are thick throughout
+            thick = float(min(lines[c][3] for c in chain))
             if thick > max(6, 0.35 * gap + 3):
                 continue
             x0 = int(np.median([lines[c][1] for c in chain]))

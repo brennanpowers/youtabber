@@ -21,6 +21,8 @@ BAR_SIDE_INK = 0.45
 MIN_CELL = 1.5
 # A staff that starts or ends this many line gaps inside the panel starts or ends there, not at the panel edge
 INSIDE_GAPS = 1.0
+# A colored mark at most this many tab line gaps tall and wide may be a digit of a colored measure number
+DIGIT_GAPS = 1.6
 # Line groups spaced closer than this share of the view's widest-spaced tab staff are not tab staffs
 CLOSE_STAFF_SHARE = 0.6
 
@@ -63,6 +65,7 @@ class Cell:
     band: tuple[int, int] = (0, 0)          # rows to print, crop coordinates
     print_x0: int = 0                       # first column to print, crop coordinates
     notation_only: bool = False             # on a notation staff whose tab staff is out of the panel
+    top_y: int = 0                          # row of the system's top staff line (notation or tab) in the cell box
 
 
 @dataclass
@@ -80,6 +83,14 @@ class ParsedSystem:
 # counts too, when the columns on each side of it are inked in less than THIN_BESIDE of the rows the line is inked
 # in (the edge of a column of digits is inked on one side)
 HIDDEN_BAR_COVER, THIN_BESIDE = 0.85, 0.5
+
+
+def digit_sized(mask: np.ndarray, gap: float) -> np.ndarray:
+    """The parts of a mask that are separate marks no bigger than a digit printed over a staff."""
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
+    small = np.zeros(n, bool)
+    small[1:] = (stats[1:, 3] <= DIGIT_GAPS * gap) & (stats[1:, 2] <= DIGIT_GAPS * gap)
+    return small[labels]
 
 
 def barlines(dark: np.ndarray, tab_top: float, tab_bottom: float, gap: float, x0: int, x1: int,
@@ -319,7 +330,7 @@ def print_band(marks: np.ndarray, top: float, bottom: float, gap: float, lo: int
 
 def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], polarity: str, thr: float, fthr: float,
                gap: float, print_rect: tuple[int, int, int, int] | None = None,
-               hidden_bars: bool = False) -> list[ParsedSystem]:
+               hidden_bars: bool = False, whole_lines: bool = True) -> list[ParsedSystem]:
     g = to_gray(plate, polarity)
     rx0, ry0, rx1, ry1 = rect
     sub = g.copy()
@@ -332,7 +343,7 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
     # A staff with no rows inside the print area is not on the paper, such as the strings of a fretboard drawn
     # below it
     px0, py0, px1, py1 = print_rect or rect
-    syss = [s for s in systems_in(sub) if s.top < py1 and s.tab.bottom > py0]
+    syss = [s for s in systems_in(sub, whole_lines=whole_lines) if s.top < py1 and s.tab.bottom > py0]
     # A "tab staff" spaced much closer than the view's widest-spaced one is beams or text lines, not a staff
     widest = max((s.tab.gap for s in syss), default=0.0)
     syss = [s for s in syss if s.tab.gap >= CLOSE_STAFF_SHARE * widest]
@@ -343,7 +354,8 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
     colored_plate = colored(plate)
     # Where a cursor or highlight tinted the page, ink can't be compared between sightings
     tint = cv2.dilate(colored_plate.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
-    marks = ink_map(sub, fthr, gap) & ~colored_plate
+    # Measure numbers may be printed in color, so digit-sized colored marks count; larger colored areas are cursors
+    marks = ink_map(sub, fthr, gap) & ~(colored_plate & ~digit_sized(colored_plate, gap))
     dark = sub < thr
     faint_struct = sub < fthr
     ink = ink_map(sub, thr, gap, plate)
@@ -429,5 +441,5 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
                                  tint=box_tint,
                                  complete=kind == "full" or (kind == "lead" and starts_inside)
                                  or (kind == "tail" and ends_inside), band=ps.band, print_x0=print_x0,
-                                 notation_only=lone[si]))
+                                 notation_only=lone[si], top_y=int(round(ps.system.top)) - ps.y0))
     return out

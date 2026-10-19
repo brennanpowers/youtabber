@@ -241,3 +241,74 @@ def numbers_against_cells(obs) -> list[dict]:
                     "text": f"Measure numbers read at {fmt(t0)}-{fmt(t1)} ({read}) don't match the measures found "
                             f"between the barlines there; a measure may be cut in two or two merged into one."})
     return out
+
+
+# A measure with less ink than this many square line gaps on its staffs is empty
+EMPTY_INK_GAPS = 0.1
+
+
+def empty(o, c) -> bool:
+    """True when a measure has nothing on its staffs between its barlines: only the staff lines (a number above
+    it doesn't count)."""
+    s = o.systems[c.system].system
+    a = max(0, int((s.notation or s.tab).top - 0.5 * c.gap) - c.y0)
+    b = max(0, int(s.tab.bottom + 0.5 * c.gap) - c.y0)
+    # The cell's ink box ends at its right barline and may start left of its left one
+    left = c.x1 + 1 - c.ink.shape[1]
+    x0, x1 = int(c.x0 - left + 0.5 * c.gap), int(c.x1 - left - 0.5 * c.gap)
+    return int(c.ink[a:b, max(0, x0):max(0, x1)].sum()) < EMPTY_INK_GAPS * c.gap * c.gap
+
+
+# In a segment where at least this share of screens shows measures from the screen before, a screen that shows
+# none of them breaks the pattern
+OVERLAP_SHARE = 0.6
+
+
+def screen_breaks(A, obs) -> list[dict]:
+    """Screens that share no measure with the screen before, inside a segment whose screens normally overlap: the
+    video switched to another part (a different instrument's track) or jumped, or an overlap was missed."""
+    pairs = [(p, o) for p, o in zip(obs, obs[1:]) if p.seg == o.seg and A.view_slots.get(p.index)
+             and A.view_slots.get(o.index)]
+    shared = {}
+    for p, o in pairs:
+        # An empty staff end joined to the next screen's first measure is no overlap of music
+        before = {sid for sid, c in zip(A.view_slots[p.index], p.cells) if sid is not None and not empty(p, c)}
+        shared[o.index] = bool(before & set(A.view_slots[o.index]))
+    out = []
+    for seg in {o.seg for _, o in pairs}:
+        group = [(p, o) for p, o in pairs if o.seg == seg]
+        if sum(shared[o.index] for _, o in group) < OVERLAP_SHARE * len(group):
+            continue
+        for p, o in group:
+            # A screen that shows earlier measures again is a replay, which has notices of its own
+            if shared[o.index] or any(sid is not None and A.slots[sid].obs != o.index for sid in A.view_slots[o.index]):
+                continue
+            out.append(part_switch(p.t1, o.t1, o.t0, "the screen there shares no measure with the one before it, "
+                                                     "though the screens around it overlap"))
+    return out
+
+
+def part_switch(t0: float, t1: float, at: float, why: str) -> dict:
+    """The notice for a place where the video may switch to another part."""
+    return {"t0": round(t0, 2), "t1": round(t1, 2), "kind": "part_switch",
+            "text": f"The video may switch to another part or jump at {fmt(at)}: {why}. Check that the measures "
+                    f"around {fmt(at)} follow on."}
+
+
+# A new segment starting this soon after one at least this long carries on the same video, so a new line spacing
+# or theme there may be a switch to another part; shorter segments are cuts between tab and footage
+LAYOUT_SECONDS = 5.0
+
+
+def layout_changes(segments, obs) -> list[dict]:
+    """Places where the tab's line spacing or theme changes straight after the previous segment, both lasting at
+    least LAYOUT_SECONDS: the video may switch to another part or instrument there."""
+    out = []
+    for si, (a, b) in enumerate(zip(segments, segments[1:]), start=1):
+        same = a.polarity == b.polarity and abs(a.gap - b.gap) <= 0.05 * a.gap
+        if same or b.t0 - a.t1 > LAYOUT_SECONDS or min(a.t1 - a.t0, b.t1 - b.t0) < LAYOUT_SECONDS:
+            continue
+        first = [o for o in obs if o.seg == si]
+        t1 = first[0].t1 if first else b.t0 + LAYOUT_SECONDS
+        out.append(part_switch(a.t1, t1, b.t0, "the tab's line spacing or theme changes there"))
+    return out

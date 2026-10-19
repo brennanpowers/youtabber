@@ -26,6 +26,12 @@ TINT_AREA_GAPS = 2.0
 # Color spread, after dividing out the paper's color, above which a pixel is tinted. Gray staff lines on yellow
 # paper come out of video compression at about 31, so the limit sits above that.
 PRINT_COLOR_SAT = 40
+# A dark area whose short side is at least BLOCK_GAPS line gaps, whose long side is at least BLOCK_LONG_GAPS, whose
+# own dark pixels fill at least BLOCK_DARK of its box, and whose dark pixels and the gray ink inside its outline fill
+# at least BLOCK_FILL of it is a solid block, bigger than any symbol printed off the staffs
+BLOCK_GAPS, BLOCK_LONG_GAPS, BLOCK_DARK, BLOCK_FILL = 1.5, 2.0, 0.5, 0.8
+# A solid block on the staffs starting no more than this many line gaps right of the staff's left end is a widget
+WIDGET_START_GAPS = 0.5
 # Share of the paper level a tinted pixel may be darker than its area's typical gray and still count as tint
 LIFT_SLACK = 0.1
 
@@ -132,13 +138,54 @@ def clean(band: np.ndarray, seg: Segment, gap: float, cols: tuple[int, int] | No
 _cleaned: tuple | None = None
 
 
-def cleaned(o: Obs, rows: tuple[int, int], seg: Segment, gap: float, cols: tuple[int, int]) -> np.ndarray:
-    """clean() of rows of a view's image, reused while the next measure prints from the same band."""
+def cleaned(o: Obs, ps, rows: tuple[int, int], seg: Segment, gap: float, cols: tuple[int, int]) -> np.ndarray:
+    """clean() of rows of a view's image, with the screen widgets around system ps made paper; reused while the next
+    measure prints from the same band."""
     global _cleaned
     key = (rows, cols, gap)
-    if _cleaned is None or _cleaned[0] is not o.image or _cleaned[1] != key:
-        _cleaned = (o.image, key, clean(o.image[rows[0]:rows[1]], seg, gap, cols))
-    return _cleaned[2]
+    if _cleaned is None or _cleaned[0] is not o.image or _cleaned[1] is not ps or _cleaned[2] != key:
+        gray = clean(o.image[rows[0]:rows[1]], seg, gap, cols)
+        # Widgets sit over still pages; a glide's band holds only the music that crossed the reading column
+        if o.mosaic is None:
+            st = ps.system.tab
+            top, bottom = int(round((ps.system.notation or st).top)) - rows[0], int(round(st.bottom)) - rows[0]
+            gray = drop_widgets(gray, top, bottom, int(st.x0), int(st.x1), gap)
+        _cleaned = (o.image, ps, key, gray)
+    return _cleaned[3]
+
+
+def drop_widgets(gray: np.ndarray, top: int, bottom: int, x0: int, x1: int, gap: float) -> np.ndarray:
+    """The band with screen widgets (a timer, a play button) made paper: solid dark blocks away from the staffs, or
+    reaching the staffs' left end. Rows top..bottom and columns x0..x1 hold the staffs, where solid note heads and
+    clef panels belong."""
+    out = gray.copy()
+    dark = (gray < 128).astype(np.uint8)
+    k = max(3, int(0.5 * gap))
+    # A block standing alone, and one touching a line or bracket, which opening the dark marks cuts away
+    for mask in (dark, cv2.morphologyEx(dark, cv2.MORPH_OPEN, np.ones((k, k), np.uint8))):
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        for j in range(1, n):
+            x, y, w, h, _ = stats[j]
+            on_staffs = x < x1 and x + w > x0 and y < bottom and y + h > top
+            # Music starts right of the staffs' bracket or first barline, so nothing solid of it reaches their left end
+            at_start = x <= x0 + WIDGET_START_GAPS * gap
+            if (on_staffs and not at_start) or min(w, h) < BLOCK_GAPS * gap or max(w, h) < BLOCK_LONG_GAPS * gap:
+                continue
+            # A widget is a filled block: dark around a little light text or a gray icon. A chord grid or an outlined
+            # section or tempo box is mostly paper inside.
+            part = (labels[y:y + h, x:x + w] == j).astype(np.uint8)
+            if part.sum() < BLOCK_DARK * w * h:
+                continue
+            outline, _ = cv2.findContours(part, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            inside = np.zeros_like(part)
+            cv2.drawContours(inside, outline, -1, 1, -1)
+            if (part | (inside & (gray[y:y + h, x:x + w] < MARK_LEVEL))).sum() >= BLOCK_FILL * w * h:
+                # The whole block, what it holds and the two pixels of its soft edge, so no outline or icon prints
+                # and a clef drawn just right of it keeps its ink
+                block = np.zeros_like(dark)
+                block[y:y + h, x:x + w] = inside
+                out[cv2.dilate(block, np.ones((5, 5), np.uint8)) > 0] = 255
+    return out
 
 
 # A glide mosaic wider than this many columns prints each measure from a piece of its band around the measure, with
@@ -186,7 +233,7 @@ def print_cell(o: Obs, c: Cell, seg: Segment) -> PrintCell:
     px0, _, px1, _ = o.print_rect
     cols = (max(0, px0 - lo), max(px1 - lo, x1))
     if b1 > b0 and lo == 0 and hi == o.image.shape[1]:
-        gray = cleaned(o, (b0, b1), seg, c.gap, cols)
+        gray = cleaned(o, ps, (b0, b1), seg, c.gap, cols)
     elif b1 > b0:
         gray = clean(o.image[b0:b1, lo:hi], seg, c.gap, cols, band_paper(o, (b0, b1), seg))
     else:

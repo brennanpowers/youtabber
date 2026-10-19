@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 
 from youtabber.scan import systems_in
-from youtabber.staff import find_staffs
+from youtabber.staff import find_staffs, split_rows
 
 
 def staff_image(dark: bool = True, notation: bool = False) -> np.ndarray:
@@ -50,3 +50,138 @@ def test_wide_lines_below_a_tab_staff_do_not_take_it_as_notation():
         cv2.line(img, (50, 280 + i * 25), (750, 280 + i * 25), 60, 1)
     tab = [s for s in systems_in(img) if len(s.tab.lines) == 6]
     assert len(tab) == 1 and tab[0].notation is None
+
+
+def lined(rows: list[tuple[int, int, int]], height: int = 360) -> np.ndarray:
+    """A white page with horizontal lines (y, x0, x1), each 1 px thick."""
+    img = np.full((height, 800), 255, np.uint8)
+    for y, x0, x1 in rows:
+        cv2.line(img, (x0, y), (x1, y), 60, 1)
+    return img
+
+
+def test_a_line_half_hidden_by_stacked_digits_stays_in_the_staff():
+    rows = [(200 + i * 14, 50, 750) for i in range(6)]
+    # The third line shows only between stacks of digits: well under half the others' coverage
+    rows[2] = (228, 50, 300)
+    (st,) = find_staffs(lined(rows))
+    assert len(st.lines) == 6
+
+
+def test_ledger_rows_that_carry_on_the_spacing_do_not_hide_the_staff():
+    rows = [(100 + i * 13, 50, 750) for i in range(5)]
+    # Four evenly spaced shorter rows below it, as dense ledger lines and beams make
+    rows += [(165 + i * 13, 150, 600) for i in range(4)]
+    (st,) = find_staffs(lined(rows))
+    assert [round(y) for y in st.lines] == [100, 113, 126, 139, 152]
+
+
+def test_a_staff_with_lines_thickened_by_notes_is_found():
+    img = lined([(100 + i * 10, 50, 750) for i in range(5)])
+    for i in (0, 2, 3, 4):
+        # Ties drawn just above and below these lines all along them make the lines' rows 5 px tall
+        for dy in (-2, 2):
+            cv2.line(img, (50, 100 + i * 10 + dy), (750, 100 + i * 10 + dy), 160, 1)
+    staffs = [s for s in find_staffs(img) if s.polarity == "dark"]
+    assert len(staffs) == 1 and len(staffs[0].lines) == 5
+
+
+def test_a_staff_whose_spacing_drifts_a_little_is_found():
+    # Line centers 9 to 11 px apart, as notes on the lines pull them
+    (st,) = find_staffs(lined([(y, 50, 750) for y in (66, 75, 85, 96, 107)]))
+    assert len(st.lines) == 5
+
+
+def test_notation_far_above_its_tab_pairs_when_only_paper_lies_between():
+    rows = [(60 + i * 10, 50, 750) for i in range(5)] + [(254 + i * 16, 50, 750) for i in range(6)]
+    img = lined(rows, 400)
+    (system,) = systems_in(img)
+    assert system.notation is not None and len(system.notation.lines) == 5
+
+
+def test_notation_far_above_its_tab_does_not_pair_across_a_ruled_row():
+    rows = [(60 + i * 10, 50, 750) for i in range(5)] + [(254 + i * 16, 50, 750) for i in range(6)]
+    img = lined(rows, 400)
+    # A thick bar across the page between the staffs
+    cv2.rectangle(img, (50, 170), (750, 174), 0, -1)
+    tab = [s for s in systems_in(img) if len(s.tab.lines) == 6]
+    assert len(tab) == 1 and tab[0].notation is None
+
+
+def diagram_strip() -> np.ndarray:
+    """A six-line tab staff (gap 14) under a strip of chord diagrams: grids 50 px wide every 150 px (gap 11)."""
+    img = lined([(250 + i * 14, 50, 750) for i in range(6)])
+    for x in range(60, 740, 150):
+        for i in range(6):
+            cv2.line(img, (x, 80 + i * 11), (x + 50, 80 + i * 11), 60, 1)
+        for k in range(6):
+            cv2.line(img, (x + k * 10, 80), (x + k * 10, 135), 60, 1)
+    return img
+
+
+def test_a_strip_of_chord_diagrams_is_left_out_when_whole_lines_are_asked_for():
+    # Without the check, the strip passes for the notation staff of the tab below it
+    assert systems_in(diagram_strip())[0].notation is not None
+    (system,) = systems_in(diagram_strip(), whole_lines=True)
+    assert len(system.tab.lines) == 6 and system.notation is None
+
+
+def test_two_lines_run_together_by_notes_are_cut_apart():
+    counts = np.zeros(140, int)
+    # Two line peaks 11 rows apart with the rows between them filled by notes: one row group 18 rows tall
+    counts[100:118] = [300, 700, 900, 700, 300, 200, 200, 200, 200, 200, 200, 300, 700, 900, 700, 300, 200, 200]
+    assert split_rows(counts, 100, 118, 12.0) == [(100, 107), (107, 118)]
+    # A group no taller than a thick line stays whole
+    assert split_rows(counts, 100, 108, 12.0) == [(100, 108)]
+
+
+def test_a_short_last_system_under_a_full_one_is_found():
+    img = np.vstack([staff_image(), np.full((100, 800), 255, np.uint8)])
+    for i in range(6):
+        cv2.line(img, (50, 300 + i * 14), (200, 300 + i * 14), 60, 1)
+    tops = [round(s.tab.top) for s in systems_in(img)]
+    assert tops == [200, 300]
+
+
+def test_a_short_line_group_away_from_the_staffs_left_end_is_not_a_staff():
+    img = np.vstack([staff_image(), np.full((100, 800), 255, np.uint8)])
+    for i in range(6):
+        cv2.line(img, (500, 300 + i * 14), (650, 300 + i * 14), 60, 1)
+    assert [round(s.tab.top) for s in systems_in(img)] == [200]
+
+
+def test_two_systems_of_5_string_tab_are_not_notation_and_tab():
+    for apart in (8, 10.5, 11.5):
+        # Two 5-line staffs 14 px apart, with fret digits on the lines of each
+        top2 = int(60 + 4 * 14 + apart * 14)
+        rows = [(60 + i * 14, 50, 750) for i in range(5)] + [(top2 + i * 14, 50, 750) for i in range(5)]
+        img = lined(rows, top2 + 120)
+        for y0 in (60, top2):
+            for k, x in enumerate(range(100, 700, 60)):
+                cv2.putText(img, str(k % 10), (x, y0 + (k % 5) * 14 + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, 0, 1)
+        systems = systems_in(img)
+        assert len(systems) == 2 and all(s.notation is None for s in systems), apart
+
+
+def test_tab_drawn_with_dashed_lines_is_kept_when_whole_lines_are_asked_for():
+    # Dashes 13 px long every 28 px: each line covers under half the staff's width
+    img = np.full((360, 800), 255, np.uint8)
+    for i in range(6):
+        for x in range(50, 750, 28):
+            cv2.line(img, (x, 200 + i * 14), (x + 12, 200 + i * 14), 60, 1)
+    (system,) = systems_in(img, whole_lines=True)
+    assert len(system.tab.lines) == 6
+
+
+def test_a_line_thickened_by_notes_on_a_wide_staff_is_not_split():
+    # Gap 46: notes along the third line draw strokes 3 px apart over 12 rows, full at both ends and half drawn
+    # between: one row group 15 rows tall with two peaks. At this spacing it is one line
+    rows = [(60 + i * 46, 50, 750) for i in range(6) if i != 2]
+    img = lined(rows, 400)
+    y = 60 + 2 * 46 - 6
+    for dy in (0, 12):
+        cv2.line(img, (50, y + dy), (750, y + dy), 60, 1)
+    for dy in (3, 6, 9):
+        img[y + dy, 50:750:2] = 60
+    (st,) = [s for s in find_staffs(img) if s.polarity == "dark"]
+    assert len(st.lines) == 6

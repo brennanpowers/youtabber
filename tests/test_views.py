@@ -55,6 +55,8 @@ def test_a_view_with_a_card_over_the_page_is_covered():
     clean, fading = banded(card), banded(page)
     clean.contrast, fading.contrast = 255.0, 76.0
     assert not covered(clean, fading)
+    # The card hides one of the page's two staffs: the view still shows the other one, so it is still covered
+    assert covered(banded(card), banded(page, (50.0, 80.0)))
 
 
 def test_the_best_sighting_shows_the_tab_then_follows_the_view_before():

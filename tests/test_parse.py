@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 
+from youtabber import ocr
 from youtabber.parse import parse_view
 
 
@@ -191,3 +192,25 @@ def test_a_notation_staff_without_its_tab_gives_notation_only_cells():
     top, bottom = parse_view(0, notation_page(True), (0, 0, 800, 400), "dark", 140.0, 229.0, 14.0)
     assert top.system.notation is not None and not any(c.notation_only for c in top.cells)
     assert bottom.system.notation is None and len(bottom.cells) == 4 and all(c.notation_only for c in bottom.cells)
+
+
+def numbered(color: tuple[int, int, int]) -> np.ndarray:
+    """The plate of plate(False) with the number 12 printed in the given color just above the barline at 400."""
+    img = plate(light_line=False)
+    cv2.putText(img, "12", (395, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
+    return img
+
+
+def test_a_measure_number_printed_in_red_is_cropped_for_reading():
+    for color in ((0, 0, 0), (0, 0, 230)):
+        cells = [c for ps in parse_view(0, numbered(color), (0, 0, 800, 200), "dark", 140.0, 229.0, 14.0)
+                 for c in ps.cells]
+        crop = next(c for c in cells if abs(c.x0 - 400) <= 2).number_crop
+        assert crop is not None and ocr.read_number(crop) == 12
+
+
+def test_a_colored_cursor_box_is_not_taken_for_a_number():
+    img = plate(light_line=False)
+    cv2.rectangle(img, (380, 20), (470, 56), (0, 0, 230), -1)
+    cells = [c for ps in parse_view(0, img, (0, 0, 800, 200), "dark", 140.0, 229.0, 14.0) for c in ps.cells]
+    assert next(c for c in cells if abs(c.x0 - 400) <= 2).number_crop is None
