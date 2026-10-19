@@ -5,7 +5,7 @@ The truth files, the scorer, the reference scores and the reference outputs live
 read from ~/.cache/youtabber/<id>.mp4. Nothing here reads the youtabber config file.
 
   uv run python tools/evaluate.py run --sets dev,h1 --out DIR [--jobs 4] [--ids A,B] [--passes once|all]
-  uv run python tools/evaluate.py score --sets dev,h1 --out DIR [--gate port|core|pdf|accept]
+  uv run python tools/evaluate.py score --sets dev,h1 --out DIR [--gate port|core|pdf|r2|accept]
   uv run python tools/evaluate.py compare --sets dev --out DIR
   uv run python tools/evaluate.py partials --sets dev,confirm --out DIR
   uv run python tools/evaluate.py corpus --corpus DIR --out DIR [--exclude FILE] [--jobs 4] [--ids A,B]
@@ -33,7 +33,7 @@ CACHE = Path.home() / ".cache" / "youtabber"
 TIMEOUT_S = 600
 
 # The eval folder's eval-sets.json gives each set's paths; accept has none there, see truth_folder
-SETS = ("dev", "h1", "h2", "h3", "confirm", "reserve", "accept")
+SETS = ("dev", "h1", "h2", "h3", "confirm", "reserve", "dev2", "owner", "accept")
 # The videos the earlier tool was built on: they must stay correct (the last at least near correct)
 FLOOR_CORRECT = {"HLVzc4nNiY0", "EpQWdwfmQo8", "Jqt1vJEtyik"}
 FLOOR_NEAR = {"JzjGuv3lkq4"}
@@ -48,6 +48,40 @@ MUST_WARN = {"oDGo0LDH9UE", "hOnXJYCePa8"}
 GLIDES = {"ksSDjQ8dJUs", "oDGo0LDH9UE", "hOnXJYCePa8", "DeDDz4c_ajE", "sRWpd8EcZ3c"}
 # Verdicts that count as a good PDF
 GOOD = {"correct", "near_correct", "alternate_correct"}
+# Videos of the open development set whose PDF must be correct
+DEV2_CORRECT = {"P-Wg0dnu8K4", "W3mLq1RZNBY", "p7TkYt6Q8z8", "nQCp22jDhCI"}
+# A long glide with a few barlines still missed: near correct, or every error warned and at most this many errors
+GLIDE_MOST_ERRORS = {"SH7bFIV2kZU": 15}
+# A page that scrolls up without stopping is detected and warned, not read: every error warned, and nothing
+# printed from before the truth's first tab
+WARN_ONLY = {"nPp6mFwCQ-M"}
+# Owner-list videos that must print a correct or near correct PDF
+OWNER_GOOD = {"wmboCKWIRhQ", "YeGEn6YYLgM", "hC4H2kA2-gk", "BhCiI0Lprcw"}
+# A screen recording of a tab editor with a play-along clip in it, and the clip's stretch of the video (with its
+# picture-in-picture lead-in). Clip measures may be missing if warned, but nothing may print from the editor
+CLIP_ONLY = {"WP2BvcYz2D8": (3.0, 20.3)}
+# A video that switches between instrument tracks, and when: each switch needs a part_switch notice this close to
+# it. Other notices don't count: one covering the whole video would pass every switch. 4mjDivgLpsw's switch at
+# 270.1 s isn't listed: the screens either side show the same measures, numbers and layout, and only a caption
+# changes, so nothing in the music can mark it
+TRACK_SWITCHES = {"4mjDivgLpsw": [29.3, 81.2, 211.6, 237.2, 285.4]}
+# Sets held to their own recorded scores once a gate run's are copied in as their reference: no video's unwarned
+# errors or total errors may grow
+HELD_SETS = {"dev2", "owner"}
+SWITCH_SLACK = 5.0
+# A video whose every printed measure must show its notation staff above the tab (hC4H2kA2-gk's faint gray notation
+# lines aren't found in its printed measures, so it is checked by eye)
+NOTATION_ROWS = {"wmboCKWIRhQ"}
+# Cut ink a video keeps for a known reason, which may not grow: its cross-faded intro and a dark stretch read no
+# measures
+CUT_INK_KNOWN = {"Ts9VRcLryy0": 0.1239}
+# A run may take at most this share of the video's length plus this many seconds, under the gate's job count, so a
+# 600 s video ends well inside the 600 s limit
+RUNTIME_SHARE, RUNTIME_FIXED = 0.75, 20.0
+# The scorer counts a run past this peak memory as a crash
+RSS_LIMIT_MB = 8192
+# The longest glide in the sets may peak at this much memory, so a 600 s one stays well under RSS_LIMIT_MB
+MEMORY_MOST = {"SH7bFIV2kZU": 5500}
 # Largest share of the truth panel's ink a video's print area may leave out
 CUT_INK_MAX = 0.02
 # Gray levels a cursor box or highlight bar takes once the paper is whitened
@@ -222,8 +256,10 @@ def unwarned(sc, truth, result, rep) -> int | None:
     return sum(1 for t in times if not sc.warned_near(result, [t], truth.data.get("duration")))
 
 
-def gate(kind: str, name: str, reports: list[dict], base: dict, styles: dict) -> list[str]:
-    """Reasons the named gate fails for one set (empty when it passes)."""
+def gate(kind: str, name: str, reports: list[dict], base: dict, data: dict, folder: Path) -> list[str]:
+    """Reasons the named gate fails for one set (empty when it passes). `data` holds each video's truth record and
+    `folder` the set's run outputs."""
+    styles = {vid: d.get("style", []) for vid, d in data.items()}
     out = []
     if base:
         total, ref = sum(r["points"] for r in reports), sum(v["points"] for v in base.values())
@@ -235,9 +271,15 @@ def gate(kind: str, name: str, reports: list[dict], base: dict, styles: dict) ->
         b = base.get(vid)
         if b is not None and r["points"] < b["points"]:
             out.append(f"{name} {vid}: {v} ({r['points']}) below the reference {b['verdict']} ({b['points']})")
+        if kind == "r2" and b is not None and name in HELD_SETS:
+            bp = b.get("primary") or {}
+            for what, now, then in (("unwarned errors", r.get("unwarned"), b.get("unwarned")),
+                                    ("errors", p.get("errors"), bp.get("errors"))):
+                if then is not None and (now is None or now > then):
+                    out.append(f"{name} {vid}: {now} {what}, the reference had {then}")
         if v == "silent_wrong" and not (kind == "port" and vid in MUST_WARN):
             out.append(f"{name} {vid}: silent_wrong")
-        if kind in ("core", "pdf"):
+        if kind in ("core", "pdf", "r2"):
             if vid in FLOOR_CORRECT and v != "correct":
                 out.append(f"{name} {vid}: floor video is {v}, must be correct")
             if vid in FLOOR_NEAR and v not in ("correct", "near_correct"):
@@ -248,14 +290,16 @@ def gate(kind: str, name: str, reports: list[dict], base: dict, styles: dict) ->
                     out.append(f"{name} {vid}: {errors} errors, at most {GLIDE_ERRORS[vid]} allowed")
             # Every glide is judged by play time, whatever the scorer's verdict: the frozen scorer puts a glide's
             # missing measures at the glide's start
-            if vid in GLIDES and r.get("unwarned") != 0:
+            glide = vid in GLIDES or (kind == "r2" and "smooth_scroll" in styles.get(vid, []))
+            if glide and r.get("unwarned") != 0:
                 out.append(f"{name} {vid}: {v} with {r.get('unwarned')} errors without a notice near their play time")
             if vid in NO_EXTRAS and p.get("extra"):
                 out.append(f"{name} {vid}: {len(p['extra'])} extra measures, none allowed")
-        if kind == "pdf" and r.get("pdf"):
+        if kind in ("pdf", "r2") and r.get("pdf"):
             m = r["pdf"]
-            if m["cut_ink"] is None or m["cut_ink"] > CUT_INK_MAX:
-                out.append(f"{name} {vid}: cut_ink {m['cut_ink']}, at most {CUT_INK_MAX}")
+            most = CUT_INK_KNOWN.get(vid, CUT_INK_MAX) if kind == "r2" else CUT_INK_MAX
+            if m["cut_ink"] is None or m["cut_ink"] > most:
+                out.append(f"{name} {vid}: cut_ink {m['cut_ink']}, at most {most}")
             if m["residue_cells"]:
                 out.append(f"{name} {vid}: {len(m['residue_cells'])} measures keep cursor tint")
             if m["slivers"] and vid in SLIVER_CHECK:
@@ -267,6 +311,8 @@ def gate(kind: str, name: str, reports: list[dict], base: dict, styles: dict) ->
             # Widening the print area lowers cut ink and can raise spill; spill may not grow past the reference
             if m["spill"] is not None and m["reference_spill"] is not None and m["spill"] > m["reference_spill"] + 0.005:
                 out.append(f"{name} {vid}: spill {m['spill']} above the reference {m['reference_spill']}")
+        if kind == "r2":
+            out += round2(name, r, data[vid], folder / vid)
         if kind == "accept":
             glide = "smooth_scroll" in styles.get(vid, [])
             if glide:
@@ -277,6 +323,65 @@ def gate(kind: str, name: str, reports: list[dict], base: dict, styles: dict) ->
             if not ok:
                 out.append(f"{name} {vid}: {v}, {r.get('unwarned')} unwarned ({'glide' if glide else 'page or band'})")
     return out
+
+
+def round2(name: str, r: dict, truth: dict, folder: Path) -> list[str]:
+    """Reasons one video fails the round-2 rules: its run time, and the results the open development set and the
+    owner list must reach."""
+    vid, v = r["id"], r["verdict"]
+    p = r.get("primary") or {}
+    out = []
+    if v == "crash":
+        out.append(f"{name} {vid}: crash ({r.get('over_limit') or 'no result'})")
+    limit = RUNTIME_SHARE * truth["duration"] + RUNTIME_FIXED
+    if r.get("runtime_s") is None or r["runtime_s"] > limit:
+        out.append(f"{name} {vid}: ran {r.get('runtime_s')} s, at most {limit:.0f} s")
+    most = MEMORY_MOST.get(vid, RSS_LIMIT_MB)
+    if r.get("peak_rss_mb") is None or r["peak_rss_mb"] > most:
+        out.append(f"{name} {vid}: peak memory {r.get('peak_rss_mb')} MB, at most {most} MB")
+    if vid in DEV2_CORRECT and v != "correct":
+        out.append(f"{name} {vid}: {v}, must be correct")
+    if vid in GLIDE_MOST_ERRORS and v not in GOOD and (p.get("errors") or 0) > GLIDE_MOST_ERRORS[vid]:
+        out.append(f"{name} {vid}: {p.get('errors')} errors, at most {GLIDE_MOST_ERRORS[vid]} unless near correct")
+    if vid in WARN_ONLY:
+        if r.get("unwarned"):
+            out.append(f"{name} {vid}: {r['unwarned']} errors without a notice near their play time")
+        start = truth["tab_spans"][0][0]
+        early = [e for e in p.get("extra", []) if e["t"] < start]
+        if early:
+            out.append(f"{name} {vid}: {len(early)} measures printed from before the tab starts at {start} s")
+    if vid in OWNER_GOOD and v not in ("correct", "near_correct"):
+        out.append(f"{name} {vid}: {v}, must be correct or near_correct")
+    result = read_json(folder / "result.json") or {}
+    if vid in CLIP_ONLY:
+        if r.get("unwarned"):
+            out.append(f"{name} {vid}: {r['unwarned']} errors without a notice near their play time")
+        t0, t1 = CLIP_ONLY[vid]
+        measures = (result.get("candidates") or [{}])[0].get("measures", [])
+        editor = [m for m in measures if not t0 <= m["t"] <= t1]
+        if editor:
+            out.append(f"{name} {vid}: {len(editor)} measures printed from the editor, outside {t0}-{t1} s")
+    warnings = result.get("warnings", [])
+    for t in TRACK_SWITCHES.get(vid, []):
+        if not any(w["kind"] == "part_switch" and w["t0"] - SWITCH_SLACK <= t <= w["t1"] + SWITCH_SLACK
+                   for w in warnings):
+            out.append(f"{name} {vid}: no part_switch notice near the track switch at {t} s")
+    if vid in NOTATION_ROWS:
+        meta = read_json(folder / "meta.json") or {"measures": []}
+        bare = [m["image"] for m in meta["measures"]
+                if not shows_notation(cv2.imread(str(folder / m["image"]), cv2.IMREAD_GRAYSCALE), m["gap"])]
+        if bare:
+            out.append(f"{name} {vid}: {len(bare)} printed measures show tab without its notation")
+    return out
+
+
+def shows_notation(img: np.ndarray, gap: float) -> bool:
+    """Whether a printed measure holds a notation staff above its tab staff: closer-spaced lines over it. A ledger
+    line can add a line to the notation staff and notes can hide one."""
+    from youtabber.staff import find_staffs
+    staffs = find_staffs(img, max(img.shape[1] // 3, 20))
+    tab = [st for st in staffs if abs(st.gap - gap) <= 0.2 * gap]
+    return any(st.gap < 0.85 * t.gap and t.top > st.bottom for st in staffs for t in tab if st is not t)
 
 
 def print_table(name: str, reports: list[dict], base: dict) -> None:
@@ -381,13 +486,20 @@ def pdf_metrics(ev: Path, truth, result: dict, folder: Path) -> dict:
 
 def cmd_score(a) -> None:
     ev = eval_dir(a.eval)
+    # A gate judges whole sets, so it can't be asked of a few videos
+    if a.ids and a.gate:
+        sys.exit("--ids scores only the listed videos; drop it to use --gate.")
+    wanted = set(a.ids.split(",")) if a.ids else None
+    if wanted:
+        known = {d["id"] for name in a.sets.split(",") for d in truths(truth_folder(ev, name))}
+        if wanted - known:
+            sys.exit(f"Not in sets {a.sets}: {', '.join(sorted(wanted - known))}")
     sc = load(ev / "mediator" / "score.py", "frozen_score")
     problems = []
     for name in a.sets.split(","):
         base_file = eval_sets(ev)["sets"].get(name, {}).get("reference_score")
         base = {v["id"]: v for v in json.loads((ev / base_file).read_text())["videos"]} if base_file else {}
-        data = truths(truth_folder(ev, name))
-        styles = {d["id"]: d.get("style", []) for d in data}
+        data = [d for d in truths(truth_folder(ev, name)) if wanted is None or d["id"] in wanted]
         reports = []
         for d in data:
             truth = sc.Truth(d)
@@ -397,7 +509,10 @@ def cmd_score(a) -> None:
             if name == "confirm" and result and result.get("outcome") == "tab":
                 rep["pdf"] = pdf_metrics(ev, truth, result, a.out / name / truth.id)
             reports.append(rep)
-        (a.out / f"score-{name}.json").write_text(json.dumps(
+        if wanted:
+            # Only some videos: a file of their own, so the full set's score file stays as it was
+            base = {k: v for k, v in base.items() if k in wanted}
+        (a.out / (f"score-{name}-ids.json" if wanted else f"score-{name}.json")).write_text(json.dumps(
             {"total_points": sum(r["points"] for r in reports), "videos": reports}, indent=1, default=str))
         print_table(name, reports, base)
         if name == "confirm":
@@ -408,7 +523,7 @@ def cmd_score(a) -> None:
                     print(f"{r['id']:<12} {m['cut_ink']!s:>7} {m['spill']!s:>6} {m['reference_spill']!s:>6} "
                           f"{m['paper']:>5} {len(m['residue_cells']):>4} {len(m['slivers']):>4} {len(m['cut_staff']):>5}")
         if a.gate:
-            problems += gate(a.gate, name, reports, base, styles)
+            problems += gate(a.gate, name, reports, base, {d["id"]: d for d in data}, a.out / name)
     if a.gate:
         if problems:
             print(f"\ngate {a.gate} FAILED:")
@@ -433,12 +548,55 @@ def cmd_compare(a) -> None:
         return [(round(m["t"], 1), m.get("label"), round(m["x"])) for m in cands[0].get("measures", [])]
 
     for name in a.sets.split(","):
-        frozen = ev / eval_sets(ev)["sets"][name]["reference_outputs"]
+        ref_dir = eval_sets(ev)["sets"][name].get("reference_outputs")
+        if not ref_dir:
+            print(f"{name:<8} has no reference outputs")
+            continue
+        frozen = ev / ref_dir
         for t in truths(truth_folder(ev, name)):
             mine = read_json(a.out / name / t["id"] / "result.json")
             ref = read_json(frozen / t["id"] / "result.json")
             same = "same" if sequence(mine) == sequence(ref) else "DIFFERS"
             print(f"{name:<8} {t['id']:<12} {same:<8} reference {summary(ref)}  v1 {summary(mine)}")
+
+
+def cmd_same(a) -> None:
+    """Whether two runs gave the same output, video by video: the same result.json apart from run time and memory,
+    and the same measure images, pixel for pixel."""
+    ev = eval_dir(a.eval)
+    wanted = set(a.ids.split(",")) if a.ids else None
+    if wanted:
+        known = {t["id"] for name in a.sets.split(",") for t in truths(truth_folder(ev, name))}
+        if wanted - known:
+            sys.exit(f"Not in sets {a.sets}: {', '.join(sorted(wanted - known))}")
+    differ = False
+    for name in a.sets.split(","):
+        for t in truths(truth_folder(ev, name)):
+            vid = t["id"]
+            if wanted is not None and vid not in wanted:
+                continue
+            mine, theirs = a.out / name / vid, a.against / name / vid
+            ra, rb = read_json(mine / "result.json"), read_json(theirs / "result.json")
+            if ra is None or rb is None:
+                found = [str(d) for d, r in ((mine, ra), (theirs, rb)) if r is None]
+                diffs = ["no result.json in " + ", ".join(found)]
+            else:
+                # Run time and memory differ between any two runs
+                keys = sorted((set(ra) | set(rb)) - {"runtime_s", "peak_rss_mb"})
+                diffs = [k for k in keys if ra.get(k) != rb.get(k)]
+                names = sorted(p.name for p in (mine / "measures").glob("*.png"))
+                if names != sorted(p.name for p in (theirs / "measures").glob("*.png")):
+                    diffs.append("measure image names")
+                else:
+                    for n in names:
+                        x = cv2.imread(str(mine / "measures" / n), cv2.IMREAD_UNCHANGED)
+                        y = cv2.imread(str(theirs / "measures" / n), cv2.IMREAD_UNCHANGED)
+                        if x.shape != y.shape or (x != y).any():
+                            diffs.append(f"measures/{n}")
+            differ |= bool(diffs)
+            print(f"{name:<8} {vid:<12} " + ("same" if not diffs else "DIFF " + " ".join(diffs[:5])))
+    if differ:
+        sys.exit(1)
 
 
 def cmd_partials(a) -> None:
@@ -544,7 +702,13 @@ def main() -> None:
             p.add_argument("--ids", help="comma-separated ids to run from those sets")
             p.add_argument("--passes", choices=["once", "all"], default="once")
         if cmd == "score":
-            p.add_argument("--gate", choices=["port", "core", "pdf", "accept"])
+            p.add_argument("--gate", choices=["port", "core", "pdf", "r2", "accept"])
+            p.add_argument("--ids", help="comma-separated ids to score from those sets (no --gate)")
+    same = sub.add_parser("same")
+    same.add_argument("--sets", required=True, help="comma-separated: " + ",".join(SETS))
+    same.add_argument("--out", type=Path, required=True)
+    same.add_argument("--against", type=Path, required=True, help="the other run's folder")
+    same.add_argument("--ids", help="comma-separated ids to compare (default: every video of the sets)")
     corpus = sub.add_parser("corpus")
     corpus.add_argument("--corpus", type=Path, required=True)
     corpus.add_argument("--out", type=Path, required=True)
@@ -553,7 +717,7 @@ def main() -> None:
     corpus.add_argument("--ids", help="comma-separated corpus ids to run (default: all)")
     a = ap.parse_args()
     {"one": cmd_one, "run": cmd_run, "score": cmd_score, "compare": cmd_compare, "partials": cmd_partials,
-     "allpass": cmd_allpass, "corpus": cmd_corpus}[a.cmd](a)
+     "allpass": cmd_allpass, "corpus": cmd_corpus, "same": cmd_same}[a.cmd](a)
 
 
 if __name__ == "__main__":

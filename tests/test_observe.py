@@ -49,3 +49,22 @@ def test_long_held_page_keeps_few_frames(monkeypatch):
         assert (v.t0, v.t1, v.wrapped, v.times) == (w.t0, w.t1, w.wrapped, w.times)
         assert np.array_equal(v.plate, PAGE)
         assert v.playhead == w.playhead and len(v.playhead) == len(v.times)
+
+
+def test_color_spread_is_judged_against_the_paper():
+    observe.set_paper(np.array([200.0, 240.0, 250.0]))
+    px = np.array([[[200, 240, 250], [100, 240, 250], [0, 0, 255]]], np.uint8)
+    # Paper itself is gray; blue at half the paper's level spreads 255 - 127.5; pure red on it 255 * 255 / 250
+    assert np.allclose(observe.chroma(px), [[0.0, 127.5, 260.1]])
+    observe.set_paper(np.array([20.0, 20.0, 20.0]))
+    # Dark paper: the plain spread between channels
+    assert observe.chroma(px).tolist() == [[50.0, 150.0, 255.0]]
+    observe.set_paper(PAPER)
+
+
+def test_paper_rect_counts_pixels_within_the_tolerance():
+    frame = np.full((40, 60, 3), 255, np.uint8)
+    # Rows 0-9 sit just inside the paper tolerance, rows 30-39 just outside it
+    frame[:10] = 255 - (observe.PAPER_TOL - 1)
+    frame[30:] = 255 - observe.PAPER_TOL
+    assert observe.panel_rect(frame, PAPER.astype(np.float64), (10, 15, 50, 25), 10.0) == (0, 0, 60, 30)

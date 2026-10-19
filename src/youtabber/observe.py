@@ -77,11 +77,17 @@ def set_paper(paper: np.ndarray) -> None:
 
 def chroma(frame: np.ndarray) -> np.ndarray:
     """Color spread of each pixel after dividing out the paper color (0 for gray on any paper)."""
-    f = frame.astype(np.float32)
+    if frame.size == 0:
+        return np.zeros(frame.shape[:2], np.float32)
     if _paper.min() >= LIGHT_PAPER:
         # Tinted light paper: judge color against it. Dark paper is near black, so plain spread is used.
-        f = f / _paper * 255.0
-    return f.max(axis=2) - f.min(axis=2)
+        # A table of every channel level divided by the paper gives the same numbers as dividing each pixel.
+        table = (np.arange(256, dtype=np.float32)[:, None] / _paper * 255.0).reshape(256, 1, 3)
+        b, g, r = cv2.split(cv2.LUT(frame, table))
+    else:
+        b, g, r = cv2.split(frame.astype(np.float32))
+    # OpenCV's per-pixel max and min over three planes are much faster than numpy's reduce over the color axis
+    return cv2.subtract(cv2.max(cv2.max(b, g), r), cv2.min(cv2.min(b, g), r))
 
 
 def colored(frame: np.ndarray) -> np.ndarray:
@@ -201,7 +207,11 @@ def panel_rect(frame: np.ndarray, paper: np.ndarray, seed: tuple[int, int, int, 
 
     With `for_print`, the area to print from, which keeps a margin around the staffs.
     """
-    m = (np.abs(frame.astype(np.int16) - paper.astype(np.int16)).max(axis=2) < PAPER_TOL)
+    # Paper colored: every channel within PAPER_TOL of the paper's
+    p = paper.astype(np.int16)
+    lo = tuple(int(v) for v in np.clip(p - (PAPER_TOL - 1), 0, 255))
+    hi = tuple(int(v) for v in np.clip(p + (PAPER_TOL - 1), 0, 255))
+    m = cv2.inRange(frame, lo, hi) > 0
     h, w = m.shape
     sx0, sy0, sx1, sy1 = seed
     sx0, sx1 = max(0, sx0), min(w, sx1)
@@ -259,8 +269,8 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
 
     def playhead_at(f, plate, rect) -> tuple[float, float] | None:
         x0, y0, x1, y1 = rect
-        dev = (np.abs(f[y0:y1, x0:x1].astype(np.int16) - plate[y0:y1, x0:x1].astype(np.int16)).max(axis=2)
-               > CURSOR_DIFF).astype(np.uint8)
+        b, g, r = cv2.split(cv2.absdiff(f[y0:y1, x0:x1], plate[y0:y1, x0:x1]))
+        dev = (cv2.max(cv2.max(b, g), r) > CURSOR_DIFF).astype(np.uint8)
         dev = cv2.morphologyEx(dev, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
         ys, xs = np.nonzero(dev)
         if len(xs) < 0.3 * gap * gap:
