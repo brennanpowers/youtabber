@@ -6,6 +6,7 @@ import numpy as np
 
 from youtabber.observe import PRINT_ABOVE_GAPS, PRINT_BELOW_GAPS, PRINT_MARGIN_GAPS, colored, gray_pixels, ink_map, to_gray
 from youtabber.scan import System, systems_in
+from youtabber.staff import without_border
 
 # A barline covers at least this share of the rows between the tab staff's top and bottom lines
 BAR_COVER = 0.92
@@ -345,6 +346,10 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
     # below it
     px0, py0, px1, py1 = print_rect or rect
     syss = [s for s in systems_in(sub, whole_lines=whole_lines) if s.top < py1 and s.tab.bottom > py0]
+    # Past the panel the plate is painted paper, so a border at the panel's edge passes for a staff line there; the
+    # plate as it is shows what lies past it
+    for s in syss:
+        s.tab = without_border(g, s.tab)
     # A "tab staff" spaced much closer than the view's widest-spaced one is beams or text lines, not a staff
     widest = max((s.tab.gap for s in syss), default=0.0)
     syss = [s for s in syss if s.tab.gap >= CLOSE_STAFF_SHARE * widest]

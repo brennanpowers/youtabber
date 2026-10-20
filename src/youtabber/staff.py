@@ -17,8 +17,17 @@ MAX_GAP_PX = 60
 MERGED_SHARE = 0.9
 # A line covering less than this share of its staff's typical line is a ledger line or beam row
 WEAK_LINE = 0.5
+# ...unless it covers this share, reaches across the staff one even step past it, and is missing where digits sit on
+# it: a line under rows of digits. Digits reach this many line gaps above and below the line they sit on
+HIDDEN_LINE, DIGIT_REACH = 0.3, 0.35
 # In a run of more than six evenly spaced lines, a staff's own lines cover at least this share of the strongest
 RUN_LINE = 0.8
+# A staff's outer line has paper just past it, at least BEYOND_PX pixels or BEYOND_GAPS line gaps out; a panel's
+# border can sit one even step past the staff, with footage right beyond it. A band can end in footage a third of a
+# gap below its bottom line, so the test stays close to the line
+BEYOND_GAPS, BEYOND_PX = 0.15, 3
+# ...paper being within this many gray levels of the paper between the staff's lines
+BEYOND_TOL = 40
 
 
 @dataclass
@@ -117,6 +126,71 @@ def in_step(lines: list, firm: list[bool], k: int) -> bool:
                              or (len(below) >= 2 and near(below[1] - below[0], d2)))
 
 
+def weak_end(gray: np.ndarray, polarity: str, lines: list, chain: list[int], end: int, strong: float) -> bool:
+    """True when the chain's line at `end` (0 or -1) is a ledger line or beam row rather than a staff line hidden
+    under digits: it covers less than WEAK_LINE of the typical line, and less than HIDDEN_LINE, or not across the
+    lines next to it, or isn't missing just where digits cover it. A chain longer than a staff keeps none of its weak
+    end lines."""
+    ln = lines[chain[end]]
+    if ln[4] >= WEAK_LINE * strong:
+        return False
+    if len(chain) > MAX_LINES:
+        return True
+    inner = [lines[c] for c in (chain[1:] if end == 0 else chain[:-1])]
+    x0, x1 = int(np.median([v[1] for v in inner])), int(np.median([v[2] for v in inner]))
+    across = ln[1] <= x0 + 0.05 * (x1 - x0) and ln[2] >= x1 - 0.05 * (x1 - x0)
+    gap = abs(ln[0] - inner[0 if end == 0 else -1][0])
+    return ln[4] < HIDDEN_LINE * strong or not across or not under_digits(gray, polarity, ln[0], x0, x1, gap)
+
+
+def under_digits(gray: np.ndarray, polarity: str, y: float, x0: int, x1: int, gap: float) -> bool:
+    """True when a line at row y is missing mostly where ink lies just above or below it, as digits sitting on it
+    hide it, and shows mostly where there is none. A ledger row or a string in the footage shows where noteheads or
+    fingers sit."""
+    r, reach = int(round(y)), max(3, int(DIGIT_REACH * gap))
+    a, b = max(0, r - reach), min(gray.shape[0], r + reach + 1)
+    if b - a < 5 or x1 <= x0:
+        return False
+    g = gray[a:b, x0:x1].astype(np.int16)
+    if polarity == "light":
+        g = 255 - g
+    shown = thin_response(gray[max(0, r - 4):r + 5, x0:x1], polarity)[min(r, 4) - 1:min(r, 4) + 2].any(axis=0)
+    # Paper is the light end of the band; digits can cover most of it
+    ink = g < np.percentile(g, 90) - 60
+    # Rows off the line itself, where a digit's strokes are and the line's soft edge isn't
+    off = np.ones(b - a, bool)
+    off[max(0, r - a - 1):r - a + 2] = False
+    near = ink[off].any(axis=0)
+    missing = ~shown
+    return bool(missing.any() and shown.any() and near[missing].mean() > 0.5 and near[shown].mean() < 0.5)
+
+
+def paper_beyond(gray: np.ndarray, chain: list, side: int) -> bool:
+    """True when the row just past the chain's last (side 1) or first (side -1) line looks like the paper between its
+    lines. A row outside the image counts as paper."""
+    ys = [ln[0] for ln in chain]
+    gap = (ys[-1] - ys[0]) / (len(ys) - 1)
+    x0, x1 = int(np.median([ln[1] for ln in chain])), int(np.median([ln[2] for ln in chain]))
+    y = int(round((ys[-1] if side > 0 else ys[0]) + side * max(BEYOND_PX, BEYOND_GAPS * gap)))
+    if not 0 <= y < gray.shape[0] or x1 <= x0:
+        return True
+    paper = np.median([np.median(gray[int(round((a + b) / 2)), x0:x1]) for a, b in zip(ys, ys[1:])])
+    return abs(float(np.median(gray[y, x0:x1])) - float(paper)) <= BEYOND_TOL
+
+
+def without_border(gray: np.ndarray, st: Staff) -> Staff:
+    """The staff without outer lines that have no paper past them in `gray`: a panel border one step past it."""
+    rows = [(y, st.x0, st.x1) for y in st.lines]
+    while len(rows) > MIN_LINES and not paper_beyond(gray, rows, 1):
+        rows.pop()
+    while len(rows) > MIN_LINES and not paper_beyond(gray, rows, -1):
+        rows.pop(0)
+    if len(rows) == len(st.lines):
+        return st
+    ys = [y for y, _, _ in rows]
+    return Staff(ys, st.x0, st.x1, float(np.median(np.diff(ys))), st.polarity)
+
+
 def find_staffs(gray: np.ndarray, min_len: int | None = None) -> list[Staff]:
     """Every staff of 4 to 6 evenly spaced lines that share a horizontal extent.
 
@@ -157,9 +231,13 @@ def find_staffs(gray: np.ndarray, min_len: int | None = None) -> list[Staff]:
                 j += 1
             # Ledger lines and beam rows next to a staff are short; drop weak lines from the ends
             strong = np.median([lines[c][4] for c in chain])
-            while len(chain) > MIN_LINES and lines[chain[-1]][4] < WEAK_LINE * strong:
+            while len(chain) > MIN_LINES and weak_end(gray, polarity, lines, chain, -1, strong):
                 chain.pop()
-            while len(chain) > MIN_LINES and lines[chain[0]][4] < WEAK_LINE * strong:
+            while len(chain) > MIN_LINES and weak_end(gray, polarity, lines, chain, 0, strong):
+                chain.pop(0)
+            while len(chain) > MIN_LINES and not paper_beyond(gray, [lines[c] for c in chain], 1):
+                chain.pop()
+            while len(chain) > MIN_LINES and not paper_beyond(gray, [lines[c] for c in chain], -1):
                 chain.pop(0)
             if len(chain) < MIN_LINES:
                 i += 1

@@ -33,6 +33,21 @@ def test_a_light_line_is_not_a_barline():
     assert full_cells(plate(light_line=True)) == full_cells(plate(light_line=False))
 
 
+def test_a_panel_border_at_the_panel_edge_is_no_staff_line():
+    # A 4-line bass staff whose panel ends at a light border one line gap below it, with footage past it
+    img = np.full((200, 800, 3), 255, np.uint8)
+    for i in range(4):
+        cv2.line(img, (20, 60 + i * 14), (780, 60 + i * 14), (60, 60, 60), 1)
+    for x in (100, 400, 700):
+        cv2.line(img, (x, 60), (x, 102), (0, 0, 0), 2)
+    img[116] = 120
+    img[117:] = 70
+    systems = parse_view(0, img, (0, 0, 800, 117), "dark", 140.0, 229.0, 14.0)
+    assert [len(ps.system.tab.lines) for ps in systems] == [4]
+    xs = [c.x0 for ps in systems for c in ps.cells if c.kind == "full"]
+    assert len(xs) == 2 and abs(xs[0] - 100) <= 2 and abs(xs[1] - 400) <= 2
+
+
 def staff_from(x_start: int, opening: bool) -> np.ndarray:
     """A tab staff starting at x_start with a fret digit in its first measure, barlines at 100, 400 and 700."""
     img = np.full((200, 800, 3), 255, np.uint8)

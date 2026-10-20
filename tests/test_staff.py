@@ -185,3 +185,45 @@ def test_a_line_thickened_by_notes_on_a_wide_staff_is_not_split():
         img[y + dy, 50:750:2] = 60
     (st,) = [s for s in find_staffs(img) if s.polarity == "dark"]
     assert len(st.lines) == 6
+
+
+def test_outer_lines_showing_only_between_rows_of_digits_stay_in_the_staff():
+    rows = [(200 + i * 14, 50, 750) for i in range(4)]
+    # The two bottom lines are hidden under a two-digit number every 44 px along the whole staff: a patch of paper
+    # with two dark digit bodies on it
+    img = lined(rows + [(256, 50, 750), (270, 50, 750)])
+    for y in (256, 270):
+        for x in range(60, 740, 44):
+            cv2.rectangle(img, (x, y - 5), (x + 26, y + 5), 255, -1)
+            for d in (2, 14):
+                cv2.rectangle(img, (x + d, y - 4), (x + d + 9, y + 4), 0, -1)
+    (st,) = find_staffs(img)
+    assert len(st.lines) == 6
+    # A short row one step below a staff, as a ledger line or beam makes, is still left out
+    (st,) = find_staffs(lined(rows + [(256, 300, 450)]))
+    assert len(st.lines) == 4
+    # So are ledger lines across the staff, each under a notehead: the row shows where the ink is
+    img = lined(rows)
+    for x in range(60, 740, 44):
+        cv2.line(img, (x, 256), (x + 22, 256), 60, 1)
+        cv2.ellipse(img, (x + 11, 256), (5, 4), -20, 0, 360, 0, -1)
+    (st,) = find_staffs(img)
+    assert len(st.lines) == 4
+
+
+def test_a_band_ending_a_third_of_a_gap_below_its_staff_keeps_its_bottom_line():
+    img = lined([(200 + i * 14, 50, 750) for i in range(6)])
+    img[275:] = 70   # footage from 5 px below the bottom line
+    (st,) = find_staffs(img)
+    assert len(st.lines) == 6
+
+
+def test_a_panel_border_one_step_below_the_staff_is_no_staff_line():
+    for count in (6, 4):
+        img = lined([(200 + i * 14, 50, 750) for i in range(count)])
+        # The panel ends one line gap below the bottom line, at a dark border with footage below it
+        border = 200 + count * 14
+        img[border] = 20
+        img[border + 1:] = 70
+        (st,) = find_staffs(img)
+        assert len(st.lines) == count, count
