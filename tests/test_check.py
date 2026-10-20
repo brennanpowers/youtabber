@@ -62,8 +62,17 @@ def test_number_checks():
 
 
 def test_unread_numbers_in_between_are_not_a_skip():
-    labels = [(1.0, 19), (2.0, None), (3.0, None), (4.0, None), (5.0, 23)]
+    labels = [(1.0, 1), (2.0, None), (3.0, None), (4.0, None), (5.0, 5)]
     assert number_checks(labels, True, 10.0) == []
+
+
+def test_a_first_number_far_past_the_count_points_at_missing_opening_measures():
+    labels = [(14.0, 7), (16.0, 8), (18.0, 9)]
+    (w,) = number_checks(labels, True, 60.0)
+    assert (w["kind"], w["t0"], w["t1"]) == ("numbers_start", 9.0, 14.0)
+    assert "Measures 1-6 weren't printed" in w["text"]
+    # A pickup numbered 0, or a first measure numbered 1 to 3, is no sign of missing measures
+    assert number_checks([(14.0, 3), (16.0, 4)], True, 60.0) == []
 
 
 def test_unread_last_numbers_are_not_counted_over():

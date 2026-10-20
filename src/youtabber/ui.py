@@ -25,6 +25,8 @@ LABELS = {
     "number_again": ("measure number printed again", "measure numbers printed again"),
     "few_measures": ("screen with fewer measures than expected", "screens with fewer measures than expected"),
     "numbers_skipped": ("measure number skipped", "measure numbers skipped"),
+    "numbers_start": ("first number read is high, opening measures may be missing",
+                      "first number read is high, opening measures may be missing"),
     "count_over": ("more measures than numbers read", "more measures than numbers read"),
     "glide_repeat": ("measure that may repeat an earlier one", "measures that may repeat earlier ones"),
     "glide_gap": ("long gap between measures, some may be missing", "long gaps between measures, some may be missing"),

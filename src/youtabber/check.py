@@ -222,6 +222,14 @@ def number_checks(labels: list[tuple[float, int | None]], once: bool, duration: 
     if not read:
         return []
     out = []
+    # Measures counted from 1 before the first number read: a much higher number means the opening measures weren't
+    # printed, such as a first screen shown too briefly to read
+    i0, t0, n0 = read[0]
+    if n0 - i0 > 1 + COUNT_SLACK:
+        missed = "Measure 1 wasn't" if n0 - i0 == 2 else f"Measures 1-{n0 - i0 - 1} weren't"
+        out.append({"t0": round(max(0.0, t0 - 5), 2), "t1": round(t0, 2), "kind": "numbers_start",
+                    "text": f"The first measure number read is {n0}, at {fmt(t0)}. {missed} printed; check whether "
+                            f"the video shows them before that."})
     top = max(n for _, _, n in read)
     # The last measure carrying the top number, counted from 1 in print order
     position = max(i for i, _, n in read if n == top) + 1
