@@ -7,9 +7,9 @@ GAP = 10.0
 
 
 def cell(width: int, marks: bool, kind: str = "full", complete: bool = True, above: bool = False,
-         clef: bool = False) -> Cell:
+         clef: bool = False, tied: bool = False) -> Cell:
     """A cell between barlines at x 100 and 100 + width whose ink box starts 15 px left of its left barline. Its
-    box holds a notation staff (rows 15-49) above the tab staff (rows 60-110)."""
+    box holds a notation staff (rows 15-49) above the tab staff (rows 60-110). A clef cell is its system's first."""
     ink = np.zeros((120, width + 16), bool)
     ink[60:111, 15:17] = True            # left barline
     ink[60:111, -1] = True               # first column of the right barline
@@ -20,8 +20,10 @@ def cell(width: int, marks: bool, kind: str = "full", complete: bool = True, abo
         ink[22:27, 15 + width // 2:15 + width // 2 + 12] = True   # a whole rest on the notation staff
     if clef:
         ink[16:48, 20:40] = True         # a clef and key signature on the notation staff
-    return Cell(0, 0, 1, 100, 100 + width, kind, ink, np.zeros_like(ink), 0, gap=GAP, ref_y=60, mid_y=85.0,
-                complete=complete, top_y=15)
+    if tied:
+        ink[25:35, 30:44] = ink[38:48, 30:44] = True   # whole notes tied over from the bar before
+    return Cell(0, 0, 0 if clef else 1, 100, 100 + width, kind, ink, np.zeros_like(ink), 0, gap=GAP, ref_y=60,
+                mid_y=85.0, complete=complete, top_y=15)
 
 
 def test_a_bar_with_only_staff_lines_and_barlines_is_empty():
@@ -34,6 +36,10 @@ def test_a_rest_bar_with_a_number_and_a_notation_rest_is_empty():
 
 def test_a_clef_and_key_signature_cell_is_not_an_empty_bar():
     assert not empty_bar(cell(60, marks=False, clef=True))
+
+
+def test_a_bar_of_notes_tied_over_with_nothing_on_its_tab_staff_is_empty():
+    assert empty_bar(cell(60, marks=False, tied=True))
 
 
 def test_a_bar_with_fret_digits_is_not_empty():

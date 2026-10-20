@@ -24,7 +24,8 @@ EDGE_SHARE = 0.25
 # ...unless it is an empty bar drawn short: between two barlines, with less ink on its tab staff than this many
 # square line gaps once its left barline is left out...
 EMPTY_BAR_INK = 0.1
-# ...and less than this many on the notation staff above it, room for a rest but not a clef and key signature
+# ...and, in a system's first cell, less than this many on the notation staff above it, room for a rest but not a clef
+# and key signature
 EMPTY_NOTATION_INK = 1.0
 # Line gaps at a cell's left taken up by its barline, a thick or double one included
 BAR_SKIP_GAPS = 0.7
@@ -459,9 +460,10 @@ def editor_screen(path: Path, seg: Segment) -> bool:
 
 
 def empty_bar(c: Cell) -> bool:
-    """True for a bar with nothing on its tab staff between its two barlines: a rest bar, count-in or closing empty
-    bar, which prints however short it is drawn. A measure number above it doesn't count, nor does a rest on its
-    notation staff, which is smaller than a square line gap; a clef and key signature there are not."""
+    """True for a bar with nothing on its tab staff between its two barlines: a rest bar, count-in, closing empty
+    bar or bar of notes tied over, which prints however short it is drawn. A measure number above it doesn't count.
+    A system's first cell may be a clef and key signature standing alone before a start-repeat barline, so there only
+    a rest on the notation staff, smaller than a square line gap, is allowed."""
     # A notation staff whose tab is out of view says nothing about the tab
     if c.kind != "full" or not c.complete or c.notation_only or c.x1 - c.x0 < EMPTY_MIN_GAPS * c.gap:
         return False
@@ -473,7 +475,7 @@ def empty_bar(c: Cell) -> bool:
     tab = c.ink[c.ref_y:bottom + 1, start:end].sum()
     # A system cut by the panel top starts above the cell box; its notation rows then start at the box top
     notation = c.ink[max(0, c.top_y):c.ref_y, start:end].sum()
-    return tab < EMPTY_BAR_INK * c.gap * c.gap and notation < EMPTY_NOTATION_INK * c.gap * c.gap
+    return tab < EMPTY_BAR_INK * c.gap * c.gap and (c.index > 0 or notation < EMPTY_NOTATION_INK * c.gap * c.gap)
 
 
 def kept_cells(cells: list[Cell], typical: float) -> list[Cell]:

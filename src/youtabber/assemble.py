@@ -34,6 +34,9 @@ TRACKED_SHARE = 0.5
 SYSTEM_START_GAPS = 3.0
 # Two sightings this alike (share of unmatched ink) can lend a measure number from one to the other
 BORROW_RESEMBLE = 0.05
+# A view's own numbers, read this many measures or fewer off the start its look-alike neighbors would lend it and
+# none on that start, say the neighbors are a riff's other pages
+BORROW_CONFLICT = 6
 # A numbered measure met again on a later screen is the same music when this alike (share of unmatched ink)
 REPLAY_RESEMBLE = 0.3
 # Glided measures this alike after scaling (share of unmatched ink) count as the same measure in a run
@@ -166,10 +169,17 @@ def borrow_numbers(obs: list[Obs]) -> None:
                         votes[d.number - i] += 1
         if votes:
             start, n = votes.most_common(1)[0]
-            if n >= 2 and n > sum(votes.values()) / 2:
+            if n >= 2 and n > sum(votes.values()) / 2 and not read_against(o, start):
                 o.start = start
                 for i, c in enumerate(o.cells):
                     c.number = start + i
+
+
+def read_against(o: Obs, start: int) -> bool:
+    """True when the numbers read on a view's own cells say it starts a few measures from `start`, and none agrees
+    with it: a page of a riff looks like the page before it. A number far off is a misread, such as one digit."""
+    off = [c.read - i - start for i, c in enumerate(o.cells) if c.read is not None]
+    return bool(off) and 0 not in off and any(abs(d) <= BORROW_CONFLICT for d in off)
 
 
 def tracked(o: Obs) -> bool:
@@ -406,18 +416,16 @@ def navigation_before(o: Obs | None, words_of) -> str | None:
     return None
 
 
-def replay_evidence(o, run, j, A, gap_before, prev, use, words_of, scrolling) -> tuple[bool, str, bool]:
+def replay_evidence(o, run, j, A, gap_before, prev, use, words_of) -> tuple[bool, str, bool]:
     """(fold, basis, resolved) for cells that repeat slots j, j+1, ...
 
     Folding needs evidence that the video went back to the same place in the score: equal printed
-    measure numbers, a jump back inside a scrolling band, a D.S./D.C. marking on the page played just
-    before, or a restart from the first measure after a break.
+    measure numbers, an end-repeat sign or a D.S./D.C. marking on the page played just before, or a restart
+    from the first measure after a break. Music that only looks like earlier music is a riff played again.
     """
     first = run[0]
     if "numbers" in use and first.number is not None and A.slots[j].number is not None:
         return first.number == A.slots[j].number, "numbers", True
-    if scrolling:
-        return True, "jump_back", True
     if "navigation" in use:
         if prev is not None and prev.repeat_end:
             return True, "repeat_sign", True
@@ -440,7 +448,6 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
     prev: Obs | None = None
     prev_slots: list = []
     last_end = None
-    scrolled = 0
     # Registration of every consecutive pair, and the share of pairs per segment that line up
     shift_cache: dict = {}
     pairs: dict = {}
@@ -468,7 +475,6 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
                     dx, basis, resolved = choose_shift(prev, o, shifts, scroll_share.get(o.seg, 0.0), use, gap)
                     if dx is not None:
                         links = scroll_links(prev, o, dx)
-                        scrolled += 1
                     A.decisions.append(Decision(o.t0, "join", f"shift {dx}" if dx is not None else "page turn",
                                                 [f"shift {d}" for d, _ in shifts if d != dx]
                                                 + (["page turn"] if dx is not None else []), basis, resolved))
@@ -485,8 +491,7 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
             for i, j in links.items():
                 slot_of[i] = prev_slots[j]
             A.view_links[o.index] = set(links)
-            # A scrolling band that showed earlier music without scrolling onto it jumped back
-            place_rest(o, slot_of, A, gap, gap_before, prev, use, words_of, fold_unresolved, scrolled > 0 and not links)
+            place_rest(o, slot_of, A, gap, gap_before, prev, use, words_of, fold_unresolved)
             if "numbers" in use:
                 carry_numbers(slot_of, A)
         A.view_slots[o.index] = list(slot_of)
@@ -605,7 +610,7 @@ def staff_moved(c, dy: int):
     return replace(c, ref_y=c.ref_y + dy)
 
 
-def place_rest(o, slot_of, A, gap, gap_before, prev, use, words_of, fold_unresolved, scrolling) -> None:
+def place_rest(o, slot_of, A, gap, gap_before, prev, use, words_of, fold_unresolved) -> None:
     """Place the cells the join with the previous view didn't explain."""
     if all(s is None for s in slot_of) and glide_restart(o, slot_of, A, gap, gap_before):
         return
@@ -631,7 +636,7 @@ def place_rest(o, slot_of, A, gap, gap_before, prev, use, words_of, fold_unresol
                 # The replay already under way goes on
                 fold, basis, resolved = True, "replay_continues", True
             else:
-                fold, basis, resolved = replay_evidence(o, run, j, A, gap_before, prev, use, words_of, scrolling)
+                fold, basis, resolved = replay_evidence(o, run, j, A, gap_before, prev, use, words_of)
             if not resolved:
                 fold = fold_unresolved
                 A.unresolved_folds.append((o.t0, o.t1, j, j + len(run) - 1))
