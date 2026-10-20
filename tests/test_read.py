@@ -108,3 +108,25 @@ def test_ffmpegs_own_error_text_is_dropped(tmp_path, monkeypatch):
     assert len(list(frames(video_file, 1.0))) > 0
     # The last process started is the frame reader; probing the file starts one before it
     assert made[-1]["stderr"] == subprocess.DEVNULL
+
+
+def test_a_video_showing_text_tab_fails_as_text_tab(monkeypatch):
+    from test_staff import text_tab
+    monkeypatch.setattr(pipeline, "probe", lambda path: VideoInfo(800, 360, 60.0))
+    monkeypatch.setattr(pipeline, "scan", lambda path, w, h, region=None, progress=None: ([], {}, []))
+    page = np.dstack([text_tab()] * 3)
+    monkeypatch.setattr(pipeline, "frames", lambda path, fps, **kw: ((5.0 * k, page) for k in range(12)))
+    r = pipeline.read(Path("unused.mp4"))
+    assert r.outcome == "fail" and r.fail_reason == "text_tab"
+    assert "typed as text" in r.message
+
+
+def test_staffs_without_measures_beside_text_tab_fail_as_text_tab(tmp_path, monkeypatch):
+    # Some lines on screen pass for a staff but give no measures, and the video's tab is typed as text
+    video = tmp_path / "song.mp4"
+    write_video(Song(measures=4), video)
+    parse_view = pipeline.parse_view
+    monkeypatch.setattr(pipeline, "parse_view", lambda *a: [replace(ps, cells=[]) for ps in parse_view(*a)])
+    monkeypatch.setattr(pipeline, "text_tab_shown", lambda path: True)
+    r = pipeline.read(video)
+    assert r.outcome == "fail" and r.fail_reason == "text_tab"

@@ -28,6 +28,10 @@ RUN_LINE = 0.8
 BEYOND_GAPS, BEYOND_PX = 0.15, 3
 # ...paper being within this many gray levels of the paper between the staff's lines
 BEYOND_TOL = 40
+# Text tab's lines are rows of typed dashes: dashes shorter than DASH_GAPS line gaps, with less paper between them than
+# each dash is long, cover more than DASH_COVER of the line. Paper is within DASH_PAPER gray levels of the paper
+# between the staff's lines
+DASH_GAPS, DASH_COVER, DASH_PAPER = 1.0, 0.3, 40
 
 
 @dataclass
@@ -37,6 +41,7 @@ class Staff:
     x1: int
     gap: float               # line spacing
     polarity: str            # "dark" lines on light paper, or "light" lines on dark paper
+    dashed: bool = False     # lines typed as dashes (text tab), not drawn
 
     @property
     def top(self) -> float:
@@ -191,8 +196,37 @@ def without_border(gray: np.ndarray, st: Staff) -> Staff:
     return Staff(ys, st.x0, st.x1, float(np.median(np.diff(ys))), st.polarity)
 
 
-def find_staffs(gray: np.ndarray, min_len: int | None = None) -> list[Staff]:
-    """Every staff of 4 to 6 evenly spaced lines that share a horizontal extent.
+def runs(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Start and end (exclusive) of each run of True in a 1-D mask."""
+    edges = np.diff(np.concatenate([[0], mask.astype(np.int8), [0]]))
+    return np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
+
+
+def dashed(gray: np.ndarray, st: Staff) -> bool:
+    """True when most of a staff's lines are rows of typed dashes: short dashes, each with paper either side that is
+    narrower than the dash. A drawn line runs on between the digits on it, a dashed or dotted one leaves more paper
+    than ink, and the lines of a chord diagram are broken by its strings, which are ink."""
+    a = max(0, int(st.top) - 3)
+    resp = thin_response(gray[a:int(st.bottom) + 4, st.x0:st.x1], st.polarity)
+    g = gray[:, st.x0:st.x1].astype(np.int16)
+    paper = np.median([np.median(g[int(round((p + q) / 2))]) for p, q in zip(st.lines, st.lines[1:])])
+    typed = 0
+    for y in st.lines:
+        r = resp[max(0, int(round(y)) - a - 1):int(round(y)) - a + 2].any(axis=0)
+        blank = ~r & (np.abs(g[int(round(y))] - paper) <= DASH_PAPER)
+        b0, b1 = runs(blank)
+        before, after = dict(zip(b1, b1 - b0)), dict(zip(b0, b1 - b0))
+        d0, d1 = runs(r)
+        dash = d1 - d0
+        ok = (dash < DASH_GAPS * st.gap) & np.array([before.get(s, 1e9) < w and after.get(e, 1e9) < w
+                                                      for s, e, w in zip(d0, d1, dash)], bool)
+        typed += dash[ok].sum() > DASH_COVER * len(r)
+    return typed > len(st.lines) / 2
+
+
+def find_staffs(gray: np.ndarray, min_len: int | None = None, keep_dashed: bool = False) -> list[Staff]:
+    """Every staff of 4 to 6 evenly spaced lines that share a horizontal extent. Text tab's dashed lines are left
+    out, unless `keep_dashed`.
 
     Lines are taken in order down the frame; a staff is a run of neighbors with equal gaps, so a
     line between two staff lines can't be skipped over to make a wider-spaced staff.
@@ -259,6 +293,9 @@ def find_staffs(gray: np.ndarray, min_len: int | None = None) -> list[Staff]:
                 continue
             x0 = int(np.median([lines[c][1] for c in chain]))
             x1 = int(np.median([lines[c][2] for c in chain]))
-            staffs.append(Staff(ys, x0, x1, gap, polarity))
+            st = Staff(ys, x0, x1, gap, polarity)
+            st.dashed = dashed(gray, st)
+            if keep_dashed or not st.dashed:
+                staffs.append(st)
     staffs.sort(key=lambda s: s.top)
     return staffs

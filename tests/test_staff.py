@@ -108,10 +108,10 @@ def test_notation_far_above_its_tab_does_not_pair_across_a_ruled_row():
     assert len(tab) == 1 and tab[0].notation is None
 
 
-def diagram_strip() -> np.ndarray:
-    """A six-line tab staff (gap 14) under a strip of chord diagrams: grids 50 px wide every 150 px (gap 11)."""
+def diagram_strip(step: int = 150) -> np.ndarray:
+    """A six-line tab staff (gap 14) under a strip of chord diagrams: grids 50 px wide every `step` px (gap 11)."""
     img = lined([(250 + i * 14, 50, 750) for i in range(6)])
-    for x in range(60, 740, 150):
+    for x in range(60, 740, step):
         for i in range(6):
             cv2.line(img, (x, 80 + i * 11), (x + 50, 80 + i * 11), 60, 1)
         for k in range(6):
@@ -124,6 +124,24 @@ def test_a_strip_of_chord_diagrams_is_left_out_when_whole_lines_are_asked_for():
     assert systems_in(diagram_strip())[0].notation is not None
     (system,) = systems_in(diagram_strip(), whole_lines=True)
     assert len(system.tab.lines) == 6 and system.notation is None
+
+
+def test_a_strip_of_chord_diagrams_set_close_together_is_left_out_when_whole_lines_are_asked_for():
+    # 15 px between the grids, under two line gaps: the lines run on in pieces one diagram long
+    assert systems_in(diagram_strip(65))[0].notation is not None
+    (system,) = systems_in(diagram_strip(65), whole_lines=True)
+    assert len(system.tab.lines) == 6 and system.notation is None
+
+
+def test_a_tab_staff_with_two_digit_chords_close_together_stays_a_staff():
+    # "12" on every string every 7 line gaps, each digit on a white box that clears the line under it
+    img = lined([(200 + i * 14, 50, 750) for i in range(6)], 360)
+    for x in range(90, 740, 98):
+        for i in range(6):
+            cv2.rectangle(img, (x - 1, 195 + i * 14), (x + 15, 205 + i * 14), 255, -1)
+            cv2.putText(img, "12", (x, 205 + i * 14), cv2.FONT_HERSHEY_PLAIN, 0.9, 60, 1)
+    (system,) = systems_in(img, whole_lines=True)
+    assert len(system.tab.lines) == 6
 
 
 def test_two_lines_run_together_by_notes_are_cut_apart():
@@ -227,3 +245,19 @@ def test_a_panel_border_one_step_below_the_staff_is_no_staff_line():
         img[border + 1:] = 70
         (st,) = find_staffs(img)
         assert len(st.lines) == count, count
+
+
+def text_tab() -> np.ndarray:
+    """Six rows of typed dashes 22 px apart, each dash 11 px long every 14 px, with fret numbers typed among them."""
+    img = np.full((360, 800), 255, np.uint8)
+    for i in range(6):
+        for x in range(50, 750, 14):
+            cv2.line(img, (x, 100 + i * 22), (x + 10, 100 + i * 22), 60, 1)
+        cv2.putText(img, "3", (200 + 60 * i, 106 + i * 22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, 0, 1)
+    return img
+
+
+def test_text_tab_typed_as_dashes_is_no_staff():
+    assert find_staffs(text_tab()) == []
+    (st,) = find_staffs(text_tab(), keep_dashed=True)
+    assert st.dashed and len(st.lines) == 6

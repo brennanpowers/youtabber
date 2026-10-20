@@ -15,6 +15,7 @@ from youtabber.observe import (ABOVE_GAPS, BELOW_GAPS, OBS_FPS, PRINT_ABOVE_GAPS
                                to_gray, views_in)
 from youtabber.parse import Cell, line_darkness, parse_view
 from youtabber.scan import SCAN_FPS, Segment, scan
+from youtabber.staff import find_staffs
 from youtabber.video import frames, probe
 
 # Every kind of evidence the assembler can weigh
@@ -66,6 +67,14 @@ EDGE_STEP, EDGE_SHARE_WIDTH, EDITOR_EDGES = 25, 1 / 6, 4
 # Tab whose every segment is shorter than SCATTERED_SECONDS, which together cover less than SCATTERED_SHARE of the
 # video, and whose line spacing varies by more than SCATTERED_GAP_RATIO is no play-along
 SCATTERED_SECONDS, SCATTERED_SHARE, SCATTERED_GAP_RATIO = 10.0, 0.25, 1.5
+# A segment shorter than SMALL_SECONDS whose lines are spaced closer than SMALL_GAP_SHARE of the longest segment's is a
+# small picture of a page (a thumbnail on a promo card or an end screen), not the tab being played
+SMALL_SECONDS, SMALL_GAP_SHARE = 10.0, 0.6
+# A video without tab staffs shows text tab when this many of its frames, taken this many seconds apart, show a staff
+# of typed dashes
+TEXT_TAB_FRAMES, TEXT_TAB_STEP = 3, 5.0
+TEXT_TAB_MESSAGE = ("The video shows text tab: rows of typed dashes with fret numbers on them (e|--3--). youtabber "
+                    "reads tab drawn with staff lines, not typed as text.")
 
 Region = tuple[int, int, int, int]
 # Called with a stage name ("find", "read", "assemble", in that order) and the share of that stage done, 0.0 to 1.0
@@ -148,6 +157,8 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
         x, y, w, h = region
         return r.fail("no_tab", f"No tab staff inside --region {x},{y},{w},{h}. Leave --region out to let youtabber "
                                 f"find the tab.")
+    if not segments and text_tab_shown(path):
+        return r.fail("text_tab", TEXT_TAB_MESSAGE)
     if not segments:
         return r.fail("no_tab", f"No tab on screen: no steady set of evenly spaced staff lines on paper in "
                                 f"{info.duration:.0f} s of video. youtabber can't read text tab (e|--3--) or tab "
@@ -164,6 +175,8 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
                                     f"while someone types. youtabber reads play-along videos, where the tab stays "
                                     f"on screen while the song plays.")
         clips = (segments[0].t0, segments[-1].t1)
+    else:
+        segments = r.segments = drawn_full_size(segments)
     tell("find", 1.0)
     tell("read", 0.0)
     # The read stage's share is the video time its frames have reached, as a share of the whole video
@@ -371,6 +384,9 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
     short = too_few(obs, n) if n else None
     if short:
         return r.fail("check_failed", short)
+    # Short stretches of other lines can hold segments while the tab itself is typed as text
+    if not n and text_tab_shown(path):
+        return r.fail("text_tab", TEXT_TAB_MESSAGE)
     if not n:
         return r.fail("no_tab", "Found lines that look like a tab staff, but no measures between barlines on them. "
                                 "youtabber can't read text tab (e|--3--), tab drawn see-through over the video, or tab "
@@ -388,6 +404,17 @@ def share_of(progress: Progress | None, stage: str, t0: float, t1: float) -> Cal
         return None
     span = max(t1 - t0, 1e-6)
     return lambda t: progress(stage, min(1.0, max(0.0, (t - t0) / span)))
+
+
+def text_tab_shown(path: Path) -> bool:
+    """True when enough frames show a staff whose lines are typed dashes, as wide as a tab staff."""
+    seen = 0
+    for _, f in frames(path, 1 / TEXT_TAB_STEP):
+        g = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
+        seen += any(s.dashed and s.x1 - s.x0 >= g.shape[1] / 5 for s in find_staffs(g, keep_dashed=True))
+        if seen >= TEXT_TAB_FRAMES:
+            return True
+    return False
 
 
 def covered(p: Obs, o: Obs) -> bool:
@@ -427,6 +454,13 @@ def matched_share(ink: np.ndarray, extra: np.ndarray, gap: float) -> float:
 
 def scroll_times(scrolls: list[tuple[float, float]]) -> str:
     return ", ".join(f"{fmt(a)}-{fmt(b)}" for a, b in scrolls)
+
+
+def drawn_full_size(segments: list[Segment]) -> list[Segment]:
+    """The segments left once short ones drawn much smaller than the longest are dropped: a thumbnail of the page on
+    a promo card or an end screen, not the tab being played."""
+    longest = max(segments, key=lambda s: s.t1 - s.t0)
+    return [s for s in segments if s.t1 - s.t0 >= SMALL_SECONDS or s.gap >= SMALL_GAP_SHARE * longest.gap]
 
 
 def scattered(segments: list[Segment], duration: float) -> bool:

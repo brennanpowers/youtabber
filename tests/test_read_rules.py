@@ -4,7 +4,7 @@ import numpy as np
 from youtabber.assemble import Assembly, Obs, Slot
 from youtabber.check import empty, screen_breaks
 from youtabber.parse import parse_view
-from youtabber.pipeline import scattered
+from youtabber.pipeline import drawn_full_size, scattered
 from youtabber.scan import Segment
 
 
@@ -24,6 +24,13 @@ def test_one_steady_stretch_of_tab_is_not_scattered():
 def test_short_pieces_all_drawn_alike_are_not_scattered():
     # A lesson that shows the same tab layout for a few seconds now and then
     assert not scattered([segment(10, 16, 14.0), segment(50, 56, 14.2), segment(90, 96, 13.9)], 300.0)
+
+
+def test_a_short_small_picture_of_the_page_is_left_out():
+    song, thumbnail, insert = segment(0, 39, 16.0), segment(52.5, 57.5, 7.5), segment(80, 86, 15.5)
+    assert drawn_full_size([thumbnail, song, insert]) == [song, insert]
+    # A long stretch drawn small is still read
+    assert drawn_full_size([segment(0, 20, 7.5), song]) == [segment(0, 20, 7.5), song]
 
 
 def page(notes: bool) -> np.ndarray:

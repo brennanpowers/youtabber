@@ -23,6 +23,10 @@ MIN_SEGMENT_SECONDS = 2.0
 # A strip of chord diagrams is a "staff" whose lines all go missing together, between one diagram and the next, over
 # stretches at least this many line gaps wide; dashed lines and digits knocked out of the lines leave shorter gaps
 DIAGRAM_BREAK_GAPS = 2.0
+# ...or whose lines run unbroken (shorter breaks closed up) in two or more pieces, none longer than DIAGRAM_PIECE_GAPS
+# line gaps and the median at least DIAGRAM_PIECE_MIN: a row of diagrams set close together. A break shorter than
+# DIAGRAM_SHORT_BREAK gaps is a digit or chord on the lines, and shorter pieces are the dashes of a dashed line
+DIAGRAM_PIECE_MIN, DIAGRAM_PIECE_GAPS, DIAGRAM_SHORT_BREAK = 1.5, 5.0, 0.7
 # A notation staff sits at most this many tab line gaps above its tab staff...
 NOTATION_GAPS = 9
 # ...or up to this many when nothing but small marks (H, P, fingerings) lies between them
@@ -124,13 +128,20 @@ def open_between(gray: np.ndarray, upper: Staff, lower: Staff) -> bool:
 
 
 def broken_up(gray: np.ndarray, st: Staff) -> bool:
-    """True when most of a staff's lines go missing together over two or more stretches DIAGRAM_BREAK_GAPS wide."""
+    """True when most of a staff's lines go missing together over two or more stretches DIAGRAM_BREAK_GAPS wide, or
+    when they run on in short pieces, one per diagram: a strip of chord diagrams."""
     a = max(0, int(st.top) - 3)
     resp = thin_response(gray[a:int(st.bottom) + 4, st.x0:st.x1], st.polarity)
     present = sum(resp[max(0, int(round(y)) - a - 1):int(round(y)) - a + 2].any(axis=0) for y in st.lines)
     missing = np.concatenate([[False], present < len(st.lines) / 2, [False]]).astype(np.int8)
     starts, ends = np.flatnonzero(np.diff(missing) == 1), np.flatnonzero(np.diff(missing) == -1)
-    return int(((ends - starts) >= DIAGRAM_BREAK_GAPS * st.gap).sum()) >= 2
+    if int(((ends - starts) >= DIAGRAM_BREAK_GAPS * st.gap).sum()) >= 2:
+        return True
+    breaks = [(s, e) for s, e in zip(starts, ends) if e - s >= DIAGRAM_SHORT_BREAK * st.gap]
+    edges = [0] + [x for b in breaks for x in b] + [len(present)]
+    pieces = [q - p for p, q in zip(edges[::2], edges[1::2]) if q > p]
+    return (len(pieces) >= 2 and max(pieces) <= DIAGRAM_PIECE_GAPS * st.gap
+            and float(np.median(pieces)) >= DIAGRAM_PIECE_MIN * st.gap)
 
 
 def systems_in(gray: np.ndarray, whole_lines: bool = False) -> list[System]:
