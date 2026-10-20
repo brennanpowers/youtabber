@@ -46,22 +46,33 @@ def possible_duplicates(A, obs, gap: float) -> list[dict]:
     return out
 
 
-def dwell(obs) -> list[dict]:
-    """Screens held much longer per measure than usual, or showing tab but no measure at all."""
+def dwell(obs, A) -> list[dict]:
+    """Screens held much longer per measure than usual, or showing tab but no measure at all. `A` is the main
+    assembly, whose slots show which views scrolled on to new measures."""
     rates = [(o.t1 - o.t0) / len(o.cells) for o in obs if o.cells]
     if not rates:
         return []
     typical = float(np.median(rates))
     out = []
+    # A view cut where the playhead jumped back, sharing no measure with the view before, shows the same screen
+    # again, so they are judged together; one that shares measures has scrolled on to new ones
+    screens: list[list] = []
     for o in obs:
-        held = o.t1 - o.t0
+        prev = screens[-1][-1] if screens else None
+        if (prev is not None and o.wrapped and o.seg == prev.seg
+                and not set(A.view_slots.get(o.index, [])) & set(A.view_slots.get(prev.index, []))):
+            screens[-1].append(o)
+        else:
+            screens.append([o])
+    for screen in screens:
+        t0, t1, n = screen[0].t0, screen[-1].t1, len(screen[0].cells)
+        held = t1 - t0
         if held < DWELL_MIN_SECONDS:
             continue
-        if not o.cells or held / len(o.cells) > min(DWELL_RATIO * typical, MAX_SECONDS_PER_MEASURE):
-            out.append({"t0": round(o.t0, 2), "t1": round(o.t1, 2), "kind": "few_measures",
-                        "text": f"The tab at {fmt(o.t0)}-{fmt(o.t1)} stays on screen a long time for the "
-                                f"{len(o.cells)} measure{'' if len(o.cells) == 1 else 's'} read from it; measures may "
-                                f"be missing there."})
+        if not n or held / n > min(DWELL_RATIO * typical, MAX_SECONDS_PER_MEASURE):
+            out.append({"t0": round(t0, 2), "t1": round(t1, 2), "kind": "few_measures",
+                        "text": f"The tab at {fmt(t0)}-{fmt(t1)} stays on screen a long time for the "
+                                f"{n} measure{'' if n == 1 else 's'} read from it; measures may be missing there."})
     return out
 
 

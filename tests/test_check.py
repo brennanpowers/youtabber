@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import numpy as np
 
 from youtabber.check import (dwell, empty_stretches, glide_gaps, glide_number_gaps, glide_repeats, number_checks,
@@ -108,13 +110,31 @@ def test_wide_measures_are_judged_in_line_gaps_with_one_notice_per_view():
 
 
 class HeldView:
-    def __init__(self, t0: float, t1: float, n: int):
-        self.t0, self.t1, self.cells = t0, t1, [None] * n
+    def __init__(self, t0: float, t1: float, n: int, wrapped: bool = False, index: int = 0):
+        self.t0, self.t1, self.cells, self.wrapped, self.seg, self.index = t0, t1, [None] * n, wrapped, 0, index
+
+
+def held_twice(last_slots: list[int]) -> list[dict]:
+    """Notices for five ordinary views, then one measure held 10 s in two views, the second cut where the playhead
+    jumped back and placed in `last_slots`."""
+    obs = [HeldView(4.0 * i, 4.0 * i + 4.0, 4, index=i) for i in range(5)] + [
+        HeldView(20.0, 25.0, 1, index=5), HeldView(25.0, 30.0, 1, wrapped=True, index=6)]
+    return dwell(obs, SimpleNamespace(view_slots={5: [20], 6: last_slots}))
+
+
+def test_a_screen_cut_where_the_playhead_jumped_back_is_judged_whole():
+    # The second view shares no measure with the first, so it shows the same screen again
+    assert [(w["kind"], w["t0"], w["t1"]) for w in held_twice([21])] == [("few_measures", 20.0, 30.0)]
+
+
+def test_a_view_that_scrolled_on_after_the_playhead_jumped_back_is_its_own_screen():
+    # The second view shares a measure with the first, so the band scrolled on to new music
+    assert [(w["t0"], w["t1"]) for w in held_twice([20])] == [(20.0, 25.0), (25.0, 30.0)]
 
 
 def test_a_screen_held_long_for_one_measure_says_measure():
-    obs = [HeldView(4.0 * i, 4.0 * i + 4.0, 4) for i in range(5)] + [HeldView(20.0, 30.0, 1)]
-    (w,) = dwell(obs)
+    obs = [HeldView(4.0 * i, 4.0 * i + 4.0, 4, index=i) for i in range(5)] + [HeldView(20.0, 30.0, 1, index=5)]
+    (w,) = dwell(obs, SimpleNamespace(view_slots={}))
     assert w["kind"] == "few_measures"
     assert "for the 1 measure read from it;" in w["text"]
 

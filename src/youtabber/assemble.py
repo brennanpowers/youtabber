@@ -452,9 +452,11 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
     shift_cache: dict = {}
     pairs: dict = {}
     for p, o in zip(obs, obs[1:]):
-        if p.seg == o.seg and not o.wrapped and p.cells and o.cells:
+        if p.seg == o.seg and p.cells and o.cells:
             shift_cache[o.index] = scroll_shifts(p, o, gap)
-            pairs.setdefault(o.seg, []).append(bool(shift_cache[o.index]))
+            # A view that began where the playhead jumped back says nothing about whether the band scrolls
+            if not o.wrapped:
+                pairs.setdefault(o.seg, []).append(bool(shift_cache[o.index]))
     scroll_share = {s: sum(v) / len(v) for s, v in pairs.items() if v}
     for o in obs:
         cells = o.cells
@@ -468,17 +470,23 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
             place_numbered(o, slot_of, A, prev, prev_slots, gap, seg_of)
         else:
             links: dict = {}
-            if prev is not None and prev.seg == o.seg and not o.wrapped:
+            if prev is not None and prev.seg == o.seg:
                 options = []
                 shifts = shift_cache.get(o.index, [])
                 if shifts:
                     dx, basis, resolved = choose_shift(prev, o, shifts, scroll_share.get(o.seg, 0.0), use, gap)
                     if dx is not None:
                         links = scroll_links(prev, o, dx)
+                        # A page shown again whole can line up with itself one measure on; a riff scrolled on by its
+                        # own length shares at least two
+                        if o.wrapped and len(links) < 2:
+                            dx, links = None, {}
                     A.decisions.append(Decision(o.t0, "join", f"shift {dx}" if dx is not None else "page turn",
                                                 [f"shift {d}" for d, _ in shifts if d != dx]
                                                 + (["page turn"] if dx is not None else []), basis, resolved))
-                if not links:
+                # A view that began where the playhead jumped back can be a page scrolled on by a riff's length, but
+                # not a page shown again whole
+                if not links and not o.wrapped:
                     options = [(f"overlap {len(lk)}", lk) for lk in sequence_links(prev, o, gap)]
                 if options:
                     options.append(("none", {}))
@@ -491,7 +499,15 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
             for i, j in links.items():
                 slot_of[i] = prev_slots[j]
             A.view_links[o.index] = set(links)
+            slots_before, decisions_before = len(A.slots), len(A.decisions)
+            seen_before, starts_before = set(A.seen_segments), set(A.segment_starts)
             place_rest(o, slot_of, A, gap, gap_before, prev, use, words_of, fold_unresolved)
+            if (o.wrapped and not links and len(A.decisions) == decisions_before
+                    and same_count(o, prev, prev_slots) and all(s >= slots_before for s in slot_of)):
+                # Nothing tied the view to the music: read it as the view before shown again
+                del A.slots[slots_before:]
+                A.seen_segments, A.segment_starts = seen_before, starts_before
+                fold_view(o, slot_of, prev_slots, A, fold_unresolved)
             if "numbers" in use:
                 carry_numbers(slot_of, A)
         A.view_slots[o.index] = list(slot_of)
@@ -501,6 +517,23 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
         prev, prev_slots = o, slot_of
     A.order = [s.id for s in A.slots]
     return A
+
+
+def same_count(o: Obs, prev: Obs | None, prev_slots: list) -> bool:
+    """Whether a view could be the view before shown again: in its segment, with as many measures, all placed."""
+    return prev is not None and prev.seg == o.seg and len(o.cells) == len(prev_slots) and None not in prev_slots
+
+
+def fold_view(o: Obs, slot_of: list, prev_slots: list, A: Assembly, fold_unresolved: bool) -> None:
+    """Read a view that began where the playhead jumped back, which nothing tied to earlier music, as the view before
+    shown again, without evidence: the main reading prints it again and the folded one folds it, with a notice
+    either way. Cursor tint can keep its measures from matching those of the view before."""
+    A.unresolved_folds.append((o.t0, o.t1, prev_slots[0], prev_slots[-1]))
+    A.decisions.append(Decision(o.t0, "fold", "fold" if fold_unresolved else "new",
+                                ["new" if fold_unresolved else "fold"], "wrap", False))
+    for i, c in enumerate(o.cells):
+        slot_of[i] = prev_slots[i] if fold_unresolved else new_slot(A, c, o)
+    A.replay_next = None
 
 
 def carry_numbers(slot_of, A) -> None:

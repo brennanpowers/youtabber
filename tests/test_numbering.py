@@ -132,3 +132,26 @@ def test_a_screen_keeps_its_own_read_number_over_a_look_alike_neighbor():
         obs[1] = read_view(1, run("a", 1, 3), shown)
         number_views(obs, lambda crop: int(crop[0, 0]))
         assert [c.number for c in obs[1].cells] == [1, 2, 3], shown
+
+
+def test_a_screen_that_began_where_the_playhead_jumped_back_still_joins_by_a_scroll():
+    # The band scrolls on by two measures, then by two more of a riff, so the playhead jumps back to where the same
+    # music now sits
+    obs = [band_view(0, 1), band_view(1, 3), band_view(2, 5)]
+    obs[2].wrapped = True
+    A = assemble(obs, 10.0, False, {"numbers", "playhead", "navigation"}, lambda o: [])
+    assert A.view_slots[2] == [4, 5, 6, 7]
+
+
+def test_a_screen_shown_again_after_the_playhead_jumped_back_is_an_unresolved_fold():
+    # The same page twice, the second time from where the playhead went back, with every measure marked by cursor
+    # residue so none matches
+    obs = [band_view(0, 1), band_view(1, 1)]
+    obs[1].wrapped = True
+    for c in obs[1].cells:
+        c.ink = c.ink.copy()
+        c.ink[20:40, 80:120] = True
+    main = assemble(obs, 10.0, False, {"numbers", "playhead", "navigation"}, lambda o: [])
+    assert main.view_slots[1] == [4, 5, 6, 7] and len(main.unresolved_folds) == 1
+    folded = assemble(obs, 10.0, True, {"numbers", "playhead", "navigation"}, lambda o: [])
+    assert folded.view_slots[1] == [0, 1, 2, 3]

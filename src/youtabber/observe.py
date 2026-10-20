@@ -22,8 +22,9 @@ MAX_VIEW_FRAMES = 8 * MAX_PLATE_FRAMES
 INK_LEVEL = 0.55
 # Pixels that differ from the plate by this much (any color channel) are cursor, not paper
 CURSOR_DIFF = 45
-# The playhead moving back by this share of the panel width starts the page over
-WRAP_SHARE = 0.4
+# A playhead that sweeps at least this many line gaps, then jumps back as many into its sweep's left half, starts
+# the page over
+WRAP_GAPS = 6
 # Faint ink (light-gray measure numbers) is at least this much darker than paper, in levels or share of contrast
 FAINT_MIN, FAINT_SHARE = 18, 0.1
 # Color spread (max minus min channel) below which a pixel counts as gray
@@ -40,7 +41,7 @@ class View:
     playhead: list[tuple[float, float, float]] = field(default_factory=list)  # (t, x, y)
     times: list[float] = field(default_factory=list)
     rect: tuple[int, int, int, int] = (0, 0, 0, 0)   # panel in crop coordinates
-    wrapped: bool = False                            # began where the playhead jumped back to the page start
+    wrapped: bool = False                            # began where the playhead jumped back over part of the page
     print_rect: tuple[int, int, int, int] = (0, 0, 0, 0)   # paper area to print from, crop coordinates
 
 
@@ -329,14 +330,15 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         return v
 
     def wraps(v: View) -> list[float]:
-        """Times where the playhead jumps back to the start of the page: a page turn to a page that looks
-        the same (a riff page whose only change is a faint measure number), or the same page played again.
+        """Times where the playhead jumps back over part of the page: a page turn to a page that looks the same (a
+        riff page whose only change is a faint measure number, or a jump by the riff's own length), or the same
+        page played again.
 
-        Only a playhead seen sweeping across the page counts: found in most frames since the last jump,
-        and covering most of the page's width, then landing at its left part.
+        Only a playhead seen sweeping steadily counts: found in most frames since it last jumped back, for as long as
+        a view lasts and across at least `WRAP_GAPS` line gaps, then jumping back at least as far, from the right
+        quarter of its sweep into its left half.
         """
         width = v.rect[2] - v.rect[0]
-        left = v.rect[0]
         ph = v.playhead
         out = []
         since = 0
@@ -344,15 +346,19 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
             (ta, xa, ya), (tb, xb, yb), (tc, xc, yc) = ph[k], ph[k + 1], ph[k + 2]
             if tb - ta > 0.5 or tc - tb > 0.5:
                 continue
-            back = (xb < xa - WRAP_SHARE * width and yb < ya + 2 * gap
-                    and xa > left + 0.6 * width and xb < left + 0.35 * width)
-            steady = abs(yc - yb) < 2 * gap and abs(xc - xb) < 0.2 * width
             sweep = ph[since:k + 1]
-            frames_since = (ta - sweep[0][0]) * OBS_FPS + 1 if sweep else 0
-            swept = (len(sweep) >= 0.6 * frames_since
-                     and max(x for _, x, _ in sweep) - min(x for _, x, _ in sweep) >= 0.5 * width)
+            lo, hi = min(x for _, x, _ in sweep), max(x for _, x, _ in sweep)
+            jumped = xb < xa - WRAP_GAPS * gap and yb < ya + 2 * gap
+            back = jumped and xa >= hi - 0.25 * (hi - lo) and xb <= lo + 0.5 * (hi - lo)
+            steady = abs(yc - yb) < 2 * gap and abs(xc - xb) < 0.2 * width
+            frames_since = (ta - sweep[0][0]) * OBS_FPS + 1
+            # A sweep lasts as long as a view must, so the cut leaves a view before it
+            swept = (len(sweep) >= 0.6 * frames_since and hi - lo >= WRAP_GAPS * gap
+                     and tb - sweep[0][0] >= MIN_VIEW_SECONDS)
             if back and steady and swept:
                 out.append(tb)
+            # Any jump back starts a new sweep: a beat cursor going over one measure again and again never sweeps
+            if jumped:
                 since = k + 1
         return out
 

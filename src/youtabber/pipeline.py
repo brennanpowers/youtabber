@@ -301,7 +301,7 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
                               f"The measures at {fmt(t0)}-{fmt(t1)} repeat ones first shown at "
                               f"{fmt(first_seen.t0)}-{fmt(first_seen.t1)}, with no sign whether the song plays "
                               f"them again or the video replays them.", False))
-    for w in (possible_duplicates(main, obs, gap) + dwell(obs) + odd_widths(obs) + numbers_against_cells(obs)
+    for w in (possible_duplicates(main, obs, gap) + dwell(obs, main) + odd_widths(obs) + numbers_against_cells(obs)
               + screen_breaks(main, obs) + layout_changes(segments, obs)):
         notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
     for o in obs:
