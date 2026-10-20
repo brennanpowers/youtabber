@@ -1,0 +1,156 @@
+[
+ {
+  "t0": 2.5,
+  "t1": 6.33,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 0:04 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 17.83,
+  "t1": 21.17,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 0:19 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 21.5,
+  "t1": 23.67,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 0:22 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 23.83,
+  "t1": 26.17,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 0:25 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 26.5,
+  "t1": 28.83,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 0:27 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 29.0,
+  "t1": 31.17,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 0:30 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 30.5,
+  "t1": 33.83,
+  "kind": "unresolved_join",
+  "doubt": true,
+  "text": "Couldn't tell how this screen continues from the one before; check that no measure is missing or printed twice here."
+ },
+ {
+  "t0": 31.5,
+  "t1": 33.83,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 0:32 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 99.17,
+  "t1": 101.33,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 1:40 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 101.5,
+  "t1": 103.67,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 1:42 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 104.0,
+  "t1": 106.5,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 1:45 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 188.67,
+  "t1": 191.0,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 3:09 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 191.17,
+  "t1": 193.33,
+  "kind": "unresolved_fold",
+  "doubt": false,
+  "text": "The measures at 3:11-3:13 repeat ones first shown at 3:04-3:08, with no sign whether the song plays them again or the video replays them."
+ },
+ {
+  "t0": 191.17,
+  "t1": 193.33,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 3:12 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 193.67,
+  "t1": 196.5,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 3:15 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 247.83,
+  "t1": 250.0,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 4:08 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 250.33,
+  "t1": 252.33,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 4:11 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 252.67,
+  "t1": 254.67,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 4:13 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 255.0,
+  "t1": 257.0,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 4:16 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 257.33,
+  "t1": 259.33,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 4:18 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 258.67,
+  "t1": 263.83,
+  "kind": "unresolved_join",
+  "doubt": true,
+  "text": "Couldn't tell how this screen continues from the one before; check that no measure is missing or printed twice here."
+ },
+ {
+  "t0": 259.67,
+  "t1": 263.83,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 4:21 is much wider than the others; a barline may have been missed there."
+ }
+]

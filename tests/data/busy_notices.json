@@ -1,0 +1,394 @@
+[
+ {
+  "t0": 0.0,
+  "t1": 406.61,
+  "kind": "count_over",
+  "doubt": true,
+  "text": "143 measures are printed before measure 102, the highest measure number read; some measures may be printed twice."
+ },
+ {
+  "t0": 28.07,
+  "t1": 32.07,
+  "kind": "number_again",
+  "doubt": true,
+  "text": "Measure 1 is printed again at 0:30."
+ },
+ {
+  "t0": 29.33,
+  "t1": 36.0,
+  "kind": "part_switch",
+  "doubt": true,
+  "text": "The video may switch to another part or jump at 0:29: the screen there repeats measure numbers from the one before it, but with different music. Check that the measures around 0:29 follow on."
+ },
+ {
+  "t0": 80.83,
+  "t1": 87.33,
+  "kind": "part_switch",
+  "doubt": true,
+  "text": "The video may switch to another part or jump at 1:21: the screen there repeats measure numbers from the one before it, but with different music. Check that the measures around 1:21 follow on."
+ },
+ {
+  "t0": 81.33,
+  "t1": 87.33,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 1:24 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 93.19,
+  "t1": 97.19,
+  "kind": "number_again",
+  "doubt": true,
+  "text": "Measure 27 is printed again at 1:35."
+ },
+ {
+  "t0": 132.83,
+  "t1": 139.83,
+  "kind": "part_switch",
+  "doubt": true,
+  "text": "The video may switch to another part or jump at 2:13: the screen there shares no measure with the one before it, though the screens around it overlap. Check that the measures around 2:13 follow on."
+ },
+ {
+  "t0": 133.42,
+  "t1": 139.42,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 2:16 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 145.83,
+  "t1": 152.33,
+  "kind": "part_switch",
+  "doubt": true,
+  "text": "The video may switch to another part or jump at 2:26: the screen there shares no measure with the one before it, though the screens around it overlap. Check that the measures around 2:26 follow on."
+ },
+ {
+  "t0": 146.33,
+  "t1": 152.33,
+  "kind": "possible_duplicate",
+  "doubt": true,
+  "text": "A measure at 2:26-2:32 looks like one shown at 2:13-2:19; it may be printed twice."
+ },
+ {
+  "t0": 152.33,
+  "t1": 159.33,
+  "kind": "part_switch",
+  "doubt": true,
+  "text": "The video may switch to another part or jump at 2:32: the screen there shares no measure with the one before it, though the screens around it overlap. Check that the measures around 2:32 follow on."
+ },
+ {
+  "t0": 153.08,
+  "t1": 159.08,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 2:36 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 158.03,
+  "t1": 162.03,
+  "kind": "number_again",
+  "doubt": true,
+  "text": "Measure 47 is printed again at 2:40."
+ },
+ {
+  "t0": 160.03,
+  "t1": 164.25,
+  "kind": "numbers_skipped",
+  "doubt": true,
+  "text": "Measures 48-50 weren't read (between 2:40 and 2:44)."
+ },
+ {
+  "t0": 210.83,
+  "t1": 214.83,
+  "kind": "part_switch",
+  "doubt": true,
+  "text": "The video may switch to another part or jump at 3:31: the screen there repeats measure numbers from the one before it, but with different music. Check that the measures around 3:31 follow on."
+ },
+ {
+  "t0": 211.83,
+  "t1": 214.83,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 3:33 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 213.0,
+  "t1": 217.0,
+  "kind": "number_again",
+  "doubt": true,
+  "text": "Measure 66 is printed again at 3:35."
+ },
+ {
+  "t0": 215.0,
+  "t1": 217.83,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 3:36 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 218.33,
+  "t1": 224.0,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 3:41 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 224.17,
+  "t1": 227.83,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 3:46 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 228.0,
+  "t1": 230.33,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 3:49 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 231.0,
+  "t1": 236.83,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 3:53 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 235.83,
+  "t1": 239.83,
+  "kind": "number_again",
+  "doubt": true,
+  "text": "Measure 71 is printed again at 3:57."
+ },
+ {
+  "t0": 236.83,
+  "t1": 243.33,
+  "kind": "part_switch",
+  "doubt": true,
+  "text": "The video may switch to another part or jump at 3:57: the screen there repeats measure numbers from the one before it, but with different music. Check that the measures around 3:57 follow on."
+ },
+ {
+  "t0": 285.33,
+  "t1": 288.83,
+  "kind": "unresolved_fold",
+  "doubt": false,
+  "text": "The measures at 4:45-4:48 repeat ones first shown at 4:36-4:42, with no sign whether the song plays them again or the video replays them."
+ },
+ {
+  "t0": 285.33,
+  "t1": 288.83,
+  "kind": "possible_duplicate",
+  "doubt": true,
+  "text": "A measure at 4:45-4:48 looks like one shown at 4:36-4:42; it may be printed twice."
+ },
+ {
+  "t0": 285.33,
+  "t1": 288.83,
+  "kind": "possible_duplicate",
+  "doubt": true,
+  "text": "A measure at 4:45-4:48 looks like one shown at 4:36-4:42; it may be printed twice."
+ },
+ {
+  "t0": 285.33,
+  "t1": 288.83,
+  "kind": "part_switch",
+  "doubt": true,
+  "text": "The video may switch to another part or jump at 4:45: the screen there shares no measure with the one before it, though the screens around it overlap. Check that the measures around 4:45 follow on."
+ },
+ {
+  "t0": 288.83,
+  "t1": 302.17,
+  "kind": "part_switch",
+  "doubt": true,
+  "text": "The video may switch to another part or jump at 4:49: the screen there shares no measure with the one before it, though the screens around it overlap. Check that the measures around 4:49 follow on."
+ },
+ {
+  "t0": 289.0,
+  "t1": 302.17,
+  "kind": "unresolved_fold",
+  "doubt": false,
+  "text": "The measures at 4:49-5:02 repeat ones first shown at 4:43-4:45, with no sign whether the song plays them again or the video replays them."
+ },
+ {
+  "t0": 289.0,
+  "t1": 302.17,
+  "kind": "possible_duplicate",
+  "doubt": true,
+  "text": "A measure at 4:49-5:02 looks like one shown at 4:43-4:45; it may be printed twice."
+ },
+ {
+  "t0": 289.0,
+  "t1": 302.17,
+  "kind": "possible_duplicate",
+  "doubt": true,
+  "text": "A measure at 4:49-5:02 looks like one shown at 4:43-4:45; it may be printed twice."
+ },
+ {
+  "t0": 289.0,
+  "t1": 302.17,
+  "kind": "possible_duplicate",
+  "doubt": true,
+  "text": "A measure at 4:49-5:02 looks like one shown at 4:43-4:45; it may be printed twice."
+ },
+ {
+  "t0": 289.0,
+  "t1": 302.17,
+  "kind": "few_measures",
+  "doubt": true,
+  "text": "The tab at 4:49-5:02 stays on screen a long time for the 4 measures read from it; measures may be missing there."
+ },
+ {
+  "t0": 302.17,
+  "t1": 305.67,
+  "kind": "part_switch",
+  "doubt": true,
+  "text": "The video may switch to another part or jump at 5:02: the screen there shares no measure with the one before it, though the screens around it overlap. Check that the measures around 5:02 follow on."
+ },
+ {
+  "t0": 306.0,
+  "t1": 312.0,
+  "kind": "few_measures",
+  "doubt": true,
+  "text": "The tab at 5:06-5:12 stays on screen a long time for the 1 measures read from it; measures may be missing there."
+ },
+ {
+  "t0": 306.0,
+  "t1": 312.0,
+  "kind": "part_switch",
+  "doubt": true,
+  "text": "The video may switch to another part or jump at 5:06: the tab's line spacing or theme changes there. Check that the measures around 5:06 follow on."
+ },
+ {
+  "t0": 312.0,
+  "t1": 315.33,
+  "kind": "unresolved_fold",
+  "doubt": false,
+  "text": "The measures at 5:12-5:15 repeat ones first shown at 5:02-5:05, with no sign whether the song plays them again or the video replays them."
+ },
+ {
+  "t0": 312.0,
+  "t1": 315.33,
+  "kind": "possible_duplicate",
+  "doubt": true,
+  "text": "A measure at 5:12-5:15 looks like one shown at 5:02-5:05; it may be printed twice."
+ },
+ {
+  "t0": 312.0,
+  "t1": 315.33,
+  "kind": "possible_duplicate",
+  "doubt": true,
+  "text": "A measure at 5:12-5:15 looks like one shown at 5:02-5:05; it may be printed twice."
+ },
+ {
+  "t0": 312.0,
+  "t1": 315.33,
+  "kind": "part_switch",
+  "doubt": true,
+  "text": "The video may switch to another part or jump at 5:12: the tab's line spacing or theme changes there. Check that the measures around 5:12 follow on."
+ },
+ {
+  "t0": 350.33,
+  "t1": 353.83,
+  "kind": "unresolved_fold",
+  "doubt": false,
+  "text": "The measures at 5:50-5:53 repeat ones first shown at 5:41-5:47, with no sign whether the song plays them again or the video replays them."
+ },
+ {
+  "t0": 350.33,
+  "t1": 353.83,
+  "kind": "possible_duplicate",
+  "doubt": true,
+  "text": "A measure at 5:50-5:53 looks like one shown at 5:47-5:50; it may be printed twice."
+ },
+ {
+  "t0": 350.33,
+  "t1": 353.83,
+  "kind": "possible_duplicate",
+  "doubt": true,
+  "text": "A measure at 5:50-5:53 looks like one shown at 5:47-5:50; it may be printed twice."
+ },
+ {
+  "t0": 354.33,
+  "t1": 360.33,
+  "kind": "unresolved_fold",
+  "doubt": false,
+  "text": "The measures at 5:54-6:00 repeat ones first shown at 5:41-5:47, with no sign whether the song plays them again or the video replays them."
+ },
+ {
+  "t0": 354.33,
+  "t1": 360.33,
+  "kind": "possible_duplicate",
+  "doubt": true,
+  "text": "A measure at 5:54-6:00 looks like one shown at 5:47-5:50; it may be printed twice."
+ },
+ {
+  "t0": 354.33,
+  "t1": 360.33,
+  "kind": "possible_duplicate",
+  "doubt": true,
+  "text": "A measure at 5:54-6:00 looks like one shown at 5:41-5:47; it may be printed twice."
+ },
+ {
+  "t0": 360.83,
+  "t1": 380.0,
+  "kind": "unresolved_fold",
+  "doubt": false,
+  "text": "The measures at 6:00-6:20 repeat ones first shown at 5:41-5:47, with no sign whether the song plays them again or the video replays them."
+ },
+ {
+  "t0": 360.83,
+  "t1": 380.0,
+  "kind": "possible_duplicate",
+  "doubt": true,
+  "text": "A measure at 6:00-6:20 looks like one shown at 5:47-5:50; it may be printed twice."
+ },
+ {
+  "t0": 360.83,
+  "t1": 380.0,
+  "kind": "possible_duplicate",
+  "doubt": true,
+  "text": "A measure at 6:00-6:20 looks like one shown at 5:47-5:50; it may be printed twice."
+ },
+ {
+  "t0": 360.83,
+  "t1": 380.0,
+  "kind": "few_measures",
+  "doubt": true,
+  "text": "The tab at 6:00-6:20 stays on screen a long time for the 2 measures read from it; measures may be missing there."
+ },
+ {
+  "t0": 380.17,
+  "t1": 386.5,
+  "kind": "unresolved_fold",
+  "doubt": false,
+  "text": "The measures at 6:20-6:26 repeat ones first shown at 5:41-5:47, with no sign whether the song plays them again or the video replays them."
+ },
+ {
+  "t0": 380.17,
+  "t1": 386.5,
+  "kind": "possible_duplicate",
+  "doubt": true,
+  "text": "A measure at 6:20-6:26 looks like one shown at 5:50-5:53; it may be printed twice."
+ },
+ {
+  "t0": 380.17,
+  "t1": 386.5,
+  "kind": "possible_duplicate",
+  "doubt": true,
+  "text": "A measure at 6:20-6:26 looks like one shown at 5:50-5:53; it may be printed twice."
+ },
+ {
+  "t0": 386.5,
+  "t1": 389.5,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 6:28 is much wider than the others; a barline may have been missed there."
+ },
+ {
+  "t0": 389.83,
+  "t1": 395.33,
+  "kind": "wide_measure",
+  "doubt": true,
+  "text": "A measure around 6:32 is much wider than the others; a barline may have been missed there."
+ }
+]
