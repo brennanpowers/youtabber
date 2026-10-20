@@ -1,3 +1,4 @@
+import sys
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
@@ -25,6 +26,14 @@ MODELS = {
 Upscaler = Callable[[np.ndarray], np.ndarray]
 
 
+class ModelError(Exception):
+    """A model that can't be run, with a one-line heading and lines that say what to do."""
+
+    def __init__(self, heading: str, *detail: str):
+        super().__init__(heading)
+        self.heading, self.detail = heading, detail
+
+
 def _levels(image: np.ndarray) -> np.ndarray:
     return np.clip((image.astype(np.float32) - BLACK) * 255 / (WHITE - BLACK), 0, 255).astype(np.uint8)
 
@@ -44,8 +53,8 @@ def model_upscaler(model: str) -> Upscaler:
     except ImportError:
         project = Path(__file__).resolve().parents[2]
         source = project if (project / "pyproject.toml").exists() else Path("path/to/youtabber")
-        raise SystemExit(f"Running a model needs PyTorch and spandrel. Reinstall with the ai extra:\n"
-                         f"  uv tool install --editable '{source}[ai]'")
+        raise ModelError("Running a model needs PyTorch and spandrel", "Reinstall with the ai extra:",
+                         f"uv tool install --editable '{source}[ai]'")
     path = _model_file(model)
     device = torch.device("mps" if torch.backends.mps.is_available() else
                           "cuda" if torch.cuda.is_available() else "cpu")
@@ -73,7 +82,8 @@ def _model_file(model: str) -> Path:
     url = MODELS[model]
     path = CACHE / "models" / url.rsplit("/", 1)[1]
     if not path.exists():
-        print(f"Downloading model {model}")
+        # On stderr, since piped stdout carries only key: value lines
+        print(f"Downloading model {model}", file=sys.stderr)
         path.parent.mkdir(parents=True, exist_ok=True)
         # Download beside the final name and rename when complete, so a cut-off download is never used
         partial = path.with_suffix(".part")

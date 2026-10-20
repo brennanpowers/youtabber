@@ -38,8 +38,31 @@ The output folder holds the PDF, `meta.json` (what was read, with times), `measu
 printed measure), and `views/` (each screen it read, with the measures it found boxed), so you can check a
 PDF that looks wrong against the video.
 
-It exits with 0 when the PDF is clean, 1 when no PDF was made, and 3 when the PDF has spots to check
-(listed on its last page) or a second PDF was written with replayed sections printed once.
+`--region` is x,y,width,height in video pixels. To find it, look in `meta.json` under `segments[].crop`
+for the box it used last time, and adjust that.
+
+It exits with 0 when the PDF is clean, 1 when no PDF was made, 2 for bad arguments (such as a
+`--region` outside the video), 3 when the PDF has spots to check (listed on its last page) or a second
+PDF was written with replayed sections printed once, and 130 when stopped with Ctrl-C.
+
+Piped or redirected, it prints plain `key: value` lines, one fact per line, for scripts:
+
+```sh
+youtabber URL | grep '^pdf:'           # just the PDF paths
+```
+
+```
+title: Slipknot – Before I Forget PoV - SCREEN
+stage: finding the tab
+...
+pdf: out/slipknot-before-i-forget-pov-screen/slipknot-before-i-forget-pov-screen.pdf
+check: 0:02-0:06 A measure around 0:04 is much wider than the others; a barline may have been missed there.
+status: check
+```
+
+The keys are `source`, `title`, `credit`, `length`, `stage`, `read`, `pdf`, `copied`, `check` (each spot
+to check), `note` (a repeat the folded PDF prints once), `status` (`ok`, `check` or `failed`) and, when
+no PDF was made, `reason`. Errors go to stderr. Set `NO_COLOR` to turn off colour in the terminal.
 
 Videos are cached in `~/.cache/youtabber`, so a second run doesn't download again.
 

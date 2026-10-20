@@ -1,5 +1,5 @@
 from youtabber.check import fmt
-from youtabber.cli import spot_lines
+from youtabber.ui import spot_lines
 from youtabber.pipeline import Notice
 
 

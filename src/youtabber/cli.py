@@ -1,28 +1,53 @@
 import argparse
+import errno
 import json
+import os
 import re
 import shutil
 import sys
 import time
 import tomllib
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from youtabber import enhance, layout, pipeline, printcell, source
-from youtabber.check import fmt
+from youtabber import enhance, layout, pipeline, printcell, source, video
+from youtabber.ui import Ui, spot_lines, tilde
 from youtabber.video import VideoError
 
 CONFIG = Path.home() / ".config" / "youtabber" / "config.toml"
 # Smallest tab area, in video pixels, that can hold a readable staff
 MIN_REGION = 32
 PASSES = ("once", "all")
-# Notices reported in pieces of one long stretch
-STRETCHES = ("no_measures", "vertical_scroll")
-# Exit codes: a PDF with nothing to check, no PDF, and a PDF with spots to check or a second reading
-EXIT_CLEAN, EXIT_FAILED, EXIT_CHECK = 0, 1, 3
+# Exit codes: a PDF with nothing to check, no PDF, bad arguments, a PDF with spots to check or a second reading,
+# and stopped with Ctrl-C (the shell's usual 128 + SIGINT)
+EXIT_CLEAN, EXIT_FAILED, EXIT_USAGE, EXIT_CHECK, EXIT_STOPPED = 0, 1, 2, 3, 130
+EPILOG = """\
+examples:
+  youtabber "https://www.youtube.com/watch?v=..."
+  youtabber song.mp4 --title "Song - Artist"
+  youtabber URL | grep '^pdf:'    piped output is plain key: value lines
+
+the output folder holds the PDF, meta.json (what was read, with times),
+measures/ and views/.
+defaults can be changed in ~/.config/youtabber/config.toml
+(pdf_dir, model, enhance, passes).
+NO_COLOR turns off colour.
+
+exit codes: 0 clean PDF, 1 no PDF, 2 bad arguments, 3 PDF with spots to check,
+  130 stopped
+"""
+
+
+class Failure(Exception):
+    """A run that stops early: the error's heading, lines that say what to do, and the exit code."""
+
+    def __init__(self, code: int, heading: str, *detail: str):
+        super().__init__(heading)
+        self.code, self.heading, self.detail = code, heading, detail
 
 
 def load_config() -> dict:
@@ -31,7 +56,7 @@ def load_config() -> dict:
     try:
         return tomllib.loads(CONFIG.read_text())
     except tomllib.TOMLDecodeError as e:
-        raise SystemExit(f"Can't read {CONFIG}: {e}")
+        raise Failure(EXIT_FAILED, f"Can't read {tilde(CONFIG)}", f"{e}. Fix the file or move it aside.")
 
 
 def parse_region(text: str) -> tuple[int, int, int, int]:
@@ -44,75 +69,285 @@ def parse_region(text: str) -> tuple[int, int, int, int]:
     return x, y, w, h
 
 
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="youtabber", description="Turn a play-along video into a printable PDF of its tab.",
+                                epilog=EPILOG, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("source", help="YouTube URL or local video file")
+    # ~ is expanded here so a quoted "~/x" is checked and written as the same folder
+    p.add_argument("-o", "--out", type=lambda text: Path(text).expanduser(), help="output folder (default: out/<song name>)")
+    p.add_argument("--title", help="song name for the PDF, when the one taken from the video title is wrong")
+    p.add_argument("--region", type=parse_region, metavar="X,Y,W,H",
+                   help="only read tab inside this box, in video pixels, when it picks up something else; the box it "
+                        "used is in meta.json under segments[].crop")
+    p.add_argument("--passes", choices=PASSES,
+                   help="once: a replayed section prints once (default); all: every pass prints in play order")
+    p.add_argument("--enhance", action=argparse.BooleanOptionalAction, default=None,
+                   help="upscale and sharpen the tab images (on unless the config says otherwise)")
+    p.add_argument("--model", help=f"how to enhance: classic, {', '.join(enhance.MODELS)}, or a path to a model file "
+                                   "(models need the ai extra)")
+    return p
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Turn a play-along video into a printable PDF of its tab.")
-    parser.add_argument("source", help="YouTube URL or local video file")
-    parser.add_argument("-o", "--out", type=Path, help="output folder (default: out/<song name>)")
-    parser.add_argument("--title", help="song name for the PDF, when the one taken from the video title is wrong")
-    parser.add_argument("--region", type=parse_region,
-                        help="only read tab inside x,y,w,h (video pixels), when detection picks up something else")
-    parser.add_argument("--passes", choices=PASSES,
-                        help="once: a replayed section prints once (default); all: every pass prints in play order")
-    parser.add_argument("--enhance", action=argparse.BooleanOptionalAction, default=None,
-                        help="upscale and sharpen the tab images in the PDF (on unless the config says otherwise)")
-    parser.add_argument("--model", help=f"how to enhance: classic, {', '.join(enhance.MODELS)}, "
-                                        "or a path to a model file (models need the ai extra)")
-    args = parser.parse_args()
+    # Each line goes out as it's printed, even into a pipe or a log file
+    sys.stdout.reconfigure(line_buffering=True)
+    args = parser().parse_args()
+    ui = Ui()
     for tool in ("ffmpeg", "ffprobe"):
         if not shutil.which(tool):
-            raise SystemExit(f"youtabber needs {tool} on your PATH. On macOS: brew install ffmpeg")
+            ui.error(f"youtabber needs {tool} on your PATH", "On macOS: brew install ffmpeg")
+            sys.exit(EXIT_FAILED)
     try:
-        code = run(args, load_config())
-    except VideoError as e:
-        raise SystemExit(str(e))
-    sys.exit(code)
+        config = load_config()
+    except Failure as e:
+        ui.error(e.heading, *e.detail)
+        sys.exit(e.code)
+    sys.exit(run(args, config, ui))
 
 
-def run(args: argparse.Namespace, config: dict) -> int:
-    """Read the video, write the outputs, and return the exit code. A failure raises SystemExit."""
+def run(args: argparse.Namespace, config: dict, ui: Ui | None = None) -> int:
+    """Read the video, write the outputs, show what happened, and return the exit code."""
+    ui = ui or Ui()
+    # Holds "writing" (the output folder) while files are being written, "written" once they all are, and
+    # "copying" (pdf_dir) while the PDFs are copied there, so a Ctrl-C can say what it left behind
+    state: dict = {}
+    try:
+        return _run(args, config, ui, state)
+    except Failure as e:
+        ui.error(e.heading, *e.detail)
+        return e.code
+    except (source.SourceError, VideoError, enhance.ModelError) as e:
+        ui.error(e.heading, *e.detail)
+        return EXIT_FAILED
+    except KeyboardInterrupt:
+        if "copying" in state:
+            ui.error(f"Stopped while copying to {tilde(state['copying'])}/; the copy there may be incomplete. "
+                     f"Everything was written to {state['written']}/.")
+        elif "writing" in state:
+            ui.error(f"Stopped while writing; {state['writing']}/ may be incomplete.")
+        elif "written" in state:
+            ui.error(f"Stopped. Everything was written to {state['written']}/.")
+        else:
+            ui.error("Stopped. Nothing was written.")
+        return EXIT_STOPPED
+    finally:
+        # Wipe the live line, so an unexpected error's traceback starts on a line of its own
+        ui.clear()
+
+
+def _run(args: argparse.Namespace, config: dict, ui: Ui, state: dict) -> int:
     pdf_dir = Path(config["pdf_dir"]).expanduser() if config.get("pdf_dir") else None
     model = args.model or config.get("model")
     passes = args.passes or config.get("passes", "once")
     if passes not in PASSES:
-        raise SystemExit(f'passes must be "once" or "all", not {passes!r}. Check {CONFIG}.')
+        raise Failure(EXIT_FAILED, f'passes must be "once" or "all", not {passes!r}', f"Check {tilde(CONFIG)}.")
     # The command line wins over the config file. Naming a model asks for enhancing, and with
     # neither saying, enhancing is on.
     enhanced = args.enhance if args.enhance is not None else bool(args.model) or config.get("enhance", True)
-    # Load the model before the slow video work so a bad name or missing extra fails right away
+    # Load the model before the slow video work so a bad name or missing extra fails right away. The name is
+    # checked first, since loading a model imports PyTorch, which takes seconds.
     if not enhanced:
         upscale = None
     elif model and model != "classic":
+        if model not in enhance.MODELS and not Path(model).expanduser().exists():
+            raise Failure(EXIT_USAGE, f"Unknown model {model!r}",
+                          f"Use classic, {', '.join(enhance.MODELS)}, or a path to a model file.")
         upscale = enhance.model_upscaler(model)
     else:
         upscale = enhance.classic
+    if pdf_dir:
+        check_writable(pdf_dir, f"Can't write to {tilde(pdf_dir)} (pdf_dir in {tilde(CONFIG)})",
+                       "Change pdf_dir in the config.")
+    if args.out:
+        check_writable(args.out, f"Can't write to {args.out}", "Pick another folder with -o.")
 
-    src = source.fetch(args.source)
+    def looked_up(found: source.Source) -> None:
+        ui.start(args.title or found.title, found.credit, found.duration_s, found.url or args.source)
+
+    src = source.fetch(args.source, on_progress=ui.download, on_start=looked_up)
+    if src.downloaded_bytes is not None:
+        ui.stage_done(f"Downloaded {megabytes(src.downloaded_bytes)} MB in {round(src.download_s)} s")
+    info = video.probe(src.path)
+    if args.region:
+        x, y, w, h = args.region
+        if x + w > info.width or y + h > info.height:
+            raise Failure(EXIT_USAGE, f"--region {x},{y},{w},{h} is outside the video, which is "
+                                      f"{info.width}x{info.height}",
+                          f"x+w must be at most {info.width} and y+h at most {info.height}. The box youtabber found "
+                          f"last time is in meta.json under segments[].crop.")
     if args.title:
         src = replace(src, title=args.title)
+    if src.url is None:
+        # A local file's header is shown here, once its length is known
+        ui.start(src.title, src.credit, info.duration, str(src.path))
     name = source.slug(src.title) or source.slug(src.id) or "tab"
     out = args.out or Path("out") / name
+    if not args.out:
+        check_writable(out, f"Can't write to {out}", "Pick another folder with -o.")
 
-    print("Reading the video")
     started = time.time()
-    reading = pipeline.read(src.path, args.region)
-    pdfs = write_outputs(reading, src, out, name, passes, upscale, started=started)
-    for n in reading.notices:
-        print(f"  {fmt(n.t0)}-{fmt(n.t1)}  {n.text}")
-    if reading.outcome == "fail":
-        raise SystemExit(f"{reading.message}\nDetails are in {out / 'meta.json'}")
-    print(run_message(reading, passes))
+    reading, took = read_with_progress(src.path, args.region, info.duration, ui)
+    cands = printed_candidates(reading, passes) if reading.outcome == "tab" else []
+    measures = len(cands[0].measures) if cands else 0
+    if "read" in took:
+        ui.stage_done(f"Read {len(reading.views)} {plural(len(reading.views), 'screen')}", took["read"])
+    if "assemble" in took:
+        ui.stage_done(f"Pieced together {measures} {plural(measures, 'measure')}", took["assemble"])
+
+    pages: list[int] = []
+
+    def printed_one(path: Path, count: int) -> None:
+        pages.append(count)
+        if len(pages) < len(cands):
+            ui.stage("print", detail=f"{len(pages) + 1} of {len(cands)} PDFs")
+
+    if cands:
+        ui.stage("print", detail=f"1 of {len(cands)} PDFs" if len(cands) > 1 else None)
+    began = time.monotonic()
+    state["writing"] = out
+    try:
+        pdfs = write_outputs(reading, src, out, name, passes, upscale, started=started, on_pdf=printed_one)
+    except OSError as e:
+        raise Failure(EXIT_FAILED, f"Can't write to {e.filename or out}",
+                      f"{e.strerror or e}. Pick another folder with -o.")
+    del state["writing"]
+    state["written"] = out
+    copies = []
+    if pdf_dir:
+        state["copying"] = pdf_dir
     for p in pdfs:
-        print(f"Wrote {p}")
-        if not pdf_dir:
-            continue
-        target = pdf_dir / p.name
-        # When -o is already pdf_dir, however it is spelled, the PDF is in place and copying it onto itself fails
-        if target.exists() and target.samefile(p):
-            continue
-        pdf_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(p, target)
-        print(f"Copied to {target}")
-    return EXIT_CHECK if to_check(reading, passes) or len(pdfs) > 1 else EXIT_CLEAN
+        try:
+            copies.append(copy_pdf(p, pdf_dir))
+        except OSError as e:
+            raise Failure(EXIT_FAILED, f"Can't write to {tilde(pdf_dir)} (pdf_dir in {tilde(CONFIG)})",
+                          f"{e.strerror or e}. Change pdf_dir in the config.")
+    state.pop("copying", None)
+
+    if reading.outcome == "fail":
+        ui.finish("failed", reading.message)
+        heading, reason = refusal(reading)
+        pointer = f"Details: {out / 'meta.json'}"
+        if any((out / "views").glob("*.png")):
+            pointer += f" · screens it looked at: {out / 'views'}/"
+        ui.error(heading, "", reason, "", pointer)
+        return EXIT_FAILED
+
+    if len(pdfs) == 1:
+        ui.stage_done(f"Printed the PDF, {pages[0]} {plural(pages[0], 'page')}", time.monotonic() - began)
+    elif len(set(pages)) == 1:
+        ui.stage_done(f"Printed {len(pdfs)} PDFs, {pages[0]} {plural(pages[0], 'page')} each", time.monotonic() - began)
+    else:
+        ui.stage_done(f"Printed {len(pdfs)} PDFs, {' and '.join(map(str, pages))} pages", time.monotonic() - began)
+    ui.fact("read", f"{measures} {plural(measures, 'measure')} in {round(time.time() - started)} s")
+    for p, copy in zip(pdfs, copies):
+        ui.wrote(p, copy)
+    notices = to_check(reading, passes)
+    ui.spots(notices)
+    spots = len(spot_lines(notices))
+    code = EXIT_CHECK if notices or len(pdfs) > 1 else EXIT_CLEAN
+    if spots:
+        those = "that spot" if spots == 1 else f"those {spots} spots"
+        then = ", starting with the first PDF." if len(pdfs) > 1 else " before you rely on the PDF."
+        ui.finish("check", f"Check {those} against the video{then}")
+    elif len(pdfs) > 1:
+        ui.finish("check", "Two takes on the repeats: play the first PDF, or the folded one if the video replays.")
+    else:
+        ui.finish("ok", f"All clean: {measures} {plural(measures, 'measure')}, nothing to check. Happy playing.")
+    return code
+
+
+def read_with_progress(path: Path, region, duration: float, ui: Ui) -> tuple[pipeline.Reading, dict[str, float]]:
+    """pipeline.read with its progress on the live line. Also returns the seconds each finished stage took; a
+    stage counts as finished when the next one starts, or for the last one, when a reading with tab returns."""
+    began: dict[str, float] = {}
+    took: dict[str, float] = {}
+    # An error from showing progress is kept here and raised once the reading is done, so it can't stop the reader
+    # halfway through
+    failed: list[Exception] = []
+
+    def heard(stage: str, share: float) -> None:
+        if failed:
+            return
+        try:
+            if stage not in began:
+                now = time.monotonic()
+                if began:
+                    last = list(began)[-1]
+                    took[last] = now - began[last]
+                    if last == "find":
+                        ui.stage_done("Found the tab", took[last])
+                began[stage] = now
+            # Finding and reading report how far through the whole video they are, so share * duration is the
+            # video time reached. Piecing together reports only its start and end, so it shows no bar.
+            if stage in ("find", "read"):
+                ui.stage(stage, share, share * duration)
+            else:
+                ui.stage(stage)
+        except Exception as e:
+            failed.append(e)
+
+    ui.stage("find")
+    reading = pipeline.read(path, region, progress=heard)
+    if failed:
+        raise failed[0]
+    if reading.outcome == "tab" and "assemble" in began:
+        took["assemble"] = time.monotonic() - began["assemble"]
+    return reading, took
+
+
+def check_writable(folder: Path, heading: str, fix: str) -> None:
+    """Fail before the slow work when folder can't be written: it, or the nearest folder above it that exists,
+    must be a folder this user can write to."""
+    p = folder
+    while not p.exists():
+        p = p.parent
+    if not p.is_dir():
+        what = "That's a file" if p == folder else f"{p} is a file"
+        raise Failure(EXIT_FAILED, heading, f"{what}, not a folder. {fix}")
+    if not os.access(p, os.W_OK | os.X_OK):
+        raise Failure(EXIT_FAILED, heading, f"Permission denied. {fix}")
+
+
+def copy_pdf(pdf: Path, pdf_dir: Path | None) -> Path | None:
+    """Copy a PDF into pdf_dir and return where it went, or None when there's no pdf_dir or the PDF is already
+    there."""
+    if not pdf_dir:
+        return None
+    target = pdf_dir / pdf.name
+    # When -o is already pdf_dir, however it is spelled, the PDF is in place and copying it onto itself fails
+    if target.exists() and target.samefile(pdf):
+        return None
+    pdf_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(pdf, target)
+    return target
+
+
+def refusal(reading: pipeline.Reading) -> tuple[str, str]:
+    """The heading and reason shown when no PDF was written. A message opening "No tab ...: why" shows the why
+    under "No tab here"; one opening with a sentence of its own, as about --region, keeps that sentence as the
+    heading."""
+    m = re.match(r"(No tab [^:]*?)(: |\. )(.*)", reading.message, re.DOTALL)
+    if m and m.group(2) == ". ":
+        return m.group(1), m.group(3)
+    if m:
+        why = m.group(3)
+        return "No tab here", why[:1].upper() + why[1:]
+    return ("No tab here" if reading.fail_reason == "no_tab" else "Couldn't read this tab"), reading.message
+
+
+def plural(n: int, word: str) -> str:
+    return word if n == 1 else word + "s"
+
+
+def megabytes(n: int) -> str:
+    """A size in MB, with one decimal under 10 MB so a small download doesn't show as 0."""
+    return f"{n / 1e6:.1f}" if n < 10e6 else str(round(n / 1e6))
+
+
+def write_image(path: Path, image: np.ndarray) -> None:
+    # cv2.imwrite returns False rather than raising when it can't write the file
+    if not cv2.imwrite(str(path), image):
+        raise OSError(errno.EIO, "Couldn't save the image", str(path))
 
 
 def printed_candidates(reading: pipeline.Reading, passes: str) -> list[pipeline.Candidate]:
@@ -125,7 +360,8 @@ def run_message(reading: pipeline.Reading, passes: str) -> str:
     measure count of the one PDF written."""
     cands = printed_candidates(reading, passes)
     if reading.outcome == "tab" and len(cands) == 1:
-        return f"Read {len(cands[0].measures)} measures."
+        n = len(cands[0].measures)
+        return f"Read {n} {plural(n, 'measure')}."
     return reading.message
 
 
@@ -136,8 +372,10 @@ def to_check(reading: pipeline.Reading, passes: str) -> list[pipeline.Notice]:
 
 
 def write_outputs(reading: pipeline.Reading, src: source.Source, out: Path, name: str, passes: str,
-                  upscale: enhance.Upscaler | None, started: float | None = None) -> list[Path]:
-    """Write the PDFs, meta.json, measures/ and views/ for one reading. Returns the PDFs written."""
+                  upscale: enhance.Upscaler | None, started: float | None = None,
+                  on_pdf: Callable[[Path, int], None] | None = None) -> list[Path]:
+    """Write the PDFs, meta.json, measures/ and views/ for one reading. Returns the PDFs written. on_pdf hears
+    each PDF's path and page count once it's written."""
     out.mkdir(parents=True, exist_ok=True)
     # A PDF left from an earlier run of the same video would sit beside a meta.json that doesn't list it
     for old in (f"{name}.pdf", f"{name}-folded.pdf"):
@@ -155,38 +393,19 @@ def write_outputs(reading: pipeline.Reading, src: source.Source, out: Path, name
             cells = [printcell.print_cell(reading.views[m.view], m.cell, reading.segments[reading.views[m.view].seg])
                      for m in cand.measures]
             path = out / (f"{name}.pdf" if k == 0 else f"{name}-{cand.name}.pdf")
-            layout.write_pdf(cells, row_breaks(reading, cand), path, src, upscale, note_for(len(cands), k, name), spots)
+            count = layout.write_pdf(cells, row_breaks(reading, cand), path, src, upscale,
+                                     note_for(len(cands), k, name), spots)
             pdfs.append(path)
+            if on_pdf:
+                on_pdf(path, count)
             if k == 0:
                 printed = cells
                 for i, pc in enumerate(cells):
-                    cv2.imwrite(str(out / "measures" / f"{i:04d}.png"), pc.image)
+                    write_image(out / "measures" / f"{i:04d}.png", pc.image)
     for o in reading.views:
-        cv2.imwrite(str(out / "views" / f"{o.index:03d}.png"), view_image(reading, o))
+        write_image(out / "views" / f"{o.index:03d}.png", view_image(reading, o))
     (out / "meta.json").write_text(json.dumps(meta(reading, src, passes, pdfs, printed, started), indent=1, default=_plain))
     return pdfs
-
-
-def spot_lines(notices: list[pipeline.Notice]) -> list[str]:
-    """The PDF's "Check these spots" lines: each doubtful notice once, in time order. no_measures and
-    vertical_scroll notices come in short pieces, so pieces of one kind that touch end to end print as one line over
-    the whole stretch."""
-    distinct = sorted({(n.t0, n.t1, n.text): n for n in notices if n.doubt}.values(), key=lambda n: (n.t0, n.t1))
-    spots = [n for n in distinct if n.kind not in STRETCHES]
-    stretches: list[pipeline.Notice] = []
-    for n in distinct:
-        if n.kind not in STRETCHES:
-            continue
-        if stretches and n.kind == stretches[-1].kind and n.t0 <= stretches[-1].t1:
-            last = stretches[-1]
-            t1 = max(last.t1, n.t1)
-            # The text names the piece's own times; give it the whole stretch's
-            text = re.sub(r"\d+:\d\d-\d+:\d\d", f"{fmt(last.t0)}-{fmt(t1)}", last.text, count=1)
-            stretches[-1] = replace(last, t1=t1, text=text)
-        else:
-            stretches.append(n)
-    spots = sorted(spots + stretches, key=lambda n: (n.t0, n.t1))
-    return [f"{fmt(n.t0)}-{fmt(n.t1)}  {n.text}" for n in spots]
 
 
 def note_for(count: int, k: int, name: str) -> str | None:
