@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 
 from youtabber.observe import PRINT_ABOVE_GAPS
-from youtabber.staff import Staff, find_staffs, line_rows, thin_response
+from youtabber.staff import LINE_CONTRAST, Staff, find_staffs, line_rows, thin_response
 from youtabber.video import frames
 
 SCAN_FPS = 2
@@ -25,8 +25,13 @@ MIN_SEGMENT_SECONDS = 2.0
 DIAGRAM_BREAK_GAPS = 2.0
 # ...or whose lines run unbroken (shorter breaks closed up) in two or more pieces, none longer than DIAGRAM_PIECE_GAPS
 # line gaps and the median at least DIAGRAM_PIECE_MIN: a row of diagrams set close together. A break shorter than
-# DIAGRAM_SHORT_BREAK gaps is a digit or chord on the lines, and shorter pieces are the dashes of a dashed line
+# DIAGRAM_SHORT_BREAK gaps is a digit or chord on the lines, and pieces whose median is under DIAGRAM_PIECE_MIN gaps
+# are the dashes of a dashed line
 DIAGRAM_PIECE_MIN, DIAGRAM_PIECE_GAPS, DIAGRAM_SHORT_BREAK = 1.5, 5.0, 0.7
+# A diagram's lines end on its outer strings, which cross the whole grid; a tab staff's pieces end at digits. The
+# pieces count as diagrams only when STROKE_ENDS of their inner ends have, within max(STROKE_PX, STROKE_GAPS line
+# gaps), a column that is ink on STROKE_COVER of the rows from the top line to the bottom one
+STROKE_ENDS, STROKE_COVER, STROKE_PX, STROKE_GAPS = 0.75, 0.85, 3, 0.1
 # A notation staff sits at most this many tab line gaps above its tab staff...
 NOTATION_GAPS = 9
 # ...or up to this many when nothing but small marks (H, P, fingerings) lies between them
@@ -129,7 +134,8 @@ def open_between(gray: np.ndarray, upper: Staff, lower: Staff) -> bool:
 
 def broken_up(gray: np.ndarray, st: Staff) -> bool:
     """True when most of a staff's lines go missing together over two or more stretches DIAGRAM_BREAK_GAPS wide, or
-    when they run on in short pieces, one per diagram: a strip of chord diagrams."""
+    when they run on in short pieces, one per diagram, that end on the diagrams' outer strings: a strip of chord
+    diagrams."""
     a = max(0, int(st.top) - 3)
     resp = thin_response(gray[a:int(st.bottom) + 4, st.x0:st.x1], st.polarity)
     present = sum(resp[max(0, int(round(y)) - a - 1):int(round(y)) - a + 2].any(axis=0) for y in st.lines)
@@ -139,9 +145,23 @@ def broken_up(gray: np.ndarray, st: Staff) -> bool:
         return True
     breaks = [(s, e) for s, e in zip(starts, ends) if e - s >= DIAGRAM_SHORT_BREAK * st.gap]
     edges = [0] + [x for b in breaks for x in b] + [len(present)]
-    pieces = [q - p for p, q in zip(edges[::2], edges[1::2]) if q > p]
-    return (len(pieces) >= 2 and max(pieces) <= DIAGRAM_PIECE_GAPS * st.gap
-            and float(np.median(pieces)) >= DIAGRAM_PIECE_MIN * st.gap)
+    spans = [(p, q) for p, q in zip(edges[::2], edges[1::2]) if q > p]
+    pieces = [q - p for p, q in spans]
+    if not (len(pieces) >= 2 and max(pieces) <= DIAGRAM_PIECE_GAPS * st.gap
+            and float(np.median(pieces)) >= DIAGRAM_PIECE_MIN * st.gap):
+        return False
+    inner = [q for _, q in spans[:-1]] + [p for p, _ in spans[1:]]
+    return sum(stroke_near(gray, st, st.x0 + x) for x in inner) >= STROKE_ENDS * len(inner)
+
+
+def stroke_near(gray: np.ndarray, st: Staff, x: int) -> bool:
+    """True when a column near x is ink on nearly every row from the staff's top line to its bottom line: a
+    vertical line crossing the whole staff, as a chord diagram's outer string does."""
+    paper = np.median([np.median(gray[int(round((a + b) / 2)), st.x0:st.x1]) for a, b in zip(st.lines, st.lines[1:])])
+    slack = max(STROKE_PX, int(STROKE_GAPS * st.gap))
+    cols = gray[int(round(st.top)):int(round(st.bottom)) + 1, max(0, x - slack):x + slack + 1].astype(np.int16)
+    ink = cols < paper - LINE_CONTRAST if st.polarity == "dark" else cols > paper + LINE_CONTRAST
+    return bool(ink.size and ink.mean(axis=0).max() >= STROKE_COVER)
 
 
 def systems_in(gray: np.ndarray, whole_lines: bool = False) -> list[System]:

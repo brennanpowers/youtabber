@@ -136,9 +136,14 @@ def test_a_screen_cut_where_the_playhead_jumped_back_is_judged_whole():
     assert [(w["kind"], w["t0"], w["t1"]) for w in held_twice([21])] == [("few_measures", 20.0, 30.0)]
 
 
+def test_a_screen_matched_again_to_the_same_measures_is_judged_whole():
+    # The second view holds just the first's measure, so it is the same page shown again
+    assert [(w["t0"], w["t1"]) for w in held_twice([20])] == [(20.0, 30.0)]
+
+
 def test_a_view_that_scrolled_on_after_the_playhead_jumped_back_is_its_own_screen():
-    # The second view shares a measure with the first, so the band scrolled on to new music
-    assert [(w["t0"], w["t1"]) for w in held_twice([20])] == [(20.0, 25.0), (25.0, 30.0)]
+    # The second view shares a measure with the first and adds a new one, so the page scrolled on to new music
+    assert [(w["t0"], w["t1"]) for w in held_twice([20, 21])] == [(20.0, 25.0), (25.0, 30.0)]
 
 
 def test_a_screen_held_long_for_one_measure_says_measure():

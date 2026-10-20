@@ -54,13 +54,15 @@ def dwell(obs, A) -> list[dict]:
         return []
     typical = float(np.median(rates))
     out = []
-    # A view cut where the playhead jumped back, sharing no measure with the view before, shows the same screen
-    # again, so they are judged together; one that shares measures has scrolled on to new ones
+    # A view cut where the playhead jumped back shows the same screen again when it shares no measure with the view
+    # before or holds only measures the view before held, so they are judged together. One that shares some
+    # measures and adds new ones scrolled on, and starts its own screen
     screens: list[list] = []
     for o in obs:
         prev = screens[-1][-1] if screens else None
-        if (prev is not None and o.wrapped and o.seg == prev.seg
-                and not set(A.view_slots.get(o.index, [])) & set(A.view_slots.get(prev.index, []))):
+        slots = set(A.view_slots.get(o.index, []))
+        before = set(A.view_slots.get(prev.index, [])) if prev is not None else set()
+        if prev is not None and o.wrapped and o.seg == prev.seg and (not slots & before or slots <= before):
             screens[-1].append(o)
         else:
             screens.append([o])
@@ -222,14 +224,13 @@ def number_checks(labels: list[tuple[float, int | None]], once: bool, duration: 
     if not read:
         return []
     out = []
-    # Measures counted from 1 before the first number read: a much higher number means the opening measures weren't
-    # printed, such as a first screen shown too briefly to read
+    # The first number read should be about one more than the measures printed before it; a much higher number means
+    # the opening measures weren't printed, such as a first screen shown too briefly to read
     i0, t0, n0 = read[0]
     if n0 - i0 > 1 + COUNT_SLACK:
-        missed = "Measure 1 wasn't" if n0 - i0 == 2 else f"Measures 1-{n0 - i0 - 1} weren't"
         out.append({"t0": round(max(0.0, t0 - 5), 2), "t1": round(t0, 2), "kind": "numbers_start",
-                    "text": f"The first measure number read is {n0}, at {fmt(t0)}. {missed} printed; check whether "
-                            f"the video shows them before that."})
+                    "text": f"The first measure number read is {n0}, at {fmt(t0)}. Measures 1-{n0 - i0 - 1} weren't "
+                            "printed; check whether the video shows them before that."})
     top = max(n for _, _, n in read)
     # The last measure carrying the top number, counted from 1 in print order
     position = max(i for i, _, n in read if n == top) + 1

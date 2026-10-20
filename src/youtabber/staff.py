@@ -17,16 +17,17 @@ MAX_GAP_PX = 60
 MERGED_SHARE = 0.9
 # A line covering less than this share of its staff's typical line is a ledger line or beam row
 WEAK_LINE = 0.5
-# ...unless it covers this share, reaches across the staff one even step past it, and is missing where digits sit on
-# it: a line under rows of digits. Digits reach this many line gaps above and below the line they sit on
+# A weak line at a staff's edge is still a staff line, hidden under rows of digits, when it covers this share of the
+# typical line, spans the staff's other lines, and is missing where digits sit on it. Digits reach this many line
+# gaps above and below the line they sit on
 HIDDEN_LINE, DIGIT_REACH = 0.3, 0.35
 # In a run of more than six evenly spaced lines, a staff's own lines cover at least this share of the strongest
 RUN_LINE = 0.8
-# A staff's outer line has paper just past it, at least BEYOND_PX pixels or BEYOND_GAPS line gaps out; a panel's
-# border can sit one even step past the staff, with footage right beyond it. A band can end in footage a third of a
-# gap below its bottom line, so the test stays close to the line
+# A staff's outer line has paper just past it, BEYOND_PX pixels or BEYOND_GAPS line gaps out, whichever is more; a
+# panel's border can sit one even step past the staff, with footage right beyond it. A band can end in footage a third
+# of a gap below its bottom line, so the test stays close to the line
 BEYOND_GAPS, BEYOND_PX = 0.15, 3
-# ...paper being within this many gray levels of the paper between the staff's lines
+# ...paper being within this many gray levels of the paper between the staff's lines, or of the gap next to the line
 BEYOND_TOL = 40
 # Text tab's lines are rows of typed dashes: dashes shorter than DASH_GAPS line gaps, with less paper between them than
 # each dash is long, cover more than DASH_COVER of the line. Paper is within DASH_PAPER gray levels of the paper
@@ -133,9 +134,9 @@ def in_step(lines: list, firm: list[bool], k: int) -> bool:
 
 def weak_end(gray: np.ndarray, polarity: str, lines: list, chain: list[int], end: int, strong: float) -> bool:
     """True when the chain's line at `end` (0 or -1) is a ledger line or beam row rather than a staff line hidden
-    under digits: it covers less than WEAK_LINE of the typical line, and less than HIDDEN_LINE, or not across the
-    lines next to it, or isn't missing just where digits cover it. A chain longer than a staff keeps none of its weak
-    end lines."""
+    under digits: it covers less than WEAK_LINE of the typical line, and also covers less than HIDDEN_LINE, or
+    doesn't span the median extent of the chain's other lines, or isn't missing just where digits cover it. A chain
+    longer than a staff keeps none of its weak end lines."""
     ln = lines[chain[end]]
     if ln[4] >= WEAK_LINE * strong:
         return False
@@ -172,15 +173,18 @@ def under_digits(gray: np.ndarray, polarity: str, y: float, x0: int, x1: int, ga
 
 def paper_beyond(gray: np.ndarray, chain: list, side: int) -> bool:
     """True when the row just past the chain's last (side 1) or first (side -1) line looks like the paper between its
-    lines. A row outside the image counts as paper."""
+    lines, or like the gap next to that line. A row outside the image counts as paper."""
     ys = [ln[0] for ln in chain]
     gap = (ys[-1] - ys[0]) / (len(ys) - 1)
     x0, x1 = int(np.median([ln[1] for ln in chain])), int(np.median([ln[2] for ln in chain]))
     y = int(round((ys[-1] if side > 0 else ys[0]) + side * max(BEYOND_PX, BEYOND_GAPS * gap)))
     if not 0 <= y < gray.shape[0] or x1 <= x0:
         return True
-    paper = np.median([np.median(gray[int(round((a + b) / 2)), x0:x1]) for a, b in zip(ys, ys[1:])])
-    return abs(float(np.median(gray[y, x0:x1])) - float(paper)) <= BEYOND_TOL
+    mids = [float(np.median(gray[int(round((a + b) / 2)), x0:x1])) for a, b in zip(ys, ys[1:])]
+    # A highlight can darken the gap next to the end line, so the row past the line may match that gap, not the paper
+    paper, nearest = float(np.median(mids)), mids[-1] if side > 0 else mids[0]
+    beyond = float(np.median(gray[y, x0:x1]))
+    return min(abs(beyond - paper), abs(beyond - nearest)) <= BEYOND_TOL
 
 
 def without_border(gray: np.ndarray, st: Staff) -> Staff:

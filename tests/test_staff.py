@@ -144,6 +144,19 @@ def test_a_tab_staff_with_two_digit_chords_close_together_stays_a_staff():
     assert len(system.tab.lines) == 6
 
 
+def test_a_tab_staff_with_two_digit_chords_every_three_gaps_stays_a_staff():
+    # Gap 22, "12" on every string every 66 px: the lines run in pieces as short as a diagram's, but no piece ends
+    # on a vertical stroke
+    img = lined([(100 + i * 22, 50, 750) for i in range(6)], 300)
+    for x in range(90, 740, 66):
+        for i in range(6):
+            y = 100 + i * 22
+            cv2.rectangle(img, (x - 1, y - 11), (x + 28, y + 11), 255, -1)
+            cv2.putText(img, "12", (x, y + 10), cv2.FONT_HERSHEY_PLAIN, 1.4, 60, 1)
+    (system,) = systems_in(img, whole_lines=True)
+    assert len(system.tab.lines) == 6
+
+
 def test_two_lines_run_together_by_notes_are_cut_apart():
     counts = np.zeros(140, int)
     # Two line peaks 11 rows apart with the rows between them filled by notes: one row group 18 rows tall
@@ -245,6 +258,16 @@ def test_a_panel_border_one_step_below_the_staff_is_no_staff_line():
         img[border + 1:] = 70
         (st,) = find_staffs(img)
         assert len(st.lines) == count, count
+
+
+def test_a_highlight_over_the_lowest_gaps_keeps_the_bottom_line():
+    img = np.full((360, 800), 255, np.uint8)
+    # A dark highlight over the lowest two gaps, ending 4 px below the bottom line, across 0.6 of the staff
+    img[242:275, 50:470] = 45
+    for i in range(6):
+        cv2.line(img, (50, 200 + i * 14), (750, 200 + i * 14), 20, 1)
+    (st,) = find_staffs(img)
+    assert len(st.lines) == 6
 
 
 def text_tab() -> np.ndarray:

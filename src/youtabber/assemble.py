@@ -34,8 +34,8 @@ TRACKED_SHARE = 0.5
 SYSTEM_START_GAPS = 3.0
 # Two sightings this alike (share of unmatched ink) can lend a measure number from one to the other
 BORROW_RESEMBLE = 0.05
-# A view's own numbers, read this many measures or fewer off the start its look-alike neighbors would lend it and
-# none on that start, say the neighbors are a riff's other pages
+# A view refuses the start its look-alike neighbors lend it when one of its own numbers reads this many measures or
+# fewer from that start and none matches it: the neighbors are other pages of a riff
 BORROW_CONFLICT = 6
 # A numbered measure met again on a later screen is the same music when this alike (share of unmatched ink)
 REPLAY_RESEMBLE = 0.3
@@ -421,7 +421,8 @@ def replay_evidence(o, run, j, A, gap_before, prev, use, words_of) -> tuple[bool
 
     Folding needs evidence that the video went back to the same place in the score: equal printed
     measure numbers, an end-repeat sign or a D.S./D.C. marking on the page played just before, or a restart
-    from the first measure after a break. Music that only looks like earlier music is a riff played again.
+    from the first measure after a break. A run that only looks like earlier music is an unresolved fold: the main
+    reading prints it again and the folded reading folds it.
     """
     first = run[0]
     if "numbers" in use and first.number is not None and A.slots[j].number is not None:
@@ -484,8 +485,8 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
                     A.decisions.append(Decision(o.t0, "join", f"shift {dx}" if dx is not None else "page turn",
                                                 [f"shift {d}" for d, _ in shifts if d != dx]
                                                 + (["page turn"] if dx is not None else []), basis, resolved))
-                # A view that began where the playhead jumped back can be a page scrolled on by a riff's length, but
-                # not a page shown again whole
+                # A view that began where the playhead jumped back may be the page before shown again or a new page
+                # that looks like it, so an overlap with that page is no join
                 if not links and not o.wrapped:
                     options = [(f"overlap {len(lk)}", lk) for lk in sequence_links(prev, o, gap)]
                 if options:
