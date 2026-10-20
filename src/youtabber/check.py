@@ -20,8 +20,9 @@ def too_few(obs, printed: int) -> str | None:
     """A message when the whole video yields far fewer measures than its time with tab on screen allows."""
     shown = sum(o.t1 - o.t0 for o in obs)
     if shown >= 2 * MAX_SECONDS_PER_MEASURE and printed < shown / MAX_SECONDS_PER_MEASURE:
-        return (f"Read only {printed} measures from {shown:.0f} s of tab on screen; at least "
-                f"{shown / MAX_SECONDS_PER_MEASURE:.0f} would fit. Measures were missed, so no PDF was written.")
+        return (f"Read only {printed} measure{'' if printed == 1 else 's'} from {shown:.0f} s of tab on screen; "
+                f"at least {shown / MAX_SECONDS_PER_MEASURE:.0f} would fit. Measures were missed, so no PDF was "
+                f"written.")
     return None
 
 
@@ -59,7 +60,8 @@ def dwell(obs) -> list[dict]:
         if not o.cells or held / len(o.cells) > min(DWELL_RATIO * typical, MAX_SECONDS_PER_MEASURE):
             out.append({"t0": round(o.t0, 2), "t1": round(o.t1, 2), "kind": "few_measures",
                         "text": f"The tab at {fmt(o.t0)}-{fmt(o.t1)} stays on screen a long time for the "
-                                f"{len(o.cells)} measures read from it; measures may be missing there."})
+                                f"{len(o.cells)} measure{'' if len(o.cells) == 1 else 's'} read from it; measures may "
+                                f"be missing there."})
     return out
 
 

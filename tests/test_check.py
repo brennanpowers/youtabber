@@ -1,7 +1,7 @@
 import numpy as np
 
-from youtabber.check import (empty_stretches, glide_gaps, glide_number_gaps, glide_repeats, number_checks,
-                             odd_widths, pieces)
+from youtabber.check import (dwell, empty_stretches, glide_gaps, glide_number_gaps, glide_repeats, number_checks,
+                             odd_widths, pieces, too_few)
 from youtabber.assemble import Obs
 from youtabber.parse import Cell
 
@@ -105,3 +105,19 @@ def test_wide_measures_are_judged_in_line_gaps_with_one_notice_per_view():
     missed = still(5, 16.0, [500, 510, 250])
     (w,) = odd_widths(small + big + [missed])
     assert (w["kind"], w["t0"], w["t1"]) == ("wide_measure", 25.0, 30.0)
+
+
+class HeldView:
+    def __init__(self, t0: float, t1: float, n: int):
+        self.t0, self.t1, self.cells = t0, t1, [None] * n
+
+
+def test_a_screen_held_long_for_one_measure_says_measure():
+    obs = [HeldView(4.0 * i, 4.0 * i + 4.0, 4) for i in range(5)] + [HeldView(20.0, 30.0, 1)]
+    (w,) = dwell(obs)
+    assert w["kind"] == "few_measures"
+    assert "for the 1 measure read from it;" in w["text"]
+
+
+def test_one_measure_from_a_long_video_says_measure():
+    assert too_few([HeldView(0.0, 60.0, 1)], 1).startswith("Read only 1 measure from 60 s of tab")

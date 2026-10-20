@@ -79,12 +79,14 @@ class _TabPDF(FPDF):
         super().__init__(orientation="portrait", unit="pt", format="letter")
         self.source = source
         self.note = note
+        # The built-in fonts are written with the Windows-1252 code page, which has dashes and curly quotes
+        self.core_fonts_encoding = "windows-1252"
         self.set_margins(MARGIN, MARGIN)
         self.set_auto_page_break(False)
 
     def header(self) -> None:
         if self.page_no() == 1:
-            title = _latin1(self.source.title)
+            title = _cp1252(self.source.title)
             size = TITLE_SIZE
             self.set_font("Helvetica", "B", size)
             while size > MIN_TITLE_SIZE and self.get_string_width(title) > USABLE_WIDTH:
@@ -96,7 +98,7 @@ class _TabPDF(FPDF):
                 self.set_text_color(110)
                 if self.source.credit:
                     self.cell(self.get_string_width(f"Tab by {self.source.credit}   "), 14,
-                              _latin1(f"Tab by {self.source.credit}"))
+                              _cp1252(f"Tab by {self.source.credit}"))
                 if self.source.url:
                     self.cell(0, 14, self.source.url, link=self.source.url)
                 self.ln(14)
@@ -104,12 +106,12 @@ class _TabPDF(FPDF):
             if self.note:
                 self.set_font("Helvetica", "", NOTE_SIZE)
                 self.set_text_color(110)
-                self.multi_cell(0, 11, _latin1(self.note), new_x="LMARGIN", new_y="NEXT")
+                self.multi_cell(0, 11, _cp1252(self.note), new_x="LMARGIN", new_y="NEXT")
                 self.set_text_color(0)
         else:
             self.set_font("Helvetica", "", 9)
             self.set_text_color(110)
-            self.cell(0, 14, _latin1(self.source.title), new_x="LMARGIN", new_y="NEXT")
+            self.cell(0, 14, _cp1252(self.source.title), new_x="LMARGIN", new_y="NEXT")
             self.set_text_color(0)
         self.set_draw_color(190)
         self.line(MARGIN, self.get_y() + 4, self.w - MARGIN, self.get_y() + 4)
@@ -123,9 +125,9 @@ class _TabPDF(FPDF):
         self.set_text_color(0)
 
 
-def _latin1(text: str) -> str:
-    """The built-in PDF fonts only cover Latin-1, so swap anything else for "?"."""
-    return text.encode("latin-1", "replace").decode("latin-1")
+def _cp1252(text: str) -> str:
+    """The built-in PDF fonts only cover Windows-1252, so swap anything else for "?"."""
+    return text.encode("windows-1252", "replace").decode("windows-1252")
 
 
 def _draw_page(pdf: FPDF, page: list[tuple[np.ndarray, float, float]], top: float, bottom: float,
@@ -146,7 +148,7 @@ def write_pdf(cells: list[PrintCell], breaks: set[int], out: Path, source: Sourc
               upscale: Upscaler | None = None, note: str | None = None, spots: list[str] | None = None) -> int:
     """Write the measures in rows on Letter pages, with `spots` listed on a last page. Returns the page count."""
     pdf = _TabPDF(source, note)
-    pdf.set_title(_latin1(source.title))
+    pdf.set_title(source.title)
     pdf.add_page()
     top = y = pdf.get_y()
     bottom = pdf.h - MARGIN - FOOTER
@@ -175,6 +177,6 @@ def write_pdf(cells: list[PrintCell], breaks: set[int], out: Path, source: Sourc
         pdf.cell(0, 18, "Check these spots", new_x="LMARGIN", new_y="NEXT")
         pdf.set_font("Helvetica", "", NOTE_SIZE)
         for line in spots:
-            pdf.multi_cell(0, 12, _latin1(line), new_x="LMARGIN", new_y="NEXT")
+            pdf.multi_cell(0, 12, _cp1252(line), new_x="LMARGIN", new_y="NEXT")
     pdf.output(str(out))
     return pdf.page_no()

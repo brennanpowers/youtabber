@@ -1,4 +1,5 @@
 """Read a video into a score: find the tab, build clean views, cut measures, place them, and check the result."""
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -66,6 +67,8 @@ EDGE_STEP, EDGE_SHARE_WIDTH, EDITOR_EDGES = 25, 1 / 6, 4
 SCATTERED_SECONDS, SCATTERED_SHARE, SCATTERED_GAP_RATIO = 10.0, 0.25, 1.5
 
 Region = tuple[int, int, int, int]
+# Called with a stage name ("find", "read", "assemble", in that order) and the share of that stage done, 0.0 to 1.0
+Progress = Callable[[str, float], None]
 
 
 @dataclass
@@ -122,10 +125,19 @@ class Reading:
         return self
 
 
-def read(path: Path, region: Region | None = None) -> Reading:
-    """Everything youtabber reads from one video, ready to print, or the reason it can't be printed."""
+def read(path: Path, region: Region | None = None, progress: Progress | None = None) -> Reading:
+    """Everything youtabber reads from one video, ready to print, or the reason it can't be printed.
+
+    `progress` hears how far each stage has got; each stage sends 0.0 first and 1.0 when it ends. A reading that
+    fails stops sending at the stage it failed in."""
+    def tell(stage: str, share: float) -> None:
+        if progress is not None:
+            progress(stage, share)
+
     info = probe(path)
-    segments, found, scrolls = scan(path, info.width, info.height, region)
+    tell("find", 0.0)
+    segments, found, scrolls = scan(path, info.width, info.height, region,
+                                    progress=share_of(progress, "find", 0.0, info.duration))
     r = Reading(info.duration, segments)
     if scrolls and not segments:
         # No tab ever holds still: whether those lines are a scrolling page or footage, there is no tab to read
@@ -151,6 +163,10 @@ def read(path: Path, region: Region | None = None) -> Reading:
                                     f"while someone types. youtabber reads play-along videos, where the tab stays "
                                     f"on screen while the song plays.")
         clips = (segments[0].t0, segments[-1].t1)
+    tell("find", 1.0)
+    tell("read", 0.0)
+    # The read stage's share is the video time its frames have reached, as a share of the whole video
+    reached = share_of(progress, "read", 0.0, info.duration)
     obs: list[Obs] = []
     gaps = []
     for si, seg in enumerate(segments):
@@ -158,6 +174,8 @@ def read(path: Path, region: Region | None = None) -> Reading:
         set_paper(seg.paper)
         r.tab_spans.append((round(seg.t0, 2), round(seg.t1, 2)))
         seed_at = seed_function(found, seg)
+        if reached is not None:
+            reached(seg.t0)
         if seg.t1 - seg.t0 >= GLIDE_MIN_SECONDS and glide.glides(path, crop, seg.polarity, seg.paper, seg.t0, seg.t1,
                                                                 bands_function(found, seg), seg.gap):
             # The tab glides past a playhead instead of holding still: read it from a mosaic
@@ -170,9 +188,11 @@ def read(path: Path, region: Region | None = None) -> Reading:
             r.panels.append({"t0": round(seg.t0, 2), "t1": round(seg.t1, 2),
                              "box": [seg.x0, seg.y0 + o.rows[0], seg.x1 - seg.x0, o.rows[1] - o.rows[0]]})
             gaps.append(seg.gap)
+            if reached is not None:
+                reached(seg.t1)
             continue
         views, thr, fthr = views_in(path, crop, seg.polarity, seg.gap, seg.paper, seed_at, seg.t0, seg.t1,
-                                    "playhead" in EVIDENCE)
+                                    "playhead" in EVIDENCE, progress=reached)
         held = sum(v.t1 - v.t0 for v in views)
         if seg.t1 - seg.t0 >= GLIDE_MIN_SECONDS and held < HELD_SHARE * (seg.t1 - seg.t0):
             # Tab that keeps changing without holding still or scrolling smoothly: the still views miss most of it
@@ -202,6 +222,8 @@ def read(path: Path, region: Region | None = None) -> Reading:
         r.panels += still
         gaps.append(seg.gap)
     r.views = obs
+    tell("read", 1.0)
+    tell("assemble", 0.0)
     gap = float(np.median(gaps))
     # A title card or photo laid over the first screen of a page adds marks the next screen doesn't have; the
     # same music shows clean on that next screen, so the covered view gives no measures
@@ -344,7 +366,7 @@ def read(path: Path, region: Region | None = None) -> Reading:
         r.message = (f"Wrote two PDFs that differ where screens repeat without measure numbers or a repeat sign "
                      f"({spans}). The main PDF prints those measures every time; the folded PDF prints them once.")
     else:
-        r.message = f"Read {n} measures."
+        r.message = f"Read {n} measure{'' if n == 1 else 's'}."
     short = too_few(obs, n) if n else None
     if short:
         return r.fail("check_failed", short)
@@ -354,7 +376,17 @@ def read(path: Path, region: Region | None = None) -> Reading:
                                 "without barlines.")
     r.path = play_path(main, obs)
     r.every_pass = [Candidate("primary", "all", path_measures(main, obs, r.path))]
+    tell("assemble", 1.0)
     return r
+
+
+def share_of(progress: Progress | None, stage: str, t0: float, t1: float) -> Callable[[float], None] | None:
+    """A callback for a frame loop that tells `progress` how far video time t has got through t0..t1, or None
+    when nobody is listening, so the loop does nothing extra."""
+    if progress is None:
+        return None
+    span = max(t1 - t0, 1e-6)
+    return lambda t: progress(stage, min(1.0, max(0.0, (t - t0) / span)))
 
 
 def covered(p: Obs, o: Obs) -> bool:

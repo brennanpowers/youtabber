@@ -1,3 +1,8 @@
+import re
+import shutil
+import subprocess
+import zlib
+
 import numpy as np
 
 from youtabber.layout import TAB_LINE_SPACING, compose, rows, write_pdf
@@ -51,3 +56,32 @@ def test_spots_get_a_last_page(tmp_path):
     checked = write_pdf([cell(100) for _ in range(10)], set(), tmp_path / "b.pdf", src,
                         note="A note", spots=["0:10-0:20  check this"])
     assert checked == plain + 1
+
+
+def pdf_text(path) -> str:
+    """The PDF's text: pdftotext's when it's installed, else the strings in its page drawing commands."""
+    if shutil.which("pdftotext"):
+        return subprocess.run(["pdftotext", str(path), "-"], capture_output=True, check=True).stdout.decode()
+    data = path.read_bytes()
+    streams = re.findall(rb"stream\r?\n(.*?)\r?\nendstream", data, re.S)
+    drawn = b"".join(zlib.decompress(s) for s in streams if s.startswith(b"x"))
+    return b"".join(re.findall(rb"\((.*?)\) Tj", drawn, re.S)).decode("cp1252")
+
+
+def test_an_en_dash_in_the_title_prints_as_a_dash(tmp_path):
+    src = Source(tmp_path / "x.mp4", "x", "Slipknot \u2013 Before I Forget", "Sightline \u2013 Guitar", None)
+    out = tmp_path / "a.pdf"
+    write_pdf([cell(100) for _ in range(3)], set(), out, src, note="A \u2013 note", spots=["0:10-0:20 \u2013 check"])
+    text = pdf_text(out)
+    for line in ("Slipknot \u2013 Before I Forget", "Tab by Sightline \u2013 Guitar", "A \u2013 note",
+                 "0:10-0:20 \u2013 check"):
+        assert line in text
+
+
+def test_the_pdf_metadata_title_keeps_any_character(tmp_path):
+    title = "君が代 – Live"
+    out = tmp_path / "a.pdf"
+    write_pdf([cell(100) for _ in range(3)], set(), out, Source(tmp_path / "x.mp4", "x", title, None, None))
+    # fpdf writes a non-Latin title as UTF-16 hex in the Info dictionary
+    (raw,) = re.findall(rb"/Title <([0-9a-fA-F]+)>", out.read_bytes())
+    assert bytes.fromhex(raw.decode()).decode("utf-16") == title

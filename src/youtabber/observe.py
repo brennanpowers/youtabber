@@ -1,4 +1,5 @@
 """Split a segment into still views, build a clean plate for each, and track the playhead over it."""
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -255,10 +256,12 @@ def panel_rect(frame: np.ndarray, paper: np.ndarray, seed: tuple[int, int, int, 
 
 
 def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: float, paper: np.ndarray,
-             seed_at, t_start: float, t_end: float, use_playhead: bool = True) -> tuple[list[View], float, float]:
+             seed_at, t_start: float, t_end: float, use_playhead: bool = True,
+             progress: Callable[[float], None] | None = None) -> tuple[list[View], float, float]:
     """Still views between t_start and t_end, and the ink threshold used.
 
-    `seed_at(t)` gives the staffs' box at time t in crop coordinates, from the scan.
+    `seed_at(t)` gives the staffs' box at time t in crop coordinates, from the scan. `progress(t)` is called with
+    each frame's time.
     """
     views: list[View] = []
     cur: list[tuple[float, np.ndarray, tuple, tuple]] = []   # (t, frame, panel rect, staffs' box)
@@ -401,6 +404,8 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         return changed, f
 
     for t, f in frames(path, OBS_FPS, crop=crop, start=t_start, length=t_end - t_start):
+        if progress is not None:
+            progress(t)
         seed = seed_at(t)
         if seed is None:
             close()

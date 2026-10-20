@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -16,7 +17,14 @@ class VideoInfo:
 
 
 class VideoError(Exception):
-    pass
+    """A file that can't be read as a video, with a one-line heading and lines that say what to do."""
+
+    def __init__(self, heading: str, *detail: str):
+        super().__init__(heading)
+        self.heading, self.detail = heading, detail
+
+
+FIX = "Check it plays in a video player."
 
 
 def probe(path: Path) -> VideoInfo:
@@ -24,7 +32,7 @@ def probe(path: Path) -> VideoInfo:
     try:
         st = Path(path).stat()
     except OSError as e:
-        raise VideoError(f"Can't read {path} as a video: {e.strerror}")
+        raise VideoError(f"Can't read {path} as a video", f"{e.strerror}.", FIX)
     return _probe(str(path), st.st_mtime_ns, st.st_size)
 
 
@@ -40,9 +48,13 @@ def _probe(path: str, mtime_ns: int, size: int) -> VideoInfo:
         stream = data["streams"][0]
         info = VideoInfo(stream["width"], stream["height"], float(data["format"]["duration"]))
     except (json.JSONDecodeError, KeyError, IndexError, ValueError):
-        raise VideoError(f"Can't read {path} as a video: {result.stderr.strip() or 'no video stream'}")
+        # ffprobe starts some of its error lines with the path, which the heading already names, or with the
+        # demuxer's name and memory address, as in "[mov,mp4,m4a,3gp,3g2,mj2 @ 0x7f8b...] "
+        why = [re.sub(r"^\[[^]]* @ 0x[0-9a-f]+\] ", "", line).removeprefix(f"{path}: ")
+               for line in result.stderr.strip().splitlines()]
+        raise VideoError(f"Can't read {path} as a video", *(why or ["No video stream."]), FIX)
     if info.duration <= 0:
-        raise VideoError(f"{path} has no length")
+        raise VideoError(f"{path} has no length", FIX)
     return info
 
 
@@ -72,7 +84,9 @@ def frames(path: Path, fps: float, scale: float = 1.0,
     cmd = ["ffmpeg", "-v", "error", *span, "-i", str(path),
            "-vf", ",".join(filters), "-f", "rawvideo", "-pix_fmt", "gray" if gray else "bgr24", "-"]
     frame_bytes = w * h * channels
-    with subprocess.Popen(cmd, stdout=subprocess.PIPE) as proc:
+    # ffmpeg's own error text is dropped: it can print a broken pipe error when the caller stops reading early,
+    # and a failed read raises its own error below
+    with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as proc:
         assert proc.stdout is not None
         try:
             i = 0
@@ -87,8 +101,8 @@ def frames(path: Path, fps: float, scale: float = 1.0,
             # an error, so compare the frames read with the length the file claims
             whole = not start and length is None
             if proc.wait() != 0 or (whole and i < info.duration * fps - max(2, 2 * fps)):
-                raise VideoError(f"ffmpeg couldn't read all of {path}. If it's an incomplete download, "
-                                 f"delete it and run again.")
+                raise VideoError(f"ffmpeg couldn't read all of {path}",
+                                 "If it's an incomplete download, delete it and run again.")
         finally:
             # Stop ffmpeg quietly when the caller stops reading early
             proc.kill()

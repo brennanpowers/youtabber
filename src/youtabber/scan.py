@@ -1,4 +1,5 @@
 """Scan the whole video at a low frame rate for tab staffs and group the frames that hold them into segments."""
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -203,13 +204,16 @@ def vertical_scrolls(found: dict[float, list[System]]) -> list[tuple[float, floa
     return [(a, b) for a, b in spans if b - a >= SCROLL_SECONDS]
 
 
-def scan(path: Path, width: int, height: int, region: tuple[int, int, int, int] | None = None
+def scan(path: Path, width: int, height: int, region: tuple[int, int, int, int] | None = None,
+         progress: Callable[[float], None] | None = None
          ) -> tuple[list[Segment], dict[float, list[System]], list[tuple[float, float]]]:
     """Segments of steady tab, the systems seen in each scanned frame, and spans where the page scrolls up
-    continuously (read by nothing, so they are reported)."""
+    continuously (read by nothing, so they are reported). `progress(t)` is called with each scanned frame's time."""
     found: dict[float, list[System]] = {}
     papers: list[np.ndarray] = []
     for t, f in frames(path, SCAN_FPS):
+        if progress is not None:
+            progress(t)
         g = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
         found[t] = [s for s in systems_in(g) if region is None or inside(s, region)]
         for s in found[t]:
