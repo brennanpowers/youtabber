@@ -472,6 +472,9 @@ def meta(reading: pipeline.Reading, src: source.Source, passes: str, pdfs: list[
                       "part": o.part, "stream": o.stream, "move": move_meta(o.move),
                       "track": [[round(t, 2), round(x + ox), round(y + oy)]
                                 for t, x, y in assemble.playhead_track(o)]})
+        if o.mosaic is not None:
+            # The bar counter's (start, end, measure) runs over the glide, empty when it shows none
+            views[-1]["counter"] = [[round(t0, 2), round(t1, 2), n] for t0, t1, n in o.counter]
     path, npass, prev = [], 0, None
     for sid, vi, ci, t in reading.path:
         # A step back to an earlier slot starts a new pass

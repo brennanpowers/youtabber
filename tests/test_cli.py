@@ -99,6 +99,14 @@ def test_meta_keeps_its_keys_and_adds_streams_parts_and_moves(reading, video, tm
     assert all(isinstance(v["track"], list) and v["part"] == 0 and v["stream"] == 0 for v in meta["views"])
 
 
+def test_meta_gives_a_glide_view_its_bar_counter_runs(reading, video):
+    src = source.Source(video, "song", "Song", None, None)
+    glided = replace(reading.views[0], mosaic=object(), counter=[(1.234, 2.5, 7)])
+    meta = cli.meta(replace(reading, views=[glided] + reading.views[1:]), src, "once", [], [])
+    assert meta["views"][0]["counter"] == [[1.23, 2.5, 7]]
+    assert all("counter" not in v for v in meta["views"][1:])
+
+
 def test_passes_comes_from_the_config(video, tmp_path):
     cli.run(args(video, tmp_path / "out"), {"passes": "all"})
     assert json.loads((tmp_path / "out" / "meta.json").read_text())["passes"] == "all"

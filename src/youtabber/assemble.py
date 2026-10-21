@@ -930,16 +930,33 @@ def place_numbered(o, slot_of, A, prev, prev_slots, gap, seg_of) -> None:
     A number seen on an earlier view (not the one just before, whose overlap is expected) means the video
     went back: a replay with printed-number evidence, folded. When the music there differs, another part (a
     second guitar track) reuses the numbers, and its measures get slots of their own.
+
+    Glided measures fold a run at a time: a run whose numbers were seen before folds only when at least half its
+    measures look like the ones they fold onto. Otherwise its numbers are taken as misread (a counter can drop a
+    digit), and the run is printed as new music under numbers already used.
     """
     by_number = {s.number: s.id for s in A.slots if s.number is not None}
     other_part = switched_part(o, A, by_number, prev, prev_slots, gap, seg_of)
+    # A glide piece shares no measure with the piece before, so none of its numbers is an expected overlap
+    near = [] if glided_on(o) else prev_slots
     replayed = False
+    judged, refused = set(), set()
     for i, c in enumerate(o.cells):
         sid = by_number.get(c.number)
+        if sid is not None and c.glided and sid not in near and i not in judged:
+            run = earlier_run(o.cells, i, by_number, near)
+            alike = sum(resemble_scaled(A.slots[by_number[o.cells[k].number]].first, o.cells[k], gap) < GLIDE_CONTINUE
+                        for k in run)
+            judged.update(run)
+            if 2 * alike < len(run):
+                refused.update(run)
+        if i in refused:
+            sid = None
         if other_part and sid is not None and not (sid in prev_slots
                                                    and seen_before(c, same_layout(A, sid, o, seg_of), gap)):
             sid = None
-        if sid is None and prev is not None:
+        # A refused run is new music, and a glide piece shares no measure with the piece before
+        if sid is None and prev is not None and i not in refused and not glided_on(o):
             # The view before may have had no readable numbers; a measure it showed takes this number
             for j, (pc, ps) in enumerate(zip(prev.cells, prev_slots)):
                 if read_elsewhere(prev, j, c.number):
@@ -952,11 +969,23 @@ def place_numbered(o, slot_of, A, prev, prev_slots, gap, seg_of) -> None:
         if sid is None:
             sid = new_slot(A, c, o)
             by_number[c.number] = sid
-        elif sid not in prev_slots:
+        elif sid not in near:
             replayed = True
         slot_of[i] = sid
     if replayed:
         A.decisions.append(Decision(o.t0, "fold", "fold", ["new"], "numbers", True))
+
+
+def earlier_run(cells, i: int, by_number: dict, prev_slots: list) -> list[int]:
+    """Cell i and the glided cells right after it whose numbers name earlier slots, other than the view before's."""
+    run = [i]
+    while run[-1] + 1 < len(cells):
+        c = cells[run[-1] + 1]
+        sid = by_number.get(c.number)
+        if sid is None or sid in prev_slots or not c.glided:
+            break
+        run.append(run[-1] + 1)
+    return run
 
 
 def read_elsewhere(o, j, number: int) -> bool:

@@ -1,18 +1,21 @@
 """Read a video into a score: find the tab, build clean views, cut measures, place them, and check the result."""
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 import heapq
+import threading
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from youtabber import glide, ocr, track
-from youtabber.assemble import Assembly, Obs, assemble, cell_at, number_views
+from youtabber import counter, glide, ocr, track
+from youtabber.assemble import GLIDE_CONTINUE, Assembly, Obs, assemble, cell_at, number_views
 from youtabber.check import (dwell, empty_stretches, fmt, glide_fade, glide_gaps, glide_number_gaps, glide_piece_cuts,
                              glide_repeats, glide_rows, glide_steps, layout_changes, number_checks,
                              numbers_against_cells, odd_widths, pieces, possible_duplicates, redraw_gaps, screen_breaks,
                              too_few)
+from youtabber.match import resemble_scaled
 from youtabber.observe import (ABOVE_GAPS, BELOW_GAPS, OBS_FPS, PRINT_ABOVE_GAPS, ink_map, ink_threshold, set_paper,
                                to_gray, views_in)
 from youtabber.parse import Cell, line_darkness, parse_view
@@ -342,6 +345,9 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
     streams = sorted({o.stream for o in obs}) or [0]
     stream_obs = {k: [o for o in obs if o.stream == k] for k in streams}
     r.numbering = number_streams(stream_obs, ocr.read_number)
+    for o in obs:
+        if o.mosaic is not None and o.counter:
+            counted_numbers(o)
     # A measure seen only on its notation staff, its tab out of the panel, can be placed by its number alone
     for o in obs:
         o.cells = [c for c in o.cells if not c.notation_only or c.number is not None]
@@ -873,29 +879,43 @@ def glide_pieces(path: Path, crop, seg: Segment, si: int, found, thr: float, fth
     """The glide of a segment as views read from mosaics, one per stretch where its staffs keep their rows on
     screen. Where the panel is redrawn with the staffs at other heights, the next piece starts on the new rows.
     Consecutive pieces both show the screen at the redraw; each measure is kept in the piece it glided through.
-    Also gives the time reading stopped short of the segment's end after a redraw, or None when it read to the end."""
-    pieces: list[Obs] = []
-    t = seg.t0
-    stopped = None
-    while t < seg.t1 - GLIDE_PIECE_SECONDS:
-        if len(pieces) == MAX_GLIDE_PIECES:
-            stopped = t
-            break
-        o = glide_obs(path, crop, seg, si, found, thr, fthr, index + len(pieces), t)
-        if o is None:
-            stopped = t
-            break
-        pieces.append(o)
-        if o.mosaic.moved_at is None:
-            break
-        t = o.mosaic.moved_at
-    for a, b in zip(pieces, pieces[1:]):
-        # Music right of the reading column when a piece ends glides through the next piece
-        a.cells = a.all_cells = [c for c in a.cells if (c.x0 + c.x1) / 2 < a.mosaic.tail_from]
-        b.cells = b.all_cells = [c for c in b.cells if (c.x0 + c.x1) / 2 >= b.mosaic.seeded]
-        b.move = track.Move("glide")
+    Every piece gets the bar counter's runs over the whole glide. Also gives the time reading stopped short of the
+    segment's end after a redraw, or None when it read to the end."""
+    # The bar counter is read in a worker thread while the mosaics are built: ffmpeg and the OCR model run outside
+    # the GIL, so the two overlap. Leaving the with block waits for the worker, so it is told to stop first: on an
+    # error or Ctrl-C, or when no piece was read and its result isn't needed.
+    # The recognizer is loaded before the worker starts, as loading it from two threads at once isn't safe.
+    ocr.engine()
+    stop = threading.Event()
+    with ThreadPoolExecutor(1) as pool:
+        reading = pool.submit(counter.series, path, seg.t0, seg.t1, stop)
+        try:
+            pieces: list[Obs] = []
+            t = seg.t0
+            stopped = None
+            while t < seg.t1 - GLIDE_PIECE_SECONDS:
+                if len(pieces) == MAX_GLIDE_PIECES:
+                    stopped = t
+                    break
+                o = glide_obs(path, crop, seg, si, found, thr, fthr, index + len(pieces), t)
+                if o is None:
+                    stopped = t
+                    break
+                pieces.append(o)
+                if o.mosaic.moved_at is None:
+                    break
+                t = o.mosaic.moved_at
+            for a, b in zip(pieces, pieces[1:]):
+                # Music right of the reading column when a piece ends glides through the next piece
+                a.cells = a.all_cells = [c for c in a.cells if (c.x0 + c.x1) / 2 < a.mosaic.tail_from]
+                b.cells = b.all_cells = [c for c in b.cells if (c.x0 + c.x1) / 2 >= b.mosaic.seeded]
+                b.move = track.Move("glide")
+            shown = reading.result() if pieces else []
+        finally:
+            stop.set()
     for k, o in enumerate(pieces):
         o.first_piece, o.last_piece = k == 0, k == len(pieces) - 1
+        o.counter = shown
     return pieces, stopped
 
 
@@ -957,6 +977,41 @@ def glide_obs(path: Path, crop, seg: Segment, si: int, found, thr: float, fthr: 
     o.systems = systems
     o.print_rect = (0, 0, w, h)
     return o
+
+
+def counted_numbers(o: Obs) -> None:
+    """Number a glide's measures by the bar counter shown when each was played. A measure the counter skipped is
+    numbered from its neighbors when they are as many measures apart as cells, and measures played before the
+    counter's first reading or after its last count on from their neighbor. If any stays unnumbered, the glide's
+    numbers are left as they were."""
+    times = [o.mosaic.time_at((c.x0 + c.x1) / 2) for c in o.cells]
+    nums = [counter.at(o.counter, t) for t in times]
+    known = [i for i, n in enumerate(nums) if n is not None]
+    if not known:
+        return
+    for i, j in zip(known, known[1:]):
+        if nums[j] - nums[i] == j - i:
+            for k in range(i + 1, j):
+                nums[k] = nums[i] + k - i
+    first, last = o.counter[0][0], o.counter[-1][1]
+    for k in range(known[0] - 1, -1, -1):
+        if times[k] < first and nums[k + 1] is not None:
+            nums[k] = nums[k + 1] - 1
+    for k in range(known[-1] + 1, len(nums)):
+        if times[k] > last and nums[k - 1] is not None:
+            nums[k] = nums[k - 1] + 1
+    # A measure the counter skipped where it jumps back (a section played again) is either the next measure before
+    # the jump or the one before the measure jumped to; it is the latter when it looks like that earlier measure
+    for k in range(1, len(nums) - 1):
+        a, b = nums[k - 1], nums[k + 1]
+        if nums[k] is None and a is not None and b is not None and b <= a:
+            earlier = next((c for c, n in zip(o.cells[:k], nums[:k]) if n == b - 1), None)
+            again = earlier is not None and resemble_scaled(earlier, o.cells[k], o.cells[k].gap) < GLIDE_CONTINUE
+            nums[k] = b - 1 if again else a + 1
+    if None in nums:
+        return
+    for c, n in zip(o.cells, nums):
+        c.number = n
 
 
 def parse_mosaic(index: int, image: np.ndarray, rect: tuple[int, int, int, int], polarity: str, thr: float,
