@@ -5,7 +5,7 @@ from test_numbering import band_view, music
 
 from youtabber.assemble import (Assembly, Decision, assemble, choose_shift, measure_time, playhead_at, playhead_join,
                                 playhead_track, register, replay_evidence, scroll_shifts, still_links, track_join)
-from youtabber.pipeline import Notice, edge_notices, join_notices
+from youtabber.pipeline import Measure, Notice, edge_notices, join_notices, readings
 from youtabber.track import Move
 
 EVIDENCE = {"numbers", "playhead", "navigation"}
@@ -126,7 +126,7 @@ def test_a_restarted_page_the_playhead_keeps_from_an_overlap_leaves_its_join_unr
 
 def test_an_unresolved_join_after_a_restart_is_noticed_from_the_page_before():
     p, o = restarted(loose=False)
-    A = Assembly(decisions=[Decision(10.0, "join", "new", ["played again"], "restart", False)])
+    A = Assembly(decisions=[Decision(10.0, "join", "new", ["played again"], "restart", False, view=1)])
     text = ("Couldn't tell how this screen continues from the one before; check that no measure is missing or "
             "printed twice here.")
     assert join_notices(A, [p, o]) == [Notice(9.0, 20.0, "unresolved_join", text, True)]
@@ -329,6 +329,24 @@ def test_a_playhead_join_near_a_whole_measure_gets_a_notice_from_the_page_before
     assert [(w.kind, w.t0, w.t1) for w in edge_notices(A, [p, o])] == [("edge_join", 0.0, 20.0)]
 
 
+def test_a_playhead_join_to_a_next_page_opening_mid_measure_is_flagged():
+    p, o = cut_pair(120, 9.0)
+    assert o.cells[0].complete is True
+    assert playhead_join(p, o, 2.0, 10.0) == ({0: 3}, True, False)
+    # The next page's first cell starts at the panel edge, inside the measure
+    o.cells[0] = replace(o.cells[0], kind="lead", complete=False)
+    assert playhead_join(p, o, 2.0, 10.0) == ({0: 3}, True, True)
+
+
+def test_an_edge_notice_covers_the_view_the_joined_measure_prints_from():
+    p, o = cut_pair(120, 8.6, first=12, whole_track=True)
+    A = assemble([p, o], 10.0, False, EVIDENCE, lambda v: [])
+    q = band_view(2, 12)
+    q.t0, q.t1 = 20.0, 30.0
+    shown = Measure(A.view_slots[1][0], 2, q.cells[0], 25.0, 25.0, 0.0, 0.0, None, None, False)
+    assert [(w.t0, w.t1) for w in edge_notices(A, [p, o, q], [shown])] == [(0.0, 30.0)]
+
+
 def restart_evidence(p_end: int, sliding: bool = True):
     """Replay evidence for a cut from a page of bars 9-12, the playhead at x p_end at its end, to bars 1-4 with
     the playhead on the first measure, in a segment that does or doesn't slide."""
@@ -395,3 +413,19 @@ def test_the_folded_reading_keeps_the_numbers_of_a_view_that_slid_on_from_a_fold
     assert [c.number for c in views[3].cells] == [11, 12, 13, 14]
     assert folded.view_slots[3] == [8, 9, 10, 11]
     assert [folded.slots[s].number for s in folded.view_slots[3]] == [11, 12, 13, 14]
+
+
+def test_the_folded_reading_places_by_the_numbers_read_while_the_main_reading_clears_them():
+    # A confirmed slide from measures 1-4 to a view misread as 11-14, then a view like 1-4 with no evidence
+    p, o = slid(400, True, p_end=700, o_start=320)
+    for n, c in enumerate(p.cells, 1):
+        c.number = c.read = n
+    for n, c in enumerate(o.cells, 11):
+        c.number = c.read = n
+    views = [p, o, band_view(2, 1)]
+    by_stream, main, folded = readings({0: views}, [0], views, 10.0, {}, {}, lambda v: [])
+    assert main.view_slots[1] == [2, 3, 4, 5]
+    assert main.unresolved_folds == [(20.0, 30.0, 0, 3)]
+    assert folded.view_slots == {0: [0, 1, 2, 3], 1: [4, 5, 6, 7], 2: [0, 1, 2, 3]}
+    assert [folded.slots[s].number for s in folded.view_slots[1]] == [11, 12, 13, 14]
+    assert [c.number for c in o.cells] == [None] * 4

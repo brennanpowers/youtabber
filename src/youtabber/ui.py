@@ -20,9 +20,10 @@ ORDER = ["find", "read", "assemble"]
 LABELS = {
     "wide_measure": ("wide measure, a barline may be missing", "wide measures, a barline may be missing"),
     "unresolved_join": ("screen that may not join up", "screens that may not join up"),
-    "edge_join": ("page edge joined by the playhead, a measure may be missing",
-                  "page edges joined by the playhead, a measure may be missing"),
+    "edge_join": ("page edge joined by the playhead, a measure or part of one may be missing",
+                  "page edges joined by the playhead, a measure or part of one may be missing"),
     "part_switch": ("possible part switch or jump", "possible part switches or jumps"),
+    "parts": ("place where parts show at once", "places where parts show at once"),
     "possible_duplicate": ("measure that may print twice", "measures that may print twice"),
     "number_again": ("measure number printed again", "measure numbers printed again"),
     "few_measures": ("screen with fewer measures than expected", "screens with fewer measures than expected"),

@@ -62,6 +62,36 @@ def test_a_long_segment_that_neither_holds_still_nor_glides_fails(monkeypatch):
     assert "holds still for only 5 of 30 s" in r.message
 
 
+def two_bands(monkeypatch, seen: tuple[float, float]):
+    """A 30 s segment showing two stacked bands seen for `seen` seconds, the upper one holding still throughout and
+    the lower one for 5 s."""
+    from youtabber.parts import Part
+    seg = Segment(0.0, 30.0, 10.0, "dark", paper=np.array([255.0, 255.0, 255.0]), x1=640, y1=360)
+    monkeypatch.setattr(pipeline, "probe", lambda path: VideoInfo(640, 360, 30.0))
+    monkeypatch.setattr(pipeline, "scan", lambda path, w, h, region=None, progress=None: ([seg], {}, []))
+    monkeypatch.setattr(glide, "glides", lambda *a: False)
+    monkeypatch.setattr(pipeline, "text_tab_shown", lambda path: False)
+    monkeypatch.setattr(pipeline, "find_parts", lambda *a: [Part(0, 0, (20, 160), "band", {}, seen[0]),
+                                                           Part(1, 0, (200, 340), "band", {}, seen[1])])
+    calls = iter([[still_view(0.0, 30.0)], [still_view(0.0, 5.0)]])
+    monkeypatch.setattr(pipeline, "views_in", lambda *a, **kw: (next(calls), 128.0, 230.0))
+    return pipeline.read(Path("unused.mp4"))
+
+
+def test_a_second_part_that_seldom_holds_still_is_left_out_without_refusing_the_video(monkeypatch):
+    r = two_bands(monkeypatch, (30.0, 29.0))
+    assert r.fail_reason != "check_failed"
+    assert r.views and all(o.part == 0 and o.stream == 0 for o in r.views)
+    assert [n.kind for n in r.notices if n.kind == "parts"] == ["parts"]
+
+
+def test_the_main_part_holding_still_too_little_still_refuses_the_video(monkeypatch):
+    # The lower band is seen longest, so it is the main part
+    r = two_bands(monkeypatch, (29.0, 30.0))
+    assert r.outcome == "fail" and r.fail_reason == "check_failed"
+    assert "holds still for only 5 of 30 s" in r.message
+
+
 def test_a_missing_video_is_a_video_error(tmp_path):
     with pytest.raises(VideoError, match="Can't read"):
         probe(tmp_path / "missing.mp4")

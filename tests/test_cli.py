@@ -83,6 +83,22 @@ def test_writes_pdf_meta_and_measure_images(video, tmp_path):
     assert len(list((tmp_path / "out" / "views").glob("*.png"))) == len(meta["views"])
 
 
+def test_meta_keeps_its_keys_and_adds_streams_parts_and_moves(reading, video, tmp_path):
+    src = source.Source(video, "song", "Song", None, None)
+    cli.write_outputs(reading, src, tmp_path / "out", "song", "once", None)
+    meta = json.loads((tmp_path / "out" / "meta.json").read_text())
+    assert {"version", "source", "outcome", "passes", "numbering", "tab_spans", "panels", "segments", "views",
+            "slots", "path", "measures", "decisions", "notices", "runtime_s"} <= meta.keys()
+    assert meta["version"] == 2
+    assert meta["parts"] and all(p["stream"] == 0 for p in meta["parts"])
+    assert meta["streams"] == [{"stream": 0, "order": [s["id"] for s in meta["slots"]]}]
+    assert meta["measures"] and all(x["stream"] == 0 for x in meta["slots"] + meta["measures"])
+    assert len(meta["views"]) > 1
+    assert meta["views"][0]["move"] is None
+    assert all(v["move"].keys() == {"kind", "shift", "steps"} for v in meta["views"][1:])
+    assert all(isinstance(v["track"], list) and v["part"] == 0 and v["stream"] == 0 for v in meta["views"])
+
+
 def test_passes_comes_from_the_config(video, tmp_path):
     cli.run(args(video, tmp_path / "out"), {"passes": "all"})
     assert json.loads((tmp_path / "out" / "meta.json").read_text())["passes"] == "all"

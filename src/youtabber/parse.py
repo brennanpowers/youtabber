@@ -81,6 +81,14 @@ class ParsedSystem:
     band: tuple[int, int] = (0, 0)   # rows to print, crop coordinates
 
 
+# A barline joins two staffs into one system when a column of it is ink on this share of the rows from the upper
+# tab staff's top line to the lower one's bottom line...
+JOINED_COVER = 0.9
+# ...for at least JOINED_MIN_BARS barlines and JOINED_SHARE of the lower staff's barlines
+JOINED_MIN_BARS, JOINED_SHARE = 2, 0.6
+# Barlines of the two staffs this close are one column
+JOINED_SLACK_PX = 3
+
 # In a glide, a barline drawn behind the note tiles covers less of the staff: a thin line covering this share
 # counts too, when the columns on each side of it are inked in less than THIN_BESIDE of the rows the line is inked
 # in (the edge of a column of digits is inked on one side)
@@ -330,6 +338,38 @@ def print_band(marks: np.ndarray, top: float, bottom: float, gap: float, lo: int
     return max(lo, y0), min(hi, y1)
 
 
+def bar_through(struct: np.ndarray, x0: int, x1: int, top: float, bottom: float) -> bool:
+    """True when some column of a barline is ink on nearly every row from top to bottom."""
+    cols = struct[int(round(top)):int(round(bottom)) + 1, max(0, x0 - 1):x1 + 2]
+    return bool(cols.size and cols.mean(axis=0).max() >= JOINED_COVER)
+
+
+def joined_staffs(out: list, lone: list, struct: np.ndarray) -> tuple[list, list]:
+    """Systems whose barlines run on down through the space below into the next system are one system of two staffs
+    (two parts played together, or a second staff added under the first): one measure per barline column, printed
+    across both. The upper staff's own barlines may be lost where the line runs on below it, so the columns come
+    from both systems' barlines."""
+    k = 0
+    while k + 1 < len(out):
+        u, l = out[k], out[k + 1]
+        cands = sorted(set(u.bars) | set(l.bars))
+        through = [b for b in cands if bar_through(struct, b[0], b[1], u.system.tab.top, l.system.tab.bottom)]
+        # Columns found on both staffs count once
+        bars: list = []
+        for b in through:
+            if bars and b[0] - bars[-1][1] <= JOINED_SLACK_PX:
+                continue
+            bars.append(b)
+        if len(bars) >= JOINED_MIN_BARS and len(bars) >= JOINED_SHARE * max(len(l.bars), 1):
+            out[k] = ParsedSystem(u.system, bars, u.y0, l.y1, repeat_end=u.repeat_end or l.repeat_end,
+                                  band=(u.band[0], l.band[1]))
+            del out[k + 1]
+            lone = lone[:k + 1] + lone[k + 2:]
+            continue
+        k += 1
+    return out, lone
+
+
 def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], polarity: str, thr: float, fthr: float,
                gap: float, print_rect: tuple[int, int, int, int] | None = None,
                hidden_bars: bool = False, whole_lines: bool = True) -> list[ParsedSystem]:
@@ -406,6 +446,7 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
         lo = py0 if si == 0 else max(py0, int((syss[si - 1].tab.bottom + s.top) / 2))
         hi = py1 if si == len(out) - 1 else min(py1, int((st.bottom + syss[si + 1].top) / 2))
         ps.band = print_band(print_marks[:, st.x0:st.x1], s.top, st.bottom, st.gap, lo, hi)
+    out, lone = joined_staffs(out, lone, faint_struct)
     for si, ps in enumerate(out):
         st = ps.system.tab
         edges: list[tuple[int, int, str]] = []

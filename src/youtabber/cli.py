@@ -14,7 +14,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from youtabber import enhance, layout, pipeline, printcell, source, video
+from youtabber import assemble, enhance, layout, pipeline, printcell, source, video
 from youtabber.ui import Ui, spot_lines, tilde
 from youtabber.video import VideoError
 
@@ -468,7 +468,10 @@ def meta(reading: pipeline.Reading, src: source.Source, passes: str, pdfs: list[
                       "cells": [{"x": [int(c.x0 + ox), int(c.x1 + ox)], "system": c.system,
                                  "complete": c.complete, "number": c.number, "slot": slots.get(id(c))}
                                 for c in o.all_cells],
-                      "playhead": [[round(t, 2), round(x + ox), round(y + oy)] for t, x, y in o.playhead]})
+                      "playhead": [[round(t, 2), round(x + ox), round(y + oy)] for t, x, y in o.playhead],
+                      "part": o.part, "stream": o.stream, "move": move_meta(o.move),
+                      "track": [[round(t, 2), round(x + ox), round(y + oy)]
+                                for t, x, y in assemble.playhead_track(o)]})
     path, npass, prev = [], 0, None
     for sid, vi, ci, t in reading.path:
         # A step back to an earlier slot starts a new pass
@@ -481,7 +484,7 @@ def meta(reading: pipeline.Reading, src: source.Source, passes: str, pdfs: list[
         for i, (m, pc) in enumerate(zip(cands[0].measures, printed)):
             measures.append({"slot": m.slot, "view": m.view, "t": m.t, "play_t": m.play_t, "label": m.label,
                              "complete": m.cell.complete, "image": f"measures/{i:04d}.png",
-                             "gap": round(pc.gap, 2), "left": int(pc.left)})
+                             "gap": round(pc.gap, 2), "left": int(pc.left), "stream": m.stream})
     return {
         "version": 2,
         "source": {"id": src.id, "url": src.url, "title": src.title, "credit": src.credit},
@@ -494,15 +497,26 @@ def meta(reading: pipeline.Reading, src: source.Source, passes: str, pdfs: list[
         "segments": [{"t": [round(s.t0, 2), round(s.t1, 2)], "crop": [s.x0, s.y0, s.x1 - s.x0, s.y1 - s.y0],
                       "gap": round(s.gap, 2), "polarity": s.polarity} for s in reading.segments],
         "views": views,
-        "slots": [{"id": s.id, "number": s.number, "first_view": s.obs} for s in A.slots] if A else [],
+        "slots": [{"id": s.id, "number": s.number, "first_view": s.obs, "stream": s.stream} for s in A.slots]
+        if A else [],
+        "parts": [{"id": p.id, "segment": p.seg, "stream": p.stream, "kind": p.kind,
+                   "rows": [int(p.rows[0]), int(p.rows[1])]} for p in reading.parts],
+        "streams": [{"stream": k, "order": A.stream_orders[k]} for k in sorted(A.stream_orders)] if A else [],
         "path": path,
         "measures": measures,
         "decisions": [{"t": round(d.t, 2), "kind": d.kind, "chosen": d.chosen, "alternatives": d.alternatives,
-                       "basis": d.basis, "resolved": d.resolved} for d in A.decisions] if A else [],
+                       "basis": d.basis, "resolved": d.resolved, "view": d.view} for d in A.decisions] if A else [],
         "notices": [{"t0": n.t0, "t1": n.t1, "kind": n.kind, "doubt": n.doubt, "text": n.text}
                     for n in reading.notices],
         "runtime_s": round(time.time() - started, 1) if started is not None else None,
     }
+
+
+def move_meta(m) -> dict | None:
+    """How a view's band moved from the part's view before; None for a part's first view and for glides."""
+    if m is None:
+        return None
+    return {"kind": m.kind, "shift": int(m.shifts[0]) if m.shifts else None, "steps": int(m.steps)}
 
 
 def _plain(value):

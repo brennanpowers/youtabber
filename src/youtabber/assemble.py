@@ -106,6 +106,8 @@ class Obs:
     move: object = None                  # how the band moved from the view before, measured on the frames between
     track: list | None = None            # the playhead samples on the view's music, found when first asked for
     restarted: bool = False              # the band held still while the playhead went back over the page
+    part: int = 0                        # id of the part it shows, its place in the reading's parts
+    stream: int = 0                      # views of one stream are numbered and joined together
 
 
 @dataclass
@@ -114,6 +116,7 @@ class Slot:
     first: object
     obs: int
     number: int | None
+    stream: int = 0        # the stream of the views it is read in
 
 
 @dataclass
@@ -124,6 +127,7 @@ class Decision:
     alternatives: list[str]
     basis: str
     resolved: bool
+    view: int | None = field(default=None, compare=False)   # index of the view it decides about
 
 
 @dataclass
@@ -138,8 +142,9 @@ class Assembly:
     replay_next: int | None = None       # the slot a replay under way reaches next
     segment_starts: set = field(default_factory=set)
     seen_segments: set = field(default_factory=set)
-    edge_joins: list = field(default_factory=list)   # (p, o) indexes of playhead joins whose cut measure may be whole
+    edge_joins: list = field(default_factory=list)   # (p, o) indexes of playhead joins that may leave out notes
     sliding: dict = field(default_factory=dict)   # segment -> its band moves on by measured slides
+    stream_orders: dict = field(default_factory=dict)   # stream -> its own slots in print order
 
 
 def number_views(obs: list[Obs], read) -> str:
@@ -706,8 +711,8 @@ def playhead_join(p: Obs, o: Obs, beat: float | None, gap: float) -> tuple[dict[
     """After a page flip or jump that nothing else explained: (links, continues, edge) tying o's first cell to p's
     last measure, cut by the page edge, found from where the playhead was. The cut measure is the one being played
     when the page changed, or the one after a whole measure played to its end. `continues` says o's first cell
-    looks like the rest of that measure; `edge` says the cut measure may have been a whole one. None when the
-    playhead doesn't say."""
+    looks like the rest of that measure; `edge` says the join may leave out notes: the cut measure may have been a
+    whole one, or o's first cell holds only part of it. None when the playhead doesn't say."""
     if beat is None or not p.cells or not o.cells:
         return None
     e, s = cell_at(p, playhead_at(p, at_start=False)), cell_at(o, playhead_at(o, at_start=True))
@@ -732,7 +737,10 @@ def playhead_join(p: Obs, o: Obs, beat: float | None, gap: float) -> tuple[dict[
     share = (p.cells[k].x1 - p.cells[k].x0) / float(np.median(widths)) if widths else 0.0
     if share >= CUT_WIDTH:
         return None
-    edge = share >= EDGE_WIDTH or (not p.cells[e].complete and played >= EDGE_DWELL * beat)
+    # Only one sighting of a measure prints, so when o's first cell starts mid-measure at the page edge the notes
+    # of whichever piece doesn't print are lost
+    edge = (share >= EDGE_WIDTH or (not p.cells[e].complete and played >= EDGE_DWELL * beat)
+            or not o.cells[0].complete)
     # o's first cell shows the rest of the cut measure, or the whole measure drawn again a little differently
     continues = (same_part(p.cells[k], o.cells[0], gap, "left")
                  or resemble(p.cells[k], o.cells[0], gap, any_kind=True) <= REPLAY_RESEMBLE)
@@ -749,7 +757,7 @@ def move_decision(p: Obs, o: Obs, gap: float) -> Decision:
     r0 = register(p, o, 0, gap, 2)
     basis = (f"still {r0[1]:.3f}" if r0 else "still -") + f" restart={playhead_restarts(p, o, gap)}" \
         + f" steps={m.steps} moves={[round(x) for x in m.moves]}"
-    return Decision(o.t0, "move", m.kind, notes, basis, True)
+    return Decision(o.t0, "move", m.kind, notes, basis, True, o.index)
 
 
 def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], words_of) -> Assembly:
@@ -796,10 +804,11 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
         last_end = o.t1
         if not cells:
             continue
+        decided = len(A.decisions)
         slot_of: list = [None] * len(cells)
         tj = track_joins.get(o.index) if prev is not None and prev.seg == o.seg else None
-        # Only the main reading clears numbers. The folded reading runs on the same cells after it, so it keeps main's
-        # clearing, and a view it folded without evidence may sit on the wrong numbered measures
+        # Only the main reading clears numbers: a view the folded reading folded without evidence may sit on the
+        # wrong numbered measures
         if not fold_unresolved and tj is not None and "?" not in tj[1] and any(
                 cells[i].number is not None and prev_slots[j] is not None
                 and A.slots[prev_slots[j]].number not in (None, cells[i].number) for i, j in tj[0].items()):
@@ -868,6 +877,8 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
             if sid is not None:
                 A.sightings.setdefault(sid, []).append((o.index, c))
         prev, prev_slots = o, slot_of
+        for d in A.decisions[decided:]:
+            d.view = o.index
     A.order = [s.id for s in A.slots]
     return A
 

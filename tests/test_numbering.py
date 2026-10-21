@@ -158,6 +158,16 @@ def test_a_screen_shown_again_after_the_playhead_jumped_back_is_an_unresolved_fo
     assert folded.view_slots[1] == [0, 1, 2, 3]
 
 
+def test_each_decision_names_the_view_it_was_made_for():
+    obs = [band_view(0, 1), band_view(1, 1)]
+    obs[1].wrapped = True
+    for c in obs[1].cells:
+        c.ink = c.ink.copy()
+        c.ink[20:40, 80:120] = True
+    main = assemble(obs, 10.0, False, {"numbers", "playhead", "navigation"}, lambda o: [])
+    assert main.decisions and all(d.view == 1 for d in main.decisions)
+
+
 def test_a_read_a_few_measures_off_says_a_cell_holds_another_measure():
     o = read_view(0, run("a", 6, 8), [None, 7, None])
     o.cells[1].read = 7

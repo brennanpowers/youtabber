@@ -229,3 +229,39 @@ def test_a_colored_cursor_box_is_not_taken_for_a_number():
     cv2.rectangle(img, (380, 20), (470, 56), (0, 0, 230), -1)
     cells = [c for ps in parse_view(0, img, (0, 0, 800, 200), "dark", 140.0, 229.0, 14.0) for c in ps.cells]
     assert next(c for c in cells if abs(c.x0 - 400) <= 2).number_crop is None
+
+
+def two_staffs(joined: bool) -> np.ndarray:
+    """Two tab staffs at y 60 and 200 with barlines at x 100, 400 and 700, drawn through the space between the
+    staffs or on each staff only."""
+    img = np.full((360, 800, 3), 255, np.uint8)
+    for top in (60, 200):
+        for i in range(6):
+            cv2.line(img, (20, top + i * 14), (780, top + i * 14), (60, 60, 60), 1)
+    for x in (100, 400, 700):
+        if joined:
+            cv2.line(img, (x, 60), (x, 270), (0, 0, 0), 2)
+        else:
+            cv2.line(img, (x, 60), (x, 130), (0, 0, 0), 2)
+            cv2.line(img, (x, 200), (x, 270), (0, 0, 0), 2)
+    return img
+
+
+def two_staff_systems(joined: bool):
+    return parse_view(0, two_staffs(joined), (0, 0, 800, 360), "dark", 140.0, 229.0, 14.0)
+
+
+def test_barlines_running_through_two_staffs_make_one_system():
+    systems = two_staff_systems(joined=True)
+    assert len(systems) == 1
+    full = [c for c in systems[0].cells if c.kind == "full"]
+    assert [c.x0 for c in full] == [99, 399]
+    assert all(c.ink.shape[0] == 294 for c in full)
+    assert systems[0].band == (46, 285)
+
+
+def test_barlines_on_each_staff_only_keep_two_systems():
+    systems = two_staff_systems(joined=False)
+    assert len(systems) == 2
+    assert [[c.x0 for c in ps.cells if c.kind == "full"] for ps in systems] == [[99, 399], [99, 399]]
+    assert [ps.band for ps in systems] == [(46, 145), (186, 285)]

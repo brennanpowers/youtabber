@@ -27,13 +27,17 @@ def too_few(obs, printed: int) -> str | None:
 
 
 def possible_duplicates(A, obs, gap: float) -> list[dict]:
-    """New slots whose music looks like a slot from the last few views: an overlap that wasn't joined."""
+    """New slots whose music looks like a slot from the last few views: an overlap that wasn't joined. Views are
+    counted back along `obs`, so views of another part shown in between don't count."""
     by_index = {o.index: o for o in obs}
+    place = {o.index: i for i, o in enumerate(obs)}
     out = []
     for s in A.slots:
+        if s.obs not in place:
+            continue  # first read in a view not in `obs`
         o = by_index[s.obs]
         for t in A.slots[:s.id]:
-            if t.obs >= s.obs or s.obs - t.obs > DUP_LOOKBACK_VIEWS:
+            if t.obs not in place or not 0 < place[s.obs] - place[t.obs] <= DUP_LOOKBACK_VIEWS:
                 continue
             if s.number is not None and t.number is not None:
                 continue  # different printed numbers: different measures
