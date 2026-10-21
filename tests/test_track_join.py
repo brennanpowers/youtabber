@@ -1,9 +1,14 @@
+from dataclasses import replace
+
 import numpy as np
 from test_numbering import band_view, music
 
-from youtabber.assemble import (assemble, playhead_at, playhead_track, register, scroll_shifts, still_links,
-                                track_join)
+from youtabber.assemble import (Assembly, Decision, assemble, choose_shift, measure_time, playhead_at, playhead_join,
+                                playhead_track, register, replay_evidence, scroll_shifts, still_links, track_join)
+from youtabber.pipeline import Notice, edge_notices, join_notices
 from youtabber.track import Move
+
+EVIDENCE = {"numbers", "playhead", "navigation"}
 
 
 def test_the_playhead_track_keeps_only_samples_on_the_music():
@@ -77,6 +82,58 @@ def test_assembly_places_a_held_page_on_the_same_measures_and_notes_the_join_is_
     assert len(joins) == 1 and joins[0].resolved is False
 
 
+def restarted(loose: bool, frames: int = 0):
+    """A held band whose playhead starts over (700 -> 20), the second view showing measures 3-6 on plates like the
+    first's: the same plates, or with the last measure's columns blank when `loose`. More frames than playhead
+    samples leave the playhead untracked."""
+    p, o = band_view(0, 1), band_view(1, 3)
+    o.move = Move("still", steps=5)
+    p.playhead = [(p.t1 - 0.5, 700, 30)]
+    o.playhead = [(o.t0 + 0.1, 20, 30)]
+    o.tall = p.tall.copy()
+    if loose:
+        o.tall[:, 600:800] = 0
+    o.frames = frames
+    return p, o
+
+
+def test_a_restarted_page_printed_as_new_music_leaves_its_join_unresolved():
+    p, o = restarted(loose=False)
+    A = assemble([p, o], 10.0, False, EVIDENCE, lambda v: [])
+    assert o.restarted is True
+    assert A.view_slots[1] == [4, 5, 6, 7]
+    assert [d for d in A.decisions if d.kind == "join"] == [Decision(10.0, "join", "new", ["played again"], "restart",
+                                                                     False)]
+
+
+def test_a_restarted_page_whose_plates_differ_more_may_join_by_an_unresolved_overlap():
+    p, o = restarted(loose=True, frames=10)
+    assert round(register(p, o, 0, 10.0, 2)[1], 3) == 0.142
+    A = assemble([p, o], 10.0, False, EVIDENCE, lambda v: [])
+    assert A.view_slots[1] == [2, 3, 4, 5]
+    assert [d for d in A.decisions if d.kind == "join"] == [Decision(10.0, "join", "overlap 2", ["none"], "prior",
+                                                                     False)]
+
+
+def test_a_restarted_page_the_playhead_keeps_from_an_overlap_leaves_its_join_unresolved():
+    # The tracked playhead going back over the page rules the overlap out as playback carrying on
+    p, o = restarted(loose=True)
+    A = assemble([p, o], 10.0, False, EVIDENCE, lambda v: [])
+    assert A.view_slots[1] == [4, 5, 6, 7]
+    assert [d for d in A.decisions if d.kind == "join"] == [Decision(10.0, "join", "none", ["overlap 2"], "playhead",
+                                                                     False)]
+
+
+def test_an_unresolved_join_after_a_restart_is_noticed_from_the_page_before():
+    p, o = restarted(loose=False)
+    A = Assembly(decisions=[Decision(10.0, "join", "new", ["played again"], "restart", False)])
+    text = ("Couldn't tell how this screen continues from the one before; check that no measure is missing or "
+            "printed twice here.")
+    assert join_notices(A, [p, o]) == [Notice(9.0, 20.0, "unresolved_join", text, True)]
+    o.restarted = True
+    assert join_notices(A, [p, o]) == [Notice(0.0, 20.0, "unresolved_join", text, True)]
+
+
 def riff_view(index: int, first: int):
     """`band_view` with every measure drawn alike, as on the pages of a riff that repeats."""
     o = band_view(index, first)
@@ -139,3 +196,202 @@ def test_assembly_leaves_a_slide_the_plates_refuse_to_the_registered_shifts():
     joins = [d for d in A.decisions if d.kind == "join"]
     assert [(d.chosen, d.basis, d.resolved) for d in joins] == [("shift 398", "playhead", True)]
     assert A.view_slots[1] == [2, 3, 4, 5]
+
+
+def usual_pick(move, usual=400.0):
+    p, o = band_view(0, 1), band_view(1, 3)
+    o.move = move
+    return choose_shift(p, o, [(398, 0.0), (598, 0.1)], 0.5, set(), 10.0, usual=usual)
+
+
+def test_a_jump_takes_the_shift_nearest_the_usual_slide_settled_when_the_move_slid_that_far_in_steps():
+    assert usual_pick(Move("slide", shifts=[400], drawn=[True], steps=5)) == (398, "usual_slide", True)
+
+
+def test_a_jump_near_the_usual_slide_is_unresolved_when_the_move_was_not_a_slide_drawn_that_far():
+    for move in (Move("cut"), Move("still", steps=5), Move("slide", shifts=[200], drawn=[True], steps=5),
+                 Move("slide", shifts=[400], drawn=[False], steps=1)):
+        assert usual_pick(move) == (398, "usual_slide", False)
+
+
+def test_a_jump_whose_drawn_slide_lands_on_another_shift_skips_the_usual_slide():
+    # The band was seen sliding 46 px, near the 44 px shift, while the usual slide is near the 709 px one
+    p, o = band_view(0, 1), band_view(1, 3)
+    o.move = Move("slide", shifts=[46], drawn=[True], steps=5)
+    shifts = [(44, 0.0), (886, 0.1), (797, 0.1), (623, 0.2), (709, 0.2)]
+    assert choose_shift(p, o, shifts, 0.9, set(), 10.0, usual=712.0) == (44, "segment_scrolls", False)
+    assert choose_shift(p, o, shifts, 0.5, set(), 10.0, usual=712.0) == (None, "prior", False)
+
+
+def test_with_no_usual_slide_a_jump_falls_back_on_the_segment_share():
+    assert usual_pick(Move("slide", shifts=[400], drawn=[True], steps=5), usual=None) == (None, "prior", False)
+
+
+
+def played(o, *pts):
+    """Set a view's playhead samples, (seconds after its start, x, y)."""
+    o.playhead = [(o.t0 + t, x, y) for t, x, y in pts]
+    o.track = None
+
+
+def played_views(n: int):
+    """n views of bars 1-4, 5-8, ..., 8 s each, 10 s apart, the playhead entering a measure every 2 s."""
+    out = []
+    for i in range(n):
+        o = band_view(i, 1 + 4 * i)
+        o.t0, o.t1 = 10.0 * i, 10.0 * i + 8
+        played(o, *[(0.5 + 0.5 * k, 10 + 50 * k, 30) for k in range(16)])
+        out.append(o)
+    return out
+
+
+def cut_last(o, bar: int, w: int) -> None:
+    """Make a view's last measure, `bar`, a cell w px wide, cut by the page edge."""
+    c = o.cells[-1]
+    o.cells[-1] = replace(c, kind="tail", complete=False, x1=c.x0 + w, ink=music("a", bar)[:, :w])
+
+
+def cut_pair(w: int, entered: float, first: int = 4, whole_track: bool = False):
+    """A page of bars 1-4 played 0-10 s, its last measure cut to w px and played from `entered`, then a page
+    showing bars from `first` with the playhead on its first measure. With `whole_track` the playhead is also seen
+    entering each earlier measure every 2 s, enough to measure a measure's time from the pair alone."""
+    p = band_view(0, 1)
+    cut_last(p, 4, w)
+    p.t0, p.t1 = 0.0, 10.0
+    earlier = [(0.5 + 2 * k, 10 + 200 * k, 30) for k in range(3)] if whole_track else []
+    played(p, *earlier, (entered - 0.5, 550, 30), (entered, 610, 30), (9.9, 600 + w - 5, 30))
+    o = band_view(1, first)
+    o.t0, o.t1 = 10.0, 20.0
+    played(o, *[(0.1 + 2 * k, 30 + 200 * k, 30) for k in range(4 if whole_track else 1)])
+    return p, o
+
+
+def joins_at(A, t: float) -> list:
+    return [(d.chosen, d.alternatives, d.resolved) for d in A.decisions if d.kind == "join" and d.t == t]
+
+
+def test_measure_time_is_the_median_time_from_entering_one_measure_to_the_next():
+    assert measure_time(played_views(3)) == 2.0
+    # Three measures played through are too few to say
+    assert measure_time(played_views(1)) is None
+
+
+def test_a_cut_last_measure_being_played_when_the_page_changed_joins_the_next_pages_first():
+    assert playhead_join(*cut_pair(120, 9.0), 2.0, 10.0) == ({0: 3}, True, False)
+
+
+def test_a_cut_measure_played_long_is_joined_and_flagged_as_near_a_whole_one():
+    assert playhead_join(*cut_pair(120, 8.6), 2.0, 10.0) == ({0: 3}, True, True)
+
+
+def test_a_wide_cut_measure_is_joined_and_flagged_as_near_a_whole_one():
+    assert playhead_join(*cut_pair(160, 9.0), 2.0, 10.0) == ({0: 3}, True, True)
+
+
+def test_a_next_page_opening_with_other_music_is_joined_without_continuing_the_cut_measure():
+    assert playhead_join(*cut_pair(120, 9.0, first=1), 2.0, 10.0) == ({0: 3}, False, False)
+
+
+def test_a_playhead_join_to_a_page_that_opens_a_replay_is_unresolved():
+    # Bars 1-12 on three pages, the last one's bar 12 cut by the edge, then a page opening on bar 1 again
+    obs = played_views(3)
+    cut_last(obs[2], 12, 120)
+    played(obs[2], *[(0.5 + 0.5 * k, 10 + 50 * k, 30) for k in range(12)], (7.0, 610, 30), (7.9, 700, 30))
+    o = band_view(3, 1)
+    played(o, (0.1, 30, 30))
+    obs.append(o)
+    for v in obs[1:]:
+        v.move = Move("cut")
+    A = assemble(obs, 10.0, False, EVIDENCE, lambda v: [])
+    assert joins_at(A, o.t0) == [("playhead [(0, 3)]", [], False)]
+    assert A.view_slots[3][0] == A.view_slots[2][3]
+
+
+def test_a_playhead_join_to_a_page_like_no_earlier_music_is_resolved_though_its_first_cell_differs():
+    p, o = cut_pair(120, 9.0, first=12, whole_track=True)
+    assert playhead_join(p, o, 2.0, 10.0)[1] is False
+    A = assemble([p, o], 10.0, False, EVIDENCE, lambda v: [])
+    assert joins_at(A, o.t0) == [("playhead [(0, 3)]", [], True)]
+    assert A.view_slots[1][0] == A.view_slots[0][3]
+
+
+def test_no_playhead_join_for_a_whole_measure_too_long_a_dwell_or_an_unknown_measure_time():
+    assert playhead_join(*cut_pair(196, 9.0), 2.0, 10.0) is None
+    assert playhead_join(*cut_pair(120, 7.5), 2.0, 10.0) is None
+    assert playhead_join(*cut_pair(120, 9.0), None, 10.0) is None
+
+
+def test_a_playhead_join_near_a_whole_measure_gets_a_notice_from_the_page_before():
+    p, o = cut_pair(120, 8.6, first=12, whole_track=True)
+    A = assemble([p, o], 10.0, False, EVIDENCE, lambda v: [])
+    assert joins_at(A, o.t0) == [("playhead [(0, 3)]", ["edge"], True)]
+    assert A.edge_joins == [(0, 1)]
+    assert [(w.kind, w.t0, w.t1) for w in edge_notices(A, [p, o])] == [("edge_join", 0.0, 20.0)]
+
+
+def restart_evidence(p_end: int, sliding: bool = True):
+    """Replay evidence for a cut from a page of bars 9-12, the playhead at x p_end at its end, to bars 1-4 with
+    the playhead on the first measure, in a segment that does or doesn't slide."""
+    A = Assembly()
+    A.sliding = {0: sliding}
+    p, o = band_view(0, 9), band_view(1, 1)
+    o.move = Move("cut")
+    played(p, (9.5, p_end, 30))
+    played(o, (0.1, 10, 30))
+    return replay_evidence(o, o.cells[:2], 0, A, 0.0, p, set(), lambda x: [])
+
+
+def test_a_sliding_band_cut_from_its_last_measure_to_the_opening_restarts():
+    assert restart_evidence(790) == (True, "track_restart", True)
+
+
+def test_a_restart_cut_from_inside_the_page_folds_unresolved():
+    assert restart_evidence(300) == (True, "track_restart", False)
+
+
+def test_a_cut_back_to_the_opening_in_a_band_that_does_not_slide_is_no_restart():
+    assert restart_evidence(790, sliding=False) == (False, "none", False)
+
+
+def numbered_slide(p_end: int | None = None, o_start: int | None = None):
+    """A slide of 400 px from a view numbered 1-4 to one whose numbers were misread as 11-14."""
+    p, o = slid(400, True, p_end, o_start)
+    for n, c in enumerate(p.cells, 1):
+        c.number = c.read = n
+    for n, c in enumerate(o.cells, 11):
+        c.number = c.read = n
+    A = assemble([p, o], 10.0, False, EVIDENCE, lambda v: [])
+    return A, o
+
+
+def test_a_slide_the_playhead_confirmed_clears_numbers_that_disagree_with_the_measures_it_joins():
+    A, o = numbered_slide(p_end=700, o_start=320)
+    assert A.view_slots[1] == [2, 3, 4, 5]
+    assert [c.number for c in o.cells] == [None] * 4
+    assert [c.read for c in o.cells] == [11, 12, 13, 14]
+    joins = [d for d in A.decisions if d.kind == "join"]
+    assert [(d.chosen, d.basis) for d in joins] == [("slide 398", "track")]
+
+
+def test_an_unconfirmed_slide_keeps_the_numbers_as_read():
+    A, o = numbered_slide()
+    assert [c.number for c in o.cells] == [11, 12, 13, 14]
+    assert A.view_slots[1] == [4, 5, 6, 7]
+
+
+def test_the_folded_reading_keeps_the_numbers_of_a_view_that_slid_on_from_a_fold_without_evidence():
+    # Views numbered 1-4 and 5-8, then a view like 1-4 with no numbers or evidence, then a confirmed slide to a view
+    # numbered 11-14 whose first measures look like 3-4. The folded reading puts the third view on 1-4, which
+    # would make the slide disagree with 11-14
+    views = [band_view(0, 1), band_view(1, 5), band_view(2, 1), band_view(3, 3)]
+    for v, first in ((views[0], 1), (views[1], 5), (views[3], 11)):
+        for n, c in enumerate(v.cells, first):
+            c.number = c.read = n
+    views[3].move = Move("slide", shifts=[400], drawn=[True], steps=5)
+    views[2].playhead = [(views[2].t1 - 0.5, 700, 30)]
+    views[3].playhead = [(views[3].t0 + 0.1, 320, 30)]
+    folded = assemble(views, 10.0, True, EVIDENCE, lambda v: [])
+    assert folded.view_slots[2] == [0, 1, 2, 3]
+    assert [c.number for c in views[3].cells] == [11, 12, 13, 14]
+    assert folded.view_slots[3] == [8, 9, 10, 11]
+    assert [folded.slots[s].number for s in folded.view_slots[3]] == [11, 12, 13, 14]

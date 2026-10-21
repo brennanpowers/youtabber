@@ -309,13 +309,7 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, tell) -> Reading:
         folded = assemble(obs, gap, True, EVIDENCE, words_of)
         r.candidates.append(Candidate("folded", "once", measures_of(folded, obs, folded.order)))
 
-    notices = []
-    for d in main.decisions:
-        if not d.resolved and d.kind == "join":
-            o = next(x for x in obs if x.t0 == d.t)
-            notices.append(Notice(round(d.t - 1, 2), round(o.t1, 2), "unresolved_join",
-                                  "Couldn't tell how this screen continues from the one before; check that no "
-                                  "measure is missing or printed twice here.", True))
+    notices = join_notices(main, obs) + edge_notices(main, obs)
     ranges = []
     for t0, t1, j0, j1 in main.unresolved_folds:
         first_seen = obs[main.slots[j0].obs]
@@ -405,6 +399,28 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, tell) -> Reading:
     r.every_pass = [Candidate("primary", "all", path_measures(main, obs, r.path))]
     tell("assemble", 1.0)
     return r
+
+
+def join_notices(A: Assembly, obs: list[Obs]) -> list[Notice]:
+    """A notice for each join left unresolved, from a second before the screen to its end."""
+    notices = []
+    for d in A.decisions:
+        if not d.resolved and d.kind == "join":
+            o = next(x for x in obs if x.t0 == d.t)
+            # A page the playhead started over may repeat the page before, so the notice covers that page too
+            start = next(x for x in reversed(obs[:o.index]) if x.cells).t0 if o.restarted else d.t - 1
+            notices.append(Notice(round(start, 2), round(o.t1, 2), "unresolved_join",
+                                  "Couldn't tell how this screen continues from the one before; check that no "
+                                  "measure is missing or printed twice here.", True))
+    return notices
+
+
+def edge_notices(A: Assembly, obs: list[Obs]) -> list[Notice]:
+    """A notice for each join by the playhead whose cut measure may have been whole. It starts at the page before,
+    where that measure was played."""
+    return [Notice(round(obs[pi].t0, 2), round(obs[vi].t1, 2), "edge_join",
+                   "A measure cut by the page edge was joined to the next page by where the playhead was; check "
+                   "that no measure is missing here.", True) for pi, vi in A.edge_joins]
 
 
 def share_of(progress: Progress | None, stage: str, t0: float, t1: float) -> Callable[[float], None] | None:

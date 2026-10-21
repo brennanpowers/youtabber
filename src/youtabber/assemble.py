@@ -34,8 +34,8 @@ TRACKED_SHARE = 0.5
 SYSTEM_START_GAPS = 3.0
 # Two sightings this alike (share of unmatched ink) can lend a measure number from one to the other
 BORROW_RESEMBLE = 0.05
-# A view refuses the start its look-alike neighbors lend it when one of its own numbers reads this many measures or
-# fewer from that start and none matches it: the neighbors are other pages of a riff
+# A view refuses the numbers a look-alike neighbor lends it when one of its own reads is this many measures or fewer
+# off them: the neighbor is another page of a riff
 BORROW_CONFLICT = 6
 # A numbered measure met again on a later screen is the same music when this alike (share of unmatched ink)
 REPLAY_RESEMBLE = 0.3
@@ -50,12 +50,26 @@ NAV_WORDS = ("D.S", "DS.", "D.C", "DC.", "CODA", "FINE", "SEGNO")
 # Two views of a band that didn't move show the same music when at most this share of their marks finds no partner;
 # what is left is cursor residue
 STILL_MISMATCH = 0.2
+# A held page the playhead started over, with at most this share of marks unmatched, is the same page played again;
+# a looser match can be a new page drawn on the same grid
+SAME_PAGE_MISMATCH = 0.1
 # A measured slide is checked on the two plates this many pixels either side of it
 SLIDE_REACH = 6
 # Over a slide the playhead carries on from where it was by at most this many typical measure widths
 CARRY_MEASURES = 1.5
 # ...and its two ends lie at most this many line gaps apart in height (a highlight rides up and down with the notes)
 CURSOR_DRIFT_GAPS = 5
+# A segment's typical time on one measure needs at least this many measures seen played from start to end
+MIN_DWELLS = 5
+# A page's last measure, cut by the page edge, was played for less than this share of a measure's time
+CUT_DWELL = 0.85
+# ...or a whole measure before it was played for at least this share, so playback had moved on to the cut one
+MOVED_ON = 0.7
+# A measure cut by the page edge is narrower than this share of the page's typical whole measure
+CUT_WIDTH = 0.95
+# A cut measure this wide, or played this long, is close to a whole measure that only lost its barline to the edge
+EDGE_WIDTH = 0.75
+EDGE_DWELL = 0.6
 
 
 @dataclass
@@ -124,6 +138,8 @@ class Assembly:
     replay_next: int | None = None       # the slot a replay under way reaches next
     segment_starts: set = field(default_factory=set)
     seen_segments: set = field(default_factory=set)
+    edge_joins: list = field(default_factory=list)   # (p, o) indexes of playhead joins whose cut measure may be whole
+    sliding: dict = field(default_factory=dict)   # segment -> its band moves on by measured slides
 
 
 def number_views(obs: list[Obs], read) -> str:
@@ -153,6 +169,9 @@ def number_views(obs: list[Obs], read) -> str:
             consistent += 1
             o.start = start
     numbered = checked >= 3 and consistent >= 0.6 * checked
+    for k, o in enumerate(obs):
+        if o.start is not None and not fits_neighbours(obs, k):
+            o.start = None
     for o, reads in zip(obs, all_reads):
         if numbered and o.start is not None:
             for i, c in enumerate(o.cells):
@@ -163,6 +182,26 @@ def number_views(obs: list[Obs], read) -> str:
     if numbered:
         borrow_numbers(obs)
     return "numbered" if numbered else "unnumbered"
+
+
+def fits_neighbours(obs: list[Obs], k: int) -> bool:
+    """False when view k's start carries on from neither the nearest numbered view before nor after it in its layout,
+    while a number read on one of its own cells does: the start was voted by misreads."""
+    o = obs[k]
+    prev = next((obs[m] for m in range(k - 1, -1, -1) if obs[m].seg == o.seg and obs[m].start is not None), None)
+    nxt = next((obs[m] for m in range(k + 1, len(obs)) if obs[m].seg == o.seg and obs[m].start is not None), None)
+
+    def agrees(start: int) -> bool:
+        after_prev = prev is not None and prev.start <= start <= prev.start + len(prev.cells)
+        before_next = nxt is not None and nxt.start - len(o.cells) <= start <= nxt.start
+        return after_prev or before_next
+
+    if prev is None and nxt is None or agrees(o.start):
+        return True
+    # A read a measure or two off the start is a missed or added barline, which number_conflicts reports, not a
+    # sign that the start is wrong
+    return not any(agrees(c.read - i) for i, c in enumerate(o.cells)
+                   if c.read is not None and abs(c.read - i - o.start) > CONFLICT_SPAN)
 
 
 def borrow_numbers(obs: list[Obs]) -> None:
@@ -313,11 +352,12 @@ def keeps_widths(p: Obs, o: Obs, dx: int) -> bool:
     return True
 
 
-def choose_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float):
+def choose_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float, usual: float | None = None):
     """(dx or None, basis, resolved): whether o is p scrolled by one of the shifts, or a new page.
 
     The playhead decides when it was seen at both ends: after a scroll it carries on from where it was,
-    which in o's coordinates is (where it was in p) - dx. Without it, a segment where nearly every pair
+    which in o's coordinates is (where it was in p) - dx. Next, in a segment whose band was seen sliding by
+    about `usual` px, the shift nearest that is taken. Without either, a segment where nearly every pair
     lines up is taken to scroll.
     """
     if "playhead" in use and tracked(p) and tracked(o):
@@ -330,6 +370,17 @@ def choose_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float
                 return fits[0], "playhead", True
             if not fits:
                 return None, "playhead", True
+    if usual is not None:
+        near = min(shifts, key=lambda s: abs(s[0] - usual))
+        if abs(near[0] - usual) <= gap:
+            # Settled only when the band was seen sliding by about that much here too, in several steps
+            m = o.move
+            drawn = [d for d, dr in zip(m.shifts, m.drawn) if dr] if m is not None and m.kind == "slide" else []
+            agrees = bool(drawn) and abs(drawn[0] - near[0]) <= gap
+            # A slide drawn to another of the shifts points away from the usual one, so the pick is left to the
+            # rules below
+            if agrees or not drawn or not any(abs(drawn[0] - dx) <= gap for dx, _ in shifts):
+                return near[0], "usual_slide", agrees
     if share >= SCROLL_SEGMENT_SHARE:
         return shifts[0][0], "segment_scrolls", len(shifts) == 1
     return None, "prior", False
@@ -460,9 +511,9 @@ def replay_evidence(o, run, j, A, gap_before, prev, use, words_of) -> tuple[bool
     """(fold, basis, resolved) for cells that repeat slots j, j+1, ...
 
     Folding needs evidence that the video went back to the same place in the score: equal printed
-    measure numbers, an end-repeat sign or a D.S./D.C. marking on the page played just before, or a restart
-    from the first measure after a break. A run that only looks like earlier music is an unresolved fold: the main
-    reading prints it again and the folded reading folds it.
+    measure numbers, an end-repeat sign or a D.S./D.C. marking on the page played just before, a restart
+    from the first measure after a break, or a sliding band cut back to its opening. A run that only looks like
+    earlier music is an unresolved fold: the main reading prints it again and the folded reading folds it.
     """
     first = run[0]
     if "numbers" in use and first.number is not None and A.slots[j].number is not None:
@@ -478,6 +529,11 @@ def replay_evidence(o, run, j, A, gap_before, prev, use, words_of) -> tuple[bool
     near_start = j <= RESTART_SLACK or any(0 <= j - s <= RESTART_SLACK for s in A.segment_starts)
     if near_start and gap_before >= RESTART_GAP_SECONDS:
         return True, "restart", True
+    # A band that moves on by sliding and instead cuts back to the opening measures was sent back to the start.
+    # Settled only when the playhead went from the end of the page before straight to the first measure here
+    if near_start and o.move is not None and o.move.kind == "cut" and A.sliding.get(o.seg, False):
+        from_end = prev is not None and cell_at(prev, playhead_at(prev, at_start=False)) == len(prev.cells) - 1
+        return True, "track_restart", from_end and cell_at(o, playhead_at(o, at_start=True)) == 0
     return False, "none", False
 
 
@@ -593,14 +649,15 @@ def slide_join(p: Obs, o: Obs, gap: float, cands) -> tuple[dict[int, int], str] 
     return None
 
 
-def existing_join(prev, o, gap, shift_cache, scroll_share, use, A) -> dict:
+def existing_join(prev, o, gap, shift_cache, scroll_share, usual, use, A) -> dict:
     """The join made without the band's measured movement: a registered shift, else an overlap of look-alike
     cells. Its decisions go to A."""
     links: dict = {}
     options = []
     shifts = shift_cache.get(o.index, [])
     if shifts:
-        dx, basis, resolved = choose_shift(prev, o, shifts, scroll_share.get(o.seg, 0.0), use, gap)
+        dx, basis, resolved = choose_shift(prev, o, shifts, scroll_share.get(o.seg, 0.0), use, gap,
+                                            usual.get(o.seg))
         if dx is not None:
             links = scroll_links(prev, o, dx)
             # A page shown again whole can line up with itself one measure on; a riff scrolled on by its
@@ -611,18 +668,75 @@ def existing_join(prev, o, gap, shift_cache, scroll_share, use, A) -> dict:
                                     [f"shift {d}" for d, _ in shifts if d != dx]
                                     + (["page turn"] if dx is not None else []), basis, resolved))
     # A view that began where the playhead jumped back may be the page before shown again or a new page
-    # that looks like it, so an overlap with that page is no join; so is a still page the playhead started over
-    if not links and not o.wrapped and not o.restarted:
+    # that looks like it, so an overlap with that page is no join; so is a still page the playhead started over,
+    # unless its plates differ enough that it may be a new page
+    same_page = o.restarted and register(prev, o, 0, gap, 2)[1] <= SAME_PAGE_MISMATCH
+    if not links and not o.wrapped and not same_page:
         options = [(f"overlap {len(lk)}", lk) for lk in sequence_links(prev, o, gap)]
     if options:
         options.append(("none", {}))
         n, basis, resolved = choose_join(prev, o, options, use)
+        # The page may be the one before played again, so whichever way it joins stays unsettled
+        resolved = resolved and not o.restarted
         links = options[n][1]
         if len(options) >= 2:
             A.decisions.append(Decision(o.t0, "join", options[n][0],
                                         [lab for m, (lab, _) in enumerate(options) if m != n],
                                         basis, resolved))
     return links
+
+
+def measure_time(obs: list[Obs]) -> float | None:
+    """The typical time the playhead spends on one whole measure, from views where it was seen entering one
+    cell and then the next; None when that was seen too rarely to say."""
+    dwell = []
+    for o in obs:
+        entered: dict[int, float] = {}
+        for t, x, y in playhead_track(o):
+            i = cell_at(o, (x, y))
+            if i is not None:
+                entered.setdefault(i, t)
+        for i, t in entered.items():
+            if i + 1 in entered and o.cells[i].complete and entered[i + 1] > t:
+                dwell.append(entered[i + 1] - t)
+    return float(np.median(dwell)) if len(dwell) >= MIN_DWELLS else None
+
+
+def playhead_join(p: Obs, o: Obs, beat: float | None, gap: float) -> tuple[dict[int, int], bool, bool] | None:
+    """After a page flip or jump that nothing else explained: (links, continues, edge) tying o's first cell to p's
+    last measure, cut by the page edge, found from where the playhead was. The cut measure is the one being played
+    when the page changed, or the one after a whole measure played to its end. `continues` says o's first cell
+    looks like the rest of that measure; `edge` says the cut measure may have been a whole one. None when the
+    playhead doesn't say."""
+    if beat is None or not p.cells or not o.cells:
+        return None
+    e, s = cell_at(p, playhead_at(p, at_start=False)), cell_at(o, playhead_at(o, at_start=True))
+    if e is None or s is None:
+        return None
+    # When the playhead came onto the cell it was on at p's end
+    entered = p.t1
+    for t, x, y in reversed(playhead_track(p)):
+        if cell_at(p, (x, y)) != e:
+            break
+        entered = t
+    played = p.t1 - entered
+    if p.cells[e].complete:
+        k = e + 1 if played >= MOVED_ON * beat else None
+    else:
+        k = e if played < CUT_DWELL * beat else None
+    # The cut measure is p's last and opens the next page
+    if s != 0 or k is None or k != len(p.cells) - 1 or p.cells[k].complete or p.cells[k].kind != "tail":
+        return None
+    # A cell cut by the page edge is narrower than a measure; a whole last measure that only lost its barline isn't
+    widths = [c.x1 - c.x0 for c in p.cells if c.kind == "full"]
+    share = (p.cells[k].x1 - p.cells[k].x0) / float(np.median(widths)) if widths else 0.0
+    if share >= CUT_WIDTH:
+        return None
+    edge = share >= EDGE_WIDTH or (not p.cells[e].complete and played >= EDGE_DWELL * beat)
+    # o's first cell shows the rest of the cut measure, or the whole measure drawn again a little differently
+    continues = (same_part(p.cells[k], o.cells[0], gap, "left")
+                 or resemble(p.cells[k], o.cells[0], gap, any_kind=True) <= REPLAY_RESEMBLE)
+    return {0: k}, continues, edge
 
 
 def move_decision(p: Obs, o: Obs, gap: float) -> Decision:
@@ -658,6 +772,7 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
     scroll_share = {s: sum(v) / len(v) for s, v in pairs.items() if v}
     # Joins decided by how the band moved between the two views
     track_joins: dict = {}
+    slides: dict = {}
     for p, o in zip(obs, obs[1:]):
         if p.seg == o.seg and p.cells and o.cells:
             if o.move is not None:
@@ -665,6 +780,15 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
             tj = track_join(p, o, gap, shift_cache[o.index])
             if tj is not None:
                 track_joins[o.index] = tj
+                if tj[1].startswith("slide "):
+                    slides.setdefault(o.seg, []).append(int(tj[1].split()[1]))
+    # The shift each segment's band was usually seen sliding by, from the slides the playhead confirmed
+    usual = {s: float(np.median(v)) for s, v in slides.items()}
+    # A segment slides when the playhead confirmed most of the slides and cuts its band was seen making
+    for sg in {o.seg for o in obs}:
+        moved = [o for o in obs if o.seg == sg and o.move is not None and o.move.kind in ("slide", "cut")]
+        A.sliding[sg] = len(slides.get(sg, [])) >= 5 and len(slides.get(sg, [])) >= 0.7 * len(moved)
+    beats = {s: measure_time([o for o in obs if o.seg == s and o.mosaic is None]) for s in {o.seg for o in obs}}
     for o in obs:
         cells = o.cells
         # Time without tab on screen before this view; a view with tab but no usable cells still counts
@@ -673,16 +797,27 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
         if not cells:
             continue
         slot_of: list = [None] * len(cells)
+        tj = track_joins.get(o.index) if prev is not None and prev.seg == o.seg else None
+        # Only the main reading clears numbers. The folded reading runs on the same cells after it, so it keeps main's
+        # clearing, and a view it folded without evidence may sit on the wrong numbered measures
+        if not fold_unresolved and tj is not None and "?" not in tj[1] and any(
+                cells[i].number is not None and prev_slots[j] is not None
+                and A.slots[prev_slots[j]].number not in (None, cells[i].number) for i, j in tj[0].items()):
+            # The playhead confirmed these measures are the ones shown before, so numbers that differ from theirs
+            # were misread and the view is placed by the join. Its reads stay as they were
+            for c in cells:
+                c.number = None
         if "numbers" in use and all(c.number is not None for c in cells):
             place_numbered(o, slot_of, A, prev, prev_slots, gap, seg_of)
         else:
             links: dict = {}
+            joins_before = len(A.decisions)
             if prev is not None and prev.seg == o.seg:
                 tj, probed = track_joins.get(o.index), False
                 if tj is not None and tj[1].startswith("slide?"):
                     # A slide the playhead didn't confirm only settles a pair the plates and overlaps left open
                     probe = Assembly()
-                    plain = existing_join(prev, o, gap, shift_cache, scroll_share, use, probe)
+                    plain = existing_join(prev, o, gap, shift_cache, scroll_share, usual, use, probe)
                     if probe.decisions:
                         links, tj, probed = plain, None, True
                         A.decisions.extend(probe.decisions)
@@ -697,7 +832,18 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
                         resolved = tj[1] != "still?"
                     A.decisions.append(Decision(o.t0, "join", tj[1].replace("?", ""), [], "track", resolved))
                 elif not probed:
-                    links = existing_join(prev, o, gap, shift_cache, scroll_share, use, A)
+                    links = existing_join(prev, o, gap, shift_cache, scroll_share, usual, use, A)
+                pj = playhead_join(prev, o, beats.get(o.seg), gap) if not links and tj is None else None
+                if pj is not None:
+                    links, continues, edge = pj
+                    # A first cell unlike the cut measure is still the next page unless it opens a run of measures
+                    # shown before: then the video may have cut back to the opening
+                    resolved = (continues or len(o.cells) < 2
+                                or find_run(A.slots, o.cells[:4], gap, o.index) is None)
+                    A.decisions.append(Decision(o.t0, "join", f"playhead {sorted(links.items())}",
+                                                ["edge"] if edge else [], "track", resolved))
+                    if edge:
+                        A.edge_joins.append((prev.index, o.index))
             for i, j in links.items():
                 slot_of[i] = prev_slots[j]
             A.view_links[o.index] = set(links)
@@ -710,6 +856,11 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
                 del A.slots[slots_before:]
                 A.seen_segments, A.segment_starts = seen_before, starts_before
                 fold_view(o, slot_of, prev_slots, A, fold_unresolved)
+            if (o.restarted and not links and len(A.decisions) == decisions_before
+                    and not any(d.kind == "join" and not d.resolved for d in A.decisions[joins_before:])):
+                # A page the playhead started over that nothing tied to the music or folded is printed as new music,
+                # though it may be the page before played again
+                A.decisions.append(Decision(o.t0, "join", "new", ["played again"], "restart", False))
             if "numbers" in use:
                 carry_numbers(slot_of, A)
         A.view_slots[o.index] = list(slot_of)
@@ -768,7 +919,9 @@ def place_numbered(o, slot_of, A, prev, prev_slots, gap, seg_of) -> None:
             sid = None
         if sid is None and prev is not None:
             # The view before may have had no readable numbers; a measure it showed takes this number
-            for pc, ps in zip(prev.cells, prev_slots):
+            for j, (pc, ps) in enumerate(zip(prev.cells, prev_slots)):
+                if read_elsewhere(prev, j, c.number):
+                    continue
                 if ps is not None and A.slots[ps].number is None and same_cell(pc, c, gap):
                     sid = ps
                     A.slots[ps].number = c.number
@@ -782,6 +935,14 @@ def place_numbered(o, slot_of, A, prev, prev_slots, gap, seg_of) -> None:
         slot_of[i] = sid
     if replayed:
         A.decisions.append(Decision(o.t0, "fold", "fold", ["new"], "numbers", True))
+
+
+def read_elsewhere(o, j, number: int) -> bool:
+    """True when a number read on view o's cells says its cell j holds another measure than `number`. Such a view had
+    too few reads to be numbered, but a look-alike page can't lend its numbers against one it did read."""
+    # A read far off is a misread, such as one digit or a fret number
+    return any(c.read is not None and 0 < abs(c.read - i + j - number) <= BORROW_CONFLICT
+               for i, c in enumerate(o.cells))
 
 
 def switched_part(o, A, by_number, prev, prev_slots, gap, seg_of) -> bool:

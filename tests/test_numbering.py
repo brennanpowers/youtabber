@@ -1,6 +1,7 @@
 import numpy as np
 
-from youtabber.assemble import Obs, assemble, number_views
+from youtabber import assemble as assemble_module
+from youtabber.assemble import Obs, assemble, number_views, read_elsewhere
 from youtabber.parse import Cell
 
 
@@ -155,3 +156,52 @@ def test_a_screen_shown_again_after_the_playhead_jumped_back_is_an_unresolved_fo
     assert main.view_slots[1] == [4, 5, 6, 7] and len(main.unresolved_folds) == 1
     folded = assemble(obs, 10.0, True, {"numbers", "playhead", "navigation"}, lambda o: [])
     assert folded.view_slots[1] == [0, 1, 2, 3]
+
+
+def test_a_read_a_few_measures_off_says_a_cell_holds_another_measure():
+    o = read_view(0, run("a", 6, 8), [None, 7, None])
+    o.cells[1].read = 7
+    assert read_elsewhere(o, 0, 3) is True
+    assert read_elsewhere(o, 0, 6) is False
+    # A read far off is a misread
+    assert read_elsewhere(o, 0, 30) is False
+
+
+def test_a_look_alike_page_with_a_read_against_them_does_not_take_the_next_screens_numbers():
+    # The first page repeats the riff of measures 1-3 but reads 7 over its second measure: it is another page of it
+    first = view(0, run("a", 1, 3))
+    for c in first.cells:
+        c.number = None
+    first.cells[1].read = 7
+    A = assemble([first, view(1, run("a", 1, 3))], 10.0, False, {"numbers"}, lambda o: [])
+    assert A.view_slots[1] == [3, 4, 5]
+    assert [A.slots[s].number for s in A.view_slots[0]] == [None, None, None]
+
+
+def test_a_start_voted_by_two_misreads_is_dropped_when_another_read_carries_on_from_the_neighbours(monkeypatch):
+    # The third screen's reads 1 and 2 vote start 1, while its read 110 continues the screen before
+    shown = [[100, 101, 102, 103], [104, 105, 106, 107], [1, 2, None, None, 110, None], [111, 112, 113],
+             [114, 115, 116]]
+    obs = [read_view(i, run("a", 1, len(s)), s) for i, s in enumerate(shown)]
+    number_views(obs, lambda crop: int(crop[0, 0]))
+    assert [o.start for o in obs] == [100, 104, None, 111, 114]
+    assert [c.number for c in obs[2].cells] == [None] * 6
+    monkeypatch.setattr(assemble_module, "fits_neighbours", lambda obs, k: True)
+    number_views(obs, lambda crop: int(crop[0, 0]))
+    assert [o.start for o in obs] == [100, 104, 1, 111, 114]
+
+
+def test_a_start_with_a_missed_barline_keeps_its_start():
+    # A missed barline puts a read one measure off the count; each screen shows its own measures, so none borrows
+    for shown in ([[1, 2, 4], [5, 6, 7, 8], [9, 10, 11, 12]],
+                  [[1, 2, 4], [5, 6, 8], [9, 10, 12], [13, 14, 16], [17, 18, 20]]):
+        obs = [read_view(i, run("a", s[0], s[0] + len(s) - 1), s) for i, s in enumerate(shown)]
+        number_views(obs, lambda crop: int(crop[0, 0]))
+        assert [o.start for o in obs] == [s[0] for s in shown], shown
+
+
+def test_a_repeated_screen_keeps_its_start():
+    shown = [[1, 2, 3, 4], [5, 6, 7, 8], [5, 6, 7, 8], [9, 10, 11, 12]]
+    obs = [read_view(i, run("a", 1, 4), s) for i, s in enumerate(shown)]
+    number_views(obs, lambda crop: int(crop[0, 0]))
+    assert [o.start for o in obs] == [1, 5, 5, 9]
