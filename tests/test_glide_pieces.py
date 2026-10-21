@@ -197,3 +197,35 @@ def test_a_counter_number_naming_the_piece_before_takes_the_same_fold_check():
     A = counted_pieces([3, 4], [3, 4])
     assert len(A.slots) == 4 and A.view_slots[1] == [2, 3]
     assert [d.kind for d in A.decisions] == ["fold"]
+
+
+def glide_view(index, seg, t0, patterns):
+    """A glided view starting at `t0` whose cells hold the music of `patterns`."""
+    cells = []
+    for i, p in enumerate(patterns):
+        ink = music("a", p)
+        cells.append(Cell(index, 0, i, 200 * i, 200 * i + 200, "full", ink, np.zeros_like(ink), 0, gap=10.0,
+                          mid_y=30.0, tint=np.zeros_like(ink), glided=True))
+    o = Obs(index, t0, t0 + 10.0, cells, [], seg, (0, 0))
+    o.mosaic = FakeMosaic()
+    return o
+
+
+def test_a_replayed_glide_read_in_two_pieces_folds_both_pieces():
+    first_pass = glide_view(0, 0, 0.0, [1, 2, 3, 4, 5, 6, 7, 8])
+    # After a break the song plays again: piece 1 shows bars 1-4, the panel is redrawn, piece 2 shows bars 5-8
+    piece1 = glide_view(1, 1, 30.0, [1, 2, 3, 4])
+    piece2 = glide_view(2, 1, 40.0, [5, 6, 7, 8])
+    piece2.move = track.Move("glide")
+    piece1.last_piece = piece2.first_piece = False
+    A = assemble([first_pass, piece1, piece2], 10.0, False, USE | {"navigation"}, lambda o: [])
+    assert A.view_slots[1] == [0, 1, 2, 3], decisions(A)
+    assert A.view_slots[2] == [4, 5, 6, 7], decisions(A)
+    assert len(A.slots) == 8
+
+
+def test_a_replayed_glide_read_in_one_piece_folds():
+    first_pass = glide_view(0, 0, 0.0, [1, 2, 3, 4, 5, 6, 7, 8])
+    replay = glide_view(1, 1, 30.0, [1, 2, 3, 4, 5, 6, 7, 8])
+    A = assemble([first_pass, replay], 10.0, False, USE | {"navigation"}, lambda o: [])
+    assert A.view_slots[1] == [0, 1, 2, 3, 4, 5, 6, 7], decisions(A)

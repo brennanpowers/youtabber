@@ -85,6 +85,28 @@ def test_a_second_part_that_seldom_holds_still_is_left_out_without_refusing_the_
     assert [n.kind for n in r.notices if n.kind == "parts"] == ["parts"]
 
 
+def test_a_second_part_that_glides_but_cant_be_put_together_is_left_out_without_refusing_the_video(monkeypatch):
+    from youtabber.parts import Part
+    seg = Segment(0.0, 30.0, 10.0, "dark", paper=np.array([255.0, 255.0, 255.0]), x1=640, y1=360)
+    monkeypatch.setattr(pipeline, "probe", lambda path: VideoInfo(640, 360, 30.0))
+    monkeypatch.setattr(pipeline, "scan", lambda path, w, h, region=None, progress=None: ([seg], {}, []))
+    monkeypatch.setattr(pipeline, "text_tab_shown", lambda path: False)
+    monkeypatch.setattr(pipeline, "find_parts", lambda *a: [Part(0, 0, (20, 160), "band", {}, 30.0),
+                                                           Part(1, 0, (200, 340), "band", {}, 29.0)])
+    # The upper band holds still; the lower one glides, and no mosaic can be built from it
+    gliding = iter([False, True])
+    monkeypatch.setattr(glide, "glides", lambda *a: next(gliding))
+    monkeypatch.setattr(pipeline, "first_thresholds", lambda *a: (128.0, 230.0))
+    monkeypatch.setattr(pipeline, "glide_pieces", lambda *a: ([], None))
+    monkeypatch.setattr(pipeline, "views_in", lambda *a, **kw: ([still_view(0.0, 30.0)], 128.0, 230.0))
+    r = pipeline.read(Path("unused.mp4"))
+    assert r.fail_reason != "check_failed"
+    assert r.views and all(o.part == 0 for o in r.views)
+    assert [n.text for n in r.notices if n.kind == "parts"] == [
+        "Another part of the tab shows at 0:00-0:30, but it scrolls smoothly and its moving band could not be put "
+        "together, so it isn't printed."]
+
+
 def test_the_main_part_holding_still_too_little_still_refuses_the_video(monkeypatch):
     # The lower band is seen longest, so it is the main part
     r = two_bands(monkeypatch, (29.0, 30.0))

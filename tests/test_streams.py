@@ -1,12 +1,13 @@
 from types import SimpleNamespace
 
 import numpy as np
+from test_check import FakeMosaic
 
 from youtabber.assemble import Assembly, Decision, Obs, Slot, assemble
 from youtabber.parse import Cell
 from youtabber.parts import Part
-from youtabber.pipeline import (Measure, first_shown, join_notices, joined, number_streams, part_notices, part_pairs,
-                                stream_number_checks)
+from youtabber.pipeline import (Measure, first_shown, join_notices, joined, number_streams, on_screen, part_notices,
+                                part_pairs, stream_number_checks)
 
 
 def still(index: int, part: int, seg: int = 0) -> Obs:
@@ -40,7 +41,8 @@ def placed(view_slots: dict[int, list[int]], obs: list[Obs]) -> Assembly:
     for v, sl in view_slots.items():
         for s in sl:
             first.setdefault(s, v)
-    A = Assembly(slots=[Slot(s, None, first[s], None) for s in sorted(first)], view_slots=view_slots)
+    A = Assembly(slots=[Slot(s, obs[first[s]].cells[view_slots[first[s]].index(s)], first[s], None)
+                        for s in sorted(first)], view_slots=view_slots)
     A.order = [s.id for s in A.slots]
     A.sightings = {s.id: [(s.obs, obs[s.obs].cells[view_slots[s.obs].index(s.id)])] for s in A.slots}
     return A
@@ -105,6 +107,29 @@ def test_views_further_apart_than_a_page_turn_keep_their_own_start():
     assert first_shown(placed({0: [0, 1, 2], 1: [1, 2, 3]}, obs), obs, CROP)[3] == 6.5
 
 
+def test_a_glided_measure_prints_by_when_its_start_reached_the_play_column():
+    # A glide piece of part 0 plays from 0 to 100 s, its measures reaching the play column at 10, 50 and 90 s; part 1
+    # shows one still screen at 50-55 s
+    glide = screen(0, 0.0, 100.0, [(1000, 1400), (5000, 5400), (9000, 9400)])
+    glide.mosaic = FakeMosaic()
+    obs = [glide, screen(1, 50.0, 55.0, THREE, part=1)]
+    out = joined([placed({0: [0, 1, 2]}, obs), placed({1: [0, 1, 2]}, obs)], obs, {0: 100, 1: 600},
+                 {0: 1200, 1: 1200}, [0, 1])
+    assert out.order == [0, 1, 3, 4, 5, 2]
+
+
+def test_a_second_glide_piece_times_its_first_measure_by_its_own_mosaic():
+    # Two pieces of one glide: 0-50 s (measures reach the play column at 10 and 30 s) and 50-100 s (at 60 and 90 s).
+    # The redraw cut a narrow tail cell off the first piece, which looks like a page turn but isn't one
+    p = screen(0, 0.0, 50.0, [(1000, 1400), (3000, 3400)])
+    o = screen(1, 50.0, 100.0, [(6000, 6400), (9000, 9400)])
+    for v in (p, o):
+        v.mosaic = FakeMosaic()
+    ink = np.zeros((10, 10), bool)
+    p.all_cells = p.cells + [Cell(0, 0, 2, 4800, 4900, "tail", ink, ink, 0)]
+    assert first_shown(placed({0: [0, 1], 1: [2, 3]}, [p, o]), [p, o], {0: 10000})[2] == 60.0
+
+
 def test_a_part_beside_the_main_one_misses_no_numbers_from_before_it_came_on_screen():
     view = screen(0, 61.5, 66.0, THREE, part=1)
     for stream, warned in ((1, False), (0, True)):
@@ -113,6 +138,14 @@ def test_a_part_beside_the_main_one_misses_no_numbers_from_before_it_came_on_scr
                    for i in range(3)]
         kinds = [w["kind"] for w in stream_number_checks(stream, primary, [part], [view], 100.0)]
         assert ("numbers_start" in kinds) == warned, stream
+
+
+def test_skipped_numbers_are_pointed_out_only_when_the_part_stayed_on_screen_through_the_skip():
+    w = {"kind": "numbers_skipped", "t0": 10.0, "t1": 14.0}
+    assert on_screen(w, [10.0 + 0.5 * k for k in range(9)], 0.0)
+    # Off screen for 4 s, longer than a page turn
+    assert not on_screen(w, [10.0, 14.0], 0.0)
+
 
 def music(part: str, number: int) -> np.ndarray:
     """Ink of one measure, different for each part and measure."""
@@ -144,7 +177,10 @@ def test_two_streams_shown_at_once_are_numbered_and_placed_apart():
     by_stream = {k: assemble(views, 10.0, False, {"numbers"}, lambda o: []) for k, views in stream_obs.items()}
     for k, A in by_stream.items():
         assert [s.number for s in A.slots] == [1, 2, 3, 4]
-        assert all(obs[vi].stream == k for sightings in A.sightings.values() for vi, _ in sightings)
+    out = joined([by_stream[0], by_stream[1]], obs, {0: 0, 1: 100}, {0: 1200, 1: 1200}, [0, 1])
+    assert out.stream_orders == {0: [0, 1, 2, 3], 1: [4, 5, 6, 7]}
+    assert [s.stream for s in out.slots] == [0, 0, 0, 0, 1, 1, 1, 1]
+    assert all(obs[s.obs].stream == s.stream for s in out.slots)
 
 
 def two_parts(seg: int, t: float, first: int) -> tuple[list[Part], list[Obs]]:

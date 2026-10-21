@@ -106,7 +106,8 @@ def find_parts(path: Path, seg, si: int, found: dict, scan_step: float) -> list[
 
 def stream_of(part: Part, seg_parts: list[Part]) -> int:
     """The stream a part joins: 0 for the segment's longest-seen part (the first one on a tie), else its own.
-    Part ids are unique in the video, so streams of different parts never collide."""
+    Part ids are unique in the video, as `read` numbers every part by its place in the video's list before calling
+    this, so streams of different parts never collide."""
     main = max(seg_parts, key=lambda p: p.seen)
     return 0 if part is main else 1 + part.id
 

@@ -194,7 +194,8 @@ def number_views(obs: list[Obs], read) -> str:
 
 def fits_neighbours(obs: list[Obs], k: int) -> bool:
     """False when view k's start carries on from neither the nearest numbered view before nor after it in its layout,
-    while a number read on one of its own cells does: the start was voted by misreads."""
+    while a number read on one of its own cells does: the start was voted by misreads. A read within CONFLICT_SPAN
+    of the start doesn't count."""
     o = obs[k]
     prev = next((obs[m] for m in range(k - 1, -1, -1) if obs[m].seg == o.seg and obs[m].start is not None), None)
     nxt = next((obs[m] for m in range(k + 1, len(obs)) if obs[m].seg == o.seg and obs[m].start is not None), None)
@@ -365,8 +366,8 @@ def choose_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float
 
     The playhead decides when it was seen at both ends: after a scroll it carries on from where it was,
     which in o's coordinates is (where it was in p) - dx. Next, in a segment whose band was seen sliding by
-    about `usual` px, the shift nearest that is taken. Without either, a segment where nearly every pair
-    lines up is taken to scroll.
+    about `usual` px, the shift nearest that is taken, unless the slide drawn between the two views lies within
+    a gap of another of the shifts. Without either, a segment where nearly every pair lines up is taken to scroll.
     """
     if "playhead" in use and tracked(p) and tracked(o):
         a, b = playhead_at(p, at_start=False), playhead_at(o, at_start=True)
@@ -737,12 +738,13 @@ def playhead_join(p: Obs, o: Obs, beat: float | None, gap: float) -> tuple[dict[
         return None
     # A cell cut by the page edge is narrower than a measure; a whole last measure that only lost its barline isn't
     widths = [c.x1 - c.x0 for c in p.cells if c.kind == "full"]
-    share = (p.cells[k].x1 - p.cells[k].x0) / float(np.median(widths)) if widths else 0.0
-    if share >= CUT_WIDTH:
+    share = (p.cells[k].x1 - p.cells[k].x0) / float(np.median(widths)) if widths else None
+    if share is not None and share >= CUT_WIDTH:
         return None
     # Only one sighting of a measure prints, so when o's first cell starts mid-measure at the page edge the notes
-    # of whichever piece doesn't print are lost
-    edge = (share >= EDGE_WIDTH or (not p.cells[e].complete and played >= EDGE_DWELL * beat)
+    # of whichever piece doesn't print may be lost. A page with no whole measure can't size the cut one, so it
+    # may have been whole
+    edge = (share is None or share >= EDGE_WIDTH or (not p.cells[e].complete and played >= EDGE_DWELL * beat)
             or not o.cells[0].complete)
     # o's first cell shows the rest of the cut measure, or the whole measure drawn again a little differently
     continues = (same_part(p.cells[k], o.cells[0], gap, "left")
@@ -810,7 +812,8 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
         decided = len(A.decisions)
         slot_of: list = [None] * len(cells)
         # Consecutive glide pieces split their measures between them, so no measure is in both: a piece is not
-        # joined to the view before, and place_rest places it as new music
+        # joined to the view before, and it is placed as new music unless a replay is under way or its measures
+        # carry counter numbers
         joined = prev is not None and prev.seg == o.seg and not glided_on(o)
         tj = track_joins.get(o.index) if joined else None
         # Only the main reading clears numbers: a view the folded reading folded without evidence may sit on the
@@ -927,9 +930,10 @@ def carry_numbers(slot_of, A) -> None:
 def place_numbered(o, slot_of, A, prev, prev_slots, gap, seg_of) -> None:
     """Map each cell to the slot with its measure number, making slots for numbers not seen before.
 
-    A number seen on an earlier view (not the one just before, whose overlap is expected) means the video
-    went back: a replay with printed-number evidence, folded. When the music there differs, another part (a
-    second guitar track) reuses the numbers, and its measures get slots of their own.
+    A number seen on an earlier view (not the one just before, whose overlap is expected, unless o is a glide
+    piece, which shares no measure with the piece before) means the video went back: a replay with printed-number
+    evidence, folded. When the music there differs, another part (a second guitar track) reuses the numbers, and
+    its measures get slots of their own.
 
     Glided measures fold a run at a time: a run whose numbers were seen before folds only when at least half its
     measures look like the ones they fold onto. Otherwise its numbers are taken as misread (a counter can drop a
@@ -1150,7 +1154,8 @@ def align_glide(o, slot_of, i0, j0, A, gap, basis: str = "glide_alignment") -> N
     for k in range(last + 1, len(cells)):
         slot_of[i0 + k] = new_slot(A, cells[k], o)
     A.decisions.append(Decision(o.t0, "fold", "fold", ["new"], f"{basis}:{len(pairs)}/{len(cells)}", True))
-    A.replay_next = None
+    # A glide read in pieces carries its replay on into the next piece, from the slot after the last one aligned
+    A.replay_next = pairs[-1][1] + 1 if pairs and not o.last_piece else None
 
 
 def glide_restart(o, slot_of, A, gap, gap_before) -> bool:

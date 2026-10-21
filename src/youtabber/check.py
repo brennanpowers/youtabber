@@ -53,7 +53,7 @@ def possible_duplicates(A, obs, gap: float) -> list[dict]:
 
 
 def dwell(obs, A) -> list[dict]:
-    """Screens held much longer per measure than usual, or showing tab but no measure at all. `A` is the main
+    """Screens held much longer per measure than usual, or showing tab but no measure at all. `A` is the stream's
     assembly, whose slots show which views scrolled on to new measures."""
     rates = [(o.t1 - o.t0) / len(o.cells) for o in obs if o.cells]
     if not rates:
@@ -194,8 +194,8 @@ def glide_fade(o, step: float) -> list[dict]:
     if m.until is None or not m.until - faded > step > 0 or m.last_move() != len(m.times) - 1:
         return []
     return [{"t0": round(faded, 2), "t1": round(m.until, 2), "kind": "glide_end",
-             "text": "The picture faded out before this smooth scroll ended, so the last measures are placed by the "
-                     "scroll's speed; check them."}]
+             "text": "The picture faded out while this smooth scroll was still moving, so the last measures are "
+                     "placed by its last speed, which is wrong if it stopped during the fade; check them."}]
 
 
 # Speed changes of a glide that no vertical line confirms, this close in play time, are one stretch
@@ -295,8 +295,8 @@ def redraw_gaps(obs) -> list[dict]:
         if typical > 0 and tb - ta > GAP_RATIO * typical:
             out.append({"t0": round(min(ta, b.t0), 2), "t1": round(max(tb, b.t0), 2), "kind": "glide_gap",
                         "text": f"The tab panel was redrawn at {fmt(b.t0)} during the smooth scroll, and playback "
-                                f"takes {tb - ta:.1f} s from the last measure before it to the first after it; "
-                                f"measures may be missing there."})
+                                f"takes {tb - ta:.1f} s from the last measure drawn before it (played at {fmt(ta)}) to "
+                                f"the first drawn after it (at {fmt(tb)}); measures may be missing there."})
     return out
 
 

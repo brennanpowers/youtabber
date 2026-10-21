@@ -196,9 +196,8 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
     reached = share_of(progress, "read", 0.0, info.duration)
     obs: list[Obs] = []
     gaps = []
-    # (part id, segment start, segment end, seconds held still, seconds shown) of each part left out for holding
-    # still too little
-    dropped: list[tuple[int, float, float, float, float]] = []
+    # (segment start, segment end, why it isn't printed) of each part other than the main one that can't be read
+    dropped: list[tuple[float, float, str]] = []
     # (from, to) of each stretch of a glide left unread after the tab panel was redrawn
     unread: list[tuple[float, float]] = []
     for si, seg in enumerate(segments):
@@ -223,6 +222,11 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
                 # The part's tab glides past a playhead instead of holding still: read it from mosaics
                 thr, fthr = first_thresholds(path, crop, seg, part_seed)
                 glided, stopped = glide_pieces(path, crop, seg, si, part_found, thr, fthr, len(obs))
+                if not glided and part.stream != 0:
+                    # Any other part is left out, so the main part still prints
+                    dropped.append((seg.t0, seg.t1, "it scrolls smoothly and its moving band could not be put "
+                                                    "together"))
+                    continue
                 if not glided:
                     return r.fail("check_failed", f"The tab scrolls smoothly from {fmt(seg.t0)} to {fmt(seg.t1)}, "
                                                   f"but the moving band could not be put together, so no PDF was "
@@ -249,7 +253,7 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
                                                   f"{held:.0f} of {shown:.0f} s and doesn't scroll smoothly either, so "
                                                   f"most of it can't be read; no PDF was written.")
                 # Any other part is left out, so the main part still prints
-                dropped.append((part.id, seg.t0, seg.t1, held, shown))
+                dropped.append((seg.t0, seg.t1, f"it holds still for only {held:.0f} of {shown:.0f} s"))
                 continue
             thr_of[part.id] = thr
             read_views += [(v, part, thr, fthr) for v in views]
@@ -291,8 +295,8 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
 
 
 def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, tell) -> Reading:
-    """Assemble the read views into measures, notices and the play path. `dropped` holds the parts left out for
-    holding still too little and `unread` the stretches of a glide left unread, as `read` lists them."""
+    """Assemble the read views into measures, notices and the play path. `dropped` holds the parts left out because
+    they can't be read and `unread` the stretches of a glide left unread, as `read` lists them."""
     tell("assemble", 0.0)
     gap = float(np.median(gaps))
     # A title card or photo laid over the first screen of a page adds marks the next screen doesn't have; the
@@ -391,10 +395,10 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
                                   f"The smooth scroll from {fmt(p0)} to {fmt(p1)} wasn't read after the tab panel was "
                                   f"redrawn; measures played there are missing.", True))
     notices += part_notices(r.parts, obs, primary)
-    for _, t0, t1, held, shown in dropped:
+    for t0, t1, why in dropped:
         notices.append(Notice(round(t0, 2), round(t1, 2), "parts",
-                              f"Another part of the tab shows at {fmt(t0)}-{fmt(t1)}, but it holds still for only "
-                              f"{held:.0f} of {shown:.0f} s, so it isn't printed.", True))
+                              f"Another part of the tab shows at {fmt(t0)}-{fmt(t1)}, but {why}, so it isn't "
+                              f"printed.", True))
     for o in obs:
         if o.mosaic is not None:
             m = o.mosaic
@@ -513,15 +517,16 @@ def readings(stream_obs: dict[int, list[Obs]], streams: list[int], obs: list[Obs
              words_of) -> tuple[list[Assembly], Assembly, Assembly | None]:
     """The main reading (each stream's assembly and the joined one), and the folded reading when the main one leaves
     folds unresolved."""
-    read = numbers_of(obs)
+    assigned = numbers_of(obs)
     by_stream = [assemble(stream_obs[k], gap, False, EVIDENCE, words_of) for k in streams]
     main = joined(by_stream, obs, place, right, streams)
     if not main.unresolved_folds:
         return by_stream, main, None
-    # The main reading clears numbers that a confirmed track join contradicts. The folded reading places its views
-    # by the numbers as read, and the main reading's numbers are put back for its measures and play path
+    # The main reading clears numbers that a confirmed track join contradicts. The folded reading starts from the
+    # numbers as read, before the main reading cleared any, and the main reading's numbers are put back afterwards
+    # for its measures and play path
     cleared = numbers_of(obs)
-    set_numbers(obs, read)
+    set_numbers(obs, assigned)
     folded = joined([assemble(stream_obs[k], gap, True, EVIDENCE, words_of) for k in streams], obs, place, right,
                     streams)
     set_numbers(obs, cleared)
@@ -583,12 +588,17 @@ def joined(assemblies: list[Assembly], obs: list[Obs], place: dict[int, float], 
 
 def first_shown(A: Assembly, obs: list[Obs], right: dict[int, float]) -> dict[int, float]:
     """When each slot first showed: the start of the view it was first read in, or of the part's view before when that
-    view showed its start at the right edge (`right`, part id -> crop column), cut too short to read."""
-    when = {s.id: obs[s.obs].t0 for s in A.slots}
+    view showed its start at the right edge (`right`, part id -> crop column), cut too short to read. A measure first
+    read in a glide mosaic showed by the time its start reached the play column, kept within its view."""
+    when = {}
+    for s in A.slots:
+        o = obs[s.obs]
+        when[s.id] = o.t0 if o.mosaic is None else min(o.t1, max(o.t0, o.mosaic.time_at(s.first.x0)))
     last: dict[int, Obs] = {}
     for o in sorted((obs[i] for i in A.view_slots), key=lambda o: o.t0):
         p, last[o.part] = last.get(o.part), o
-        if p is None or o.t0 - p.t1 > TURN_SECONDS or not p.cells:
+        # A glide view's slots are timed from its mosaic above
+        if p is None or o.mosaic is not None or o.t0 - p.t1 > TURN_SECONDS or not p.cells:
             continue
         sl = A.view_slots[o.index]
         shown = set(A.view_slots.get(p.index) or [])
@@ -643,7 +653,8 @@ def part_notices(parts: list[Part], obs: list[Obs], primary: list[Measure]) -> l
 
 
 def join_notices(A: Assembly, obs: list[Obs]) -> list[Notice]:
-    """A notice for each join left unresolved, from a second before the screen to its end."""
+    """A notice for each join left unresolved, from a second before the screen to its end. A view the playhead
+    started over reaches back to the start of its stream's view before."""
     notices = []
     for d in A.decisions:
         if not d.resolved and d.kind == "join":
@@ -880,10 +891,10 @@ def glide_pieces(path: Path, crop, seg: Segment, si: int, found, thr: float, fth
     screen. Where the panel is redrawn with the staffs at other heights, the next piece starts on the new rows.
     Consecutive pieces both show the screen at the redraw; each measure is kept in the piece it glided through.
     Every piece gets the bar counter's runs over the whole glide. Also gives the time reading stopped short of the
-    segment's end after a redraw, or None when it read to the end."""
+    segment's end after a redraw, or None when it read to the end or to within GLIDE_PIECE_SECONDS of it."""
     # The bar counter is read in a worker thread while the mosaics are built: ffmpeg and the OCR model run outside
-    # the GIL, so the two overlap. Leaving the with block waits for the worker, so it is told to stop first: on an
-    # error or Ctrl-C, or when no piece was read and its result isn't needed.
+    # the GIL, so the two overlap. Leaving the with block waits for the worker, so it is always told to stop first,
+    # which ends it early on an error or Ctrl-C, or when no piece was read and its result isn't needed.
     # The recognizer is loaded before the worker starts, as loading it from two threads at once isn't safe.
     ocr.engine()
     stop = threading.Event()

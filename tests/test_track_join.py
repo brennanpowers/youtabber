@@ -227,7 +227,6 @@ def test_with_no_usual_slide_a_jump_falls_back_on_the_segment_share():
     assert usual_pick(Move("slide", shifts=[400], drawn=[True], steps=5), usual=None) == (None, "prior", False)
 
 
-
 def played(o, *pts):
     """Set a view's playhead samples, (seconds after its start, x, y)."""
     o.playhead = [(o.t0 + t, x, y) for t, x, y in pts]
@@ -286,6 +285,16 @@ def test_a_cut_measure_played_long_is_joined_and_flagged_as_near_a_whole_one():
 
 def test_a_wide_cut_measure_is_joined_and_flagged_as_near_a_whole_one():
     assert playhead_join(*cut_pair(160, 9.0), 2.0, 10.0) == ({0: 3}, True, True)
+
+
+def test_a_page_with_no_whole_measure_joins_a_cut_measure_of_any_width_and_flags_it():
+    # A cut measure as wide as a whole one gives no join while the page shows whole measures to compare with
+    assert playhead_join(*cut_pair(196, 9.0), 2.0, 10.0) is None
+    for w in (120, 196):
+        # The page before shows only the end of bar 3, cut by its left edge, and bar 4 cut by its right edge
+        p, o = cut_pair(w, 9.0)
+        p.cells = [replace(p.cells[2], kind="lead", complete=False), p.cells[3]]
+        assert playhead_join(p, o, 2.0, 10.0) == ({0: 1}, True, True)
 
 
 def test_a_next_page_opening_with_other_music_is_joined_without_continuing_the_cut_measure():
@@ -347,14 +356,14 @@ def test_an_edge_notice_covers_the_view_the_joined_measure_prints_from():
     assert [(w.t0, w.t1) for w in edge_notices(A, [p, o, q], [shown])] == [(0.0, 30.0)]
 
 
-def restart_evidence(p_end: int, sliding: bool = True):
-    """Replay evidence for a cut from a page of bars 9-12, the playhead at x p_end at its end, to bars 1-4 with
-    the playhead on the first measure, in a segment that does or doesn't slide."""
+def restart_evidence(p_end: int | None, sliding: bool = True):
+    """Replay evidence for a cut from a page of bars 9-12, the playhead at x p_end at its end (unseen when None), to
+    bars 1-4 with the playhead on the first measure, in a segment that does or doesn't slide."""
     A = Assembly()
     A.sliding = {0: sliding}
     p, o = band_view(0, 9), band_view(1, 1)
     o.move = Move("cut")
-    played(p, (9.5, p_end, 30))
+    played(p, *([(9.5, p_end, 30)] if p_end is not None else []))
     played(o, (0.1, 10, 30))
     return replay_evidence(o, o.cells[:2], 0, A, 0.0, p, set(), lambda x: [])
 
@@ -365,6 +374,10 @@ def test_a_sliding_band_cut_from_its_last_measure_to_the_opening_restarts():
 
 def test_a_restart_cut_from_inside_the_page_folds_unresolved():
     assert restart_evidence(300) == (True, "track_restart", False)
+
+
+def test_a_restart_cut_with_the_playhead_unseen_on_the_page_before_folds_unresolved():
+    assert restart_evidence(None) == (True, "track_restart", False)
 
 
 def test_a_cut_back_to_the_opening_in_a_band_that_does_not_slide_is_no_restart():

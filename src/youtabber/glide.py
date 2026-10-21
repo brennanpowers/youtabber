@@ -36,8 +36,8 @@ START_MARKS, START_CHANGE = 2, 0.1
 # A staff line is a row whose median gray is this many levels below the rows LINE_HALF pixels above and below; a
 # frame needs MIN_LINES such lines to be checked, and more than MAX_LINES is a dark or busy frame
 LINE_DEPTH, LINE_HALF, MIN_LINES, MAX_LINES = 20, 3, 4, 20
-# The staff has moved when MOVED_FRAMES checked frames, with no steady frame between them, keep under half of its
-# lines as last seen
+# The staff has moved when MOVED_FRAMES checked frames within the last END_FRAMES frames, with no steady frame
+# between them, keep under half of its lines as last seen
 MOVED_FRAMES = 5
 # Mean change of the staff's ink, on a 0-1 scale, under which a frame is the one before shown again
 REPEATED_LEVEL = 0.01
