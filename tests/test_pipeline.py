@@ -74,3 +74,12 @@ def test_printed_measures_keep_every_string(case):
         o = r.views[m.view]
         pc = printcell.print_cell(o, m.cell, r.segments[o.seg])
         assert any(len(s.lines) == song.strings for s in find_staffs(pc.image)), f"measure at {m.t} lost a string"
+
+
+def test_views_carry_the_band_move(tmp_path):
+    video = tmp_path / "song.mp4"
+    write_video(Song(scroll=True, measures=20), video)
+    views = pipeline.read(video).views
+    assert len(views) > 1
+    assert views[0].move is None
+    assert all(o.move.kind in {"still", "slide", "cut", "unknown"} for o in views[1:])

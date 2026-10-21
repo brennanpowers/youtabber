@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 from youtabber.match import WIDTH_PX, WIDTH_SHARE, resemble, resemble_scaled, same, same_part
-from youtabber.observe import unmatched
+from youtabber.observe import WRAP_GAPS, unmatched
 
 # A gap with no tab at least this long before a re-shown first page means the song started over
 RESTART_GAP_SECONDS = 1.5
@@ -47,6 +47,15 @@ GLIDE_RESTART_SHARE = 0.6
 # A number read this many measures or fewer off its view's count points at a missed or extra barline
 CONFLICT_SPAN = 2
 NAV_WORDS = ("D.S", "DS.", "D.C", "DC.", "CODA", "FINE", "SEGNO")
+# Two views of a band that didn't move show the same music when at most this share of their marks finds no partner;
+# what is left is cursor residue
+STILL_MISMATCH = 0.2
+# A measured slide is checked on the two plates this many pixels either side of it
+SLIDE_REACH = 6
+# Over a slide the playhead carries on from where it was by at most this many typical measure widths
+CARRY_MEASURES = 1.5
+# ...and its two ends lie at most this many line gaps apart in height (a highlight rides up and down with the notes)
+CURSOR_DRIFT_GAPS = 5
 
 
 @dataclass
@@ -80,6 +89,9 @@ class Obs:
     systems: list = field(default_factory=list)   # the view's parsed systems, top to bottom
     print_rect: tuple = (0, 0, 0, 0)     # paper area to print from (x0, y0, x1, y1), crop coordinates
     number_conflicts: list = field(default_factory=list)   # (cell, number read) where the count gives another
+    move: object = None                  # how the band moved from the view before, measured on the frames between
+    track: list | None = None            # the playhead samples on the view's music, found when first asked for
+    restarted: bool = False              # the band held still while the playhead went back over the page
 
 
 @dataclass
@@ -182,16 +194,44 @@ def read_against(o: Obs, start: int) -> bool:
     return bool(off) and 0 not in off and any(abs(d) <= BORROW_CONFLICT for d in off)
 
 
+def playhead_track(o: Obs) -> list:
+    """The view's playhead samples that lie on its music: inside the panel and near its staffs, without a sample
+    that jumps away from both its neighbors (footage moving beside the panel)."""
+    if o.track is not None:
+        return o.track
+    if not o.cells:
+        o.track = []
+        return o.track
+    g = o.cells[0].gap
+    # Nothing is played right of the last measure; left of the first, a narrow measure may have been left out
+    x0, x1 = o.rect[0] - g, max(c.x1 for c in o.cells) + 2 * g
+    # From a line gap above a system's top staff to a few below its tab staff's middle
+    y0 = min(c.y0 + c.top_y for c in o.cells) - g
+    y1 = max(c.mid_y for c in o.cells) + 3 * g
+    pts = [(t, x, y) for t, x, y in o.playhead if x0 <= x <= x1 and y0 <= y <= y1]
+
+    def far(a, b):
+        return abs(a[1] - b[1]) > 4 * g or abs(a[2] - b[2]) > 2 * g
+    o.track = [q for k, q in enumerate(pts)
+               if not (0 < k < len(pts) - 1 and far(q, pts[k - 1]) and far(q, pts[k + 1])
+                       and not far(pts[k - 1], pts[k + 1]))
+               # A first or last sample away from the two next to it
+               and not (k == 0 and len(pts) >= 3 and far(q, pts[1]) and not far(pts[1], pts[2]))
+               and not (k == len(pts) - 1 and len(pts) >= 3 and far(q, pts[-2]) and not far(pts[-2], pts[-3]))]
+    return o.track
+
+
 def tracked(o: Obs) -> bool:
     """True when the playhead was found in most of a view's frames, so its ends can be trusted."""
-    return len(o.playhead) >= TRACKED_SHARE * max(o.frames, 1)
+    return len(playhead_track(o)) >= TRACKED_SHARE * max(o.frames, 1)
 
 
 def playhead_at(o: Obs, at_start: bool):
     """(x, y) of the playhead at the start or end of a view, if it was seen there."""
-    if not o.playhead:
+    track = playhead_track(o)
+    if not track:
         return None
-    t, x, y = o.playhead[0] if at_start else o.playhead[-1]
+    t, x, y = track[0] if at_start else track[-1]
     if (t - o.t0 if at_start else o.t1 - t) > PLAYHEAD_EDGE_SECONDS:
         return None
     return x, y
@@ -441,6 +481,163 @@ def replay_evidence(o, run, j, A, gap_before, prev, use, words_of) -> tuple[bool
     return False, "none", False
 
 
+def register(p: Obs, o: Obs, dx: int, gap: float, reach: int) -> tuple[int, float] | None:
+    """(shift, mismatch) of the best registration of o on p within `reach` pixels of shift dx, or None when the
+    two panels share too little music there."""
+    best = None
+    for d in range(dx - reach, dx + reach + 1):
+        lo, hi = max(p.rect[0], o.rect[0] + d), min(p.rect[2], o.rect[2] + d)
+        if hi - lo < MIN_OVERLAP_GAPS * gap:
+            continue
+        a = (p.tall & ~p.fixed)[:, lo:hi]
+        b = (o.tall & ~o.fixed)[:, lo - d:hi - d]
+        total = int(a.sum() + b.sum())
+        if total < 20 * gap:
+            continue
+        score = float(unmatched(a, b, 2).sum()) / total
+        if best is None or score < best[1]:
+            best = (d, score)
+    return best
+
+
+def still_links(p: Obs, o: Obs) -> dict[int, int]:
+    """For a band that didn't move, which cell of p each cell of o is: the one on the same staff over the same
+    columns."""
+    links = {}
+    for i, c in enumerate(o.cells):
+        for j, d in enumerate(p.cells):
+            ov = min(c.x1, d.x1) - max(c.x0, d.x0)
+            if abs(c.mid_y - d.mid_y) < c.gap and ov >= CELL_OVERLAP * min(c.x1 - c.x0, d.x1 - d.x0):
+                links[i] = j
+                break
+    return links
+
+
+def playhead_restarts(p: Obs, o: Obs, gap: float) -> bool | None:
+    """Whether the playhead went back over the page between the end of p and the start of o (up a system, or
+    back along one), or None when it wasn't seen at both."""
+    a, b = playhead_at(p, at_start=False), playhead_at(o, at_start=True)
+    if a is None or b is None:
+        return None
+    # A box or highlight cursor rides up and down a system with its notes; another system is further away
+    if b[1] < a[1] - 5 * gap:
+        return True
+    return abs(b[1] - a[1]) < 5 * gap and b[0] < a[0] - WRAP_GAPS * gap
+
+
+def track_join(p: Obs, o: Obs, gap: float, cands=()) -> tuple[dict[int, int], str] | None:
+    """(links, basis) when the frames between two views show how the band moved: a slide whose measured shift lines
+    the two plates up, or a band that held still while only a cursor moved. None when they don't. `cands` are the
+    shifts the plates register at (`scroll_shifts`). A basis ending in "?" was not confirmed by the playhead."""
+    m = o.move
+    if m is None or m.kind not in ("slide", "still") or p.band is None or o.band is None or p.band.shape != o.band.shape:
+        return None
+    if m.kind == "slide" and abs(m.shifts[0]) >= gap:
+        return slide_join(p, o, gap, cands) if p.single and o.single else None
+    r = register(p, o, 0, gap, 2)
+    if r is None or r[1] > STILL_MISMATCH:
+        return None
+    restart = playhead_restarts(p, o, gap)
+    # A view is cut where the playhead seemed to jump back; when its samples on the music carry on, it didn't
+    if o.wrapped and restart is not False:
+        return None
+    if restart:
+        # The same page, with the playhead starting over: played again, or a new page of the same riff
+        o.restarted = True
+        return None
+    return still_links(p, o), "still" if restart is not None else "still?"
+
+
+def slide_join(p: Obs, o: Obs, gap: float, cands) -> tuple[dict[int, int], str] | None:
+    """(links, "slide <dx>") when a measured slide lines the plates up and the playhead carries on across it at that
+    shift alone; "slide? <dx>" when the playhead wasn't seen at both ends, or is a box that stayed in one column.
+    None when the playhead contradicts every measured shift, or when another candidate fits it as well."""
+    m = o.move
+    a, b = playhead_at(p, at_start=False), playhead_at(o, at_start=True)
+    widths = [c.x1 - c.x0 for c in p.cells if c.kind == "full"] or [4 * gap]
+    reach = CARRY_MEASURES * float(np.median(widths))
+
+    def fits(dx):
+        # After a slide by dx the playhead carries on from where it was, in o's coordinates (where it was in p) - dx
+        return -gap <= (b[0] + dx) - a[0] <= reach and abs(b[1] - a[1]) < CURSOR_DRIFT_GAPS * gap
+    for d, drawn in list(zip(m.shifts, m.drawn))[:4]:
+        # One jump between two frames can read as a step back by the rest of the band's width
+        if d < 0 and not drawn:
+            continue
+        r = register(p, o, d, gap, SLIDE_REACH)
+        if r is None and drawn:
+            # Too little music left in common to check: a slide drawn in several steps is taken as measured
+            r = (d, 0.0)
+        if r is None or r[1] > SCROLL_MISMATCH or not keeps_widths(p, o, r[0]):
+            continue
+        dx = r[0]
+        if a is not None and b is not None:
+            if fits(dx):
+                # A riff that repeats lines up a period short or long too; when the playhead fits one of those as
+                # well, it doesn't tell them apart
+                if any(abs(c - dx) > gap and fits(c) for c, _ in cands):
+                    return None
+                return scroll_links(p, o, dx), f"slide {dx}"
+            if abs(b[0] - a[0]) <= gap:
+                # A box cursor can stay in one column while the band slides under it: the measure under it after the
+                # slide, found on p, is the one it was on or the next
+                e, q = cell_at(p, a), cell_at(p, (b[0] + dx, b[1]))
+                if e is not None and (q in (e, e + 1) or (q is None and e == len(p.cells) - 1
+                                                          and b[0] + dx > p.cells[-1].x0)):
+                    return scroll_links(p, o, dx), f"slide? {dx}"
+            continue
+        # Steps over a riff that repeats can each be measured a period short; without the playhead, only a slide
+        # drawn in several steps is taken, and only where the plates leave the join open
+        if drawn:
+            return scroll_links(p, o, dx), f"slide? {dx}"
+    return None
+
+
+def existing_join(prev, o, gap, shift_cache, scroll_share, use, A) -> dict:
+    """The join made without the band's measured movement: a registered shift, else an overlap of look-alike
+    cells. Its decisions go to A."""
+    links: dict = {}
+    options = []
+    shifts = shift_cache.get(o.index, [])
+    if shifts:
+        dx, basis, resolved = choose_shift(prev, o, shifts, scroll_share.get(o.seg, 0.0), use, gap)
+        if dx is not None:
+            links = scroll_links(prev, o, dx)
+            # A page shown again whole can line up with itself one measure on; a riff scrolled on by its
+            # own length shares at least two
+            if o.wrapped and len(links) < 2:
+                dx, links = None, {}
+        A.decisions.append(Decision(o.t0, "join", f"shift {dx}" if dx is not None else "page turn",
+                                    [f"shift {d}" for d, _ in shifts if d != dx]
+                                    + (["page turn"] if dx is not None else []), basis, resolved))
+    # A view that began where the playhead jumped back may be the page before shown again or a new page
+    # that looks like it, so an overlap with that page is no join; so is a still page the playhead started over
+    if not links and not o.wrapped and not o.restarted:
+        options = [(f"overlap {len(lk)}", lk) for lk in sequence_links(prev, o, gap)]
+    if options:
+        options.append(("none", {}))
+        n, basis, resolved = choose_join(prev, o, options, use)
+        links = options[n][1]
+        if len(options) >= 2:
+            A.decisions.append(Decision(o.t0, "join", options[n][0],
+                                        [lab for m, (lab, _) in enumerate(options) if m != n],
+                                        basis, resolved))
+    return links
+
+
+def move_decision(p: Obs, o: Obs, gap: float) -> Decision:
+    """A record of how the band moved between two views and how their plates line up at the measured shifts."""
+    m = o.move
+    notes = []
+    for d, drawn in list(zip(m.shifts, m.drawn))[:3]:
+        r = register(p, o, d, gap, SLIDE_REACH)
+        notes.append(f"{d}{'d' if drawn else ''}:{r[1]:.3f}" if r else f"{d}:-")
+    r0 = register(p, o, 0, gap, 2)
+    basis = (f"still {r0[1]:.3f}" if r0 else "still -") + f" restart={playhead_restarts(p, o, gap)}" \
+        + f" steps={m.steps} moves={[round(x) for x in m.moves]}"
+    return Decision(o.t0, "move", m.kind, notes, basis, True)
+
+
 def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], words_of) -> Assembly:
     """Place views into the score. `use` names the evidence allowed ("numbers", "playhead", "navigation");
     `fold_unresolved` says how to read a re-shown run with no evidence (the main reading prints it again)."""
@@ -459,6 +656,15 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
             if not o.wrapped:
                 pairs.setdefault(o.seg, []).append(bool(shift_cache[o.index]))
     scroll_share = {s: sum(v) / len(v) for s, v in pairs.items() if v}
+    # Joins decided by how the band moved between the two views
+    track_joins: dict = {}
+    for p, o in zip(obs, obs[1:]):
+        if p.seg == o.seg and p.cells and o.cells:
+            if o.move is not None:
+                A.decisions.append(move_decision(p, o, gap))
+            tj = track_join(p, o, gap, shift_cache[o.index])
+            if tj is not None:
+                track_joins[o.index] = tj
     for o in obs:
         cells = o.cells
         # Time without tab on screen before this view; a view with tab but no usable cells still counts
@@ -472,31 +678,26 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
         else:
             links: dict = {}
             if prev is not None and prev.seg == o.seg:
-                options = []
-                shifts = shift_cache.get(o.index, [])
-                if shifts:
-                    dx, basis, resolved = choose_shift(prev, o, shifts, scroll_share.get(o.seg, 0.0), use, gap)
-                    if dx is not None:
-                        links = scroll_links(prev, o, dx)
-                        # A page shown again whole can line up with itself one measure on; a riff scrolled on by its
-                        # own length shares at least two
-                        if o.wrapped and len(links) < 2:
-                            dx, links = None, {}
-                    A.decisions.append(Decision(o.t0, "join", f"shift {dx}" if dx is not None else "page turn",
-                                                [f"shift {d}" for d, _ in shifts if d != dx]
-                                                + (["page turn"] if dx is not None else []), basis, resolved))
-                # A view that began where the playhead jumped back may be the page before shown again or a new page
-                # that looks like it, so an overlap with that page is no join
-                if not links and not o.wrapped:
-                    options = [(f"overlap {len(lk)}", lk) for lk in sequence_links(prev, o, gap)]
-                if options:
-                    options.append(("none", {}))
-                    n, basis, resolved = choose_join(prev, o, options, use)
-                    links = options[n][1]
-                    if len(options) >= 2:
-                        A.decisions.append(Decision(o.t0, "join", options[n][0],
-                                                    [lab for m, (lab, _) in enumerate(options) if m != n],
-                                                    basis, resolved))
+                tj, probed = track_joins.get(o.index), False
+                if tj is not None and tj[1].startswith("slide?"):
+                    # A slide the playhead didn't confirm only settles a pair the plates and overlaps left open
+                    probe = Assembly()
+                    plain = existing_join(prev, o, gap, shift_cache, scroll_share, use, probe)
+                    if probe.decisions:
+                        links, tj, probed = plain, None, True
+                        A.decisions.extend(probe.decisions)
+                if tj is not None:
+                    links = tj[0]
+                    if tj[1].startswith("slide?"):
+                        # A slide drawn in several steps stands with no playhead seen; a box cursor that stayed in
+                        # one column only failed to contradict it
+                        resolved = playhead_at(prev, at_start=False) is None or playhead_at(o, at_start=True) is None
+                    else:
+                        # A band that held still with no playhead seen could also be a page flipped to the same riff
+                        resolved = tj[1] != "still?"
+                    A.decisions.append(Decision(o.t0, "join", tj[1].replace("?", ""), [], "track", resolved))
+                elif not probed:
+                    links = existing_join(prev, o, gap, shift_cache, scroll_share, use, A)
             for i, j in links.items():
                 slot_of[i] = prev_slots[j]
             A.view_links[o.index] = set(links)

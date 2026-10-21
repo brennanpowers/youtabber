@@ -6,7 +6,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from youtabber import glide, ocr
+from youtabber import glide, ocr, track
 from youtabber.assemble import Assembly, Obs, assemble, cell_at, number_views
 from youtabber.check import (dwell, empty_stretches, fmt, glide_gaps, glide_number_gaps, glide_repeats, layout_changes,
                              number_checks, numbers_against_cells, odd_widths, pieces, possible_duplicates,
@@ -214,9 +214,11 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
                                           f"{seg.t1 - seg.t0:.0f} s and doesn't scroll smoothly either, so most of it "
                                           f"can't be read; no PDF was written.")
         still = []
+        mine = []
         for v in views:
             o = plate_obs(v, seg, si, thr, fthr, len(obs))
             obs.append(o)
+            mine.append(o)
             # The reported panel is the print area: the print rect's columns, its systems' bands' rows
             x0, y0, x1, y1 = v.print_rect
             if o.systems:
@@ -235,8 +237,16 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
             still[-1]["t1"] = round(min(after, max(still[-1]["t1"], seg.t1 + 0.5 / SCAN_FPS)), 2)
         r.panels += still
         gaps.append(seg.gap)
+        # How the band moved between each pair of views, read from the frames between them
+        for p, o in track.pairs(mine, key=lambda v: v.seg):
+            o.move = view_move(path, crop, seg, p, o, thr)
     r.views = obs
     tell("read", 1.0)
+    return finish(path, info, r, segments, scrolls, clips, obs, gaps, tell)
+
+
+def finish(path, info, r, segments, scrolls, clips, obs, gaps, tell) -> Reading:
+    """Assemble the read views into measures, notices and the play path."""
     tell("assemble", 0.0)
     gap = float(np.median(gaps))
     # A title card or photo laid over the first screen of a page adds marks the next screen doesn't have; the
@@ -550,6 +560,16 @@ def first_thresholds(path: Path, crop, seg: Segment, seed_at) -> tuple[float, fl
             g = to_gray(f, seg.polarity)
             return ink_threshold(g[max(0, seed[1]):seed[3], max(0, seed[0]):seed[2]], seg.paper, seg.polarity)
     return 128.0, 230.0
+
+
+def view_move(path: Path, crop, seg: Segment, p: Obs, o: Obs, thr: float):
+    """How the band moved from still view p to still view o: measured on the systems' rows and the panels'
+    columns, from p's last frame to o's first."""
+    bands = [ps.band for ps in p.systems + o.systems]
+    rows = (min(b[0] for b in bands), max(b[1] for b in bands)) if bands else (min(p.rect[1], o.rect[1]),
+                                                                              max(p.rect[3], o.rect[3]))
+    cols = (min(p.rect[0], o.rect[0]), max(p.rect[2], o.rect[2]))
+    return track.transition(path, crop, rows, cols, seg.polarity, thr, seg.gap, p.t1 - 1 / OBS_FPS, o.t0)
 
 
 def plate_obs(v, seg: Segment, si: int, thr: float, fthr: float, index: int) -> Obs:
