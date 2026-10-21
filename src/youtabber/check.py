@@ -1,7 +1,9 @@
 """Checks on the assembled score that turn likely mistakes into warnings next to the measures concerned."""
 import numpy as np
 
+from youtabber.assemble import glided_on
 from youtabber.match import resemble, resemble_scaled
+from youtabber.track import pairs
 
 # Two cells this alike (share of unmatched ink) that were still placed in different slots may be one measure
 DUP_RESEMBLE = 0.03
@@ -181,6 +183,120 @@ def glide_gaps(o) -> list[dict]:
             out.append({"t0": round(times[k], 2), "t1": round(times[k + 1], 2), "kind": "glide_gap",
                         "text": f"Playback takes {v:.1f} s from the measure at {fmt(times[k])} to the next, about "
                                 f"{v / med:.1f} measures' time; measures may be missing there."})
+    return out
+
+
+def glide_fade(o, step: float) -> list[dict]:
+    """The picture faded out while the band still moved: the measures after the last clear frame get their play
+    times from the band's last speed. `step` is the usual play time from one of the view's measures to the next."""
+    m = o.mosaic
+    faded = float(m.times[-1])
+    if m.until is None or not m.until - faded > step > 0 or m.last_move() != len(m.times) - 1:
+        return []
+    return [{"t0": round(faded, 2), "t1": round(m.until, 2), "kind": "glide_end",
+             "text": "The picture faded out before this smooth scroll ended, so the last measures are placed by the "
+                     "scroll's speed; check them."}]
+
+
+# Speed changes of a glide that no vertical line confirms, this close in play time, are one stretch
+STEP_JOIN_SECONDS = 2.0
+# A glide piece whose cells cover less than this share of its mosaic has lost its tab staff somewhere
+FOUND_SHARE = 0.8
+# A cell at a piece boundary narrower than this share of the typical measure was likely cut by the boundary
+PIECE_CUT_SHARE = 0.5
+
+
+def glide_steps(o) -> list[dict]:
+    """Stretches of a glide where its speed changed sharply with no barline or stem to confirm the new step:
+    columns may have been dropped there (a measure cut short, two merged) or doubled."""
+    times = sorted(min(max(o.mosaic.time_at(x), o.t0), o.t1) for x in o.mosaic.doubtful)
+    out, run = [], []
+    for t in times + [None]:
+        if run and (t is None or t - run[-1] > STEP_JOIN_SECONDS):
+            a, b = max(run[0] - 1, o.t0), min(run[-1] + 1, o.t1)
+            out.append({"t0": round(a, 2), "t1": round(b, 2), "kind": "glide_step",
+                        "text": f"The smooth scroll changed speed sharply at {fmt(a)}-{fmt(b)} where no barline "
+                                f"confirms it; a measure there may be cut short, joined to the next or printed "
+                                f"twice."})
+            run = []
+        if t is not None:
+            run.append(t)
+    return out
+
+
+def glide_rows(o) -> list[dict]:
+    """Stretches of a glide piece with no measure parsed, when the piece's measures cover less than FOUND_SHARE of
+    its mosaic: the tab staff likely moved there without the piece ending."""
+    spans = sorted((c.x0, c.x1) for ps in o.systems for c in ps.cells)
+    width = o.mosaic.image.shape[1]
+    covered, reach, holes = 0, 0, []
+    for x0, x1 in spans:
+        if x0 > reach:
+            holes.append((reach, x0))
+        covered += max(0, x1 - max(x0, reach))
+        reach = max(reach, x1)
+    holes.append((reach, width))
+    if not spans or covered >= FOUND_SHARE * width:
+        return []
+    typical = float(np.median([x1 - x0 for x0, x1 in spans]))
+    out = []
+    for a, b in holes:
+        if b - a < typical:
+            continue
+        ta, tb = o.mosaic.time_at(a), o.mosaic.time_at(b)
+        for p0, p1 in pieces(max(ta, o.t0), max(min(tb, o.t1), ta + 1)):
+            out.append({"t0": round(p0, 2), "t1": round(p1, 2), "kind": "glide_rows",
+                        "text": f"No tab staff was found in the smooth scroll at {fmt(p0)}-{fmt(p1)}; measures "
+                                f"played there may be missing."})
+    return out
+
+
+def glide_piece_pairs(obs) -> list[tuple]:
+    """Consecutive pieces of one glide: views of one part, the second carrying on the first."""
+    return [(a, b) for a, b in pairs(obs, key=lambda v: v.part) if glided_on(b)]
+
+
+def glide_piece_cuts(obs) -> list[dict]:
+    """Places where a glide is read in two pieces (the panel was redrawn) and a measure at the boundary is much
+    narrower than usual: the boundary may have cut one measure in two."""
+    out = []
+    for a, b in glide_piece_pairs(obs):
+        if not a.all_cells or not b.all_cells:
+            continue
+        widths = [c.x1 - c.x0 for c in a.all_cells + b.all_cells if c.kind == "full"]
+        if not widths:
+            continue
+        typical = float(np.median(widths))
+        last, first = a.all_cells[-1], b.all_cells[0]
+        if min(last.x1 - last.x0, first.x1 - first.x0) < PIECE_CUT_SHARE * typical:
+            ta = a.mosaic.time_at((last.x0 + last.x1) / 2)
+            tb = b.mosaic.time_at((first.x0 + first.x1) / 2)
+            out.append({"t0": round(min(ta, b.t0 - 1), 2), "t1": round(max(tb, b.t0 + 1), 2), "kind": "glide_piece",
+                        "text": f"The tab panel was redrawn at {fmt(b.t0)} during the smooth scroll, and a measure "
+                                f"there is narrower than usual; it may be printed in two parts or missing."})
+    return out
+
+
+def redraw_gaps(obs) -> list[dict]:
+    """Places where a glide is read in two pieces and playback takes much longer than usual from the last measure
+    before the redraw to the first after it: measures were likely lost at the redraw."""
+    out = []
+    for a, b in glide_piece_pairs(obs):
+        if not a.cells or not b.cells:
+            continue
+        times_a = [a.mosaic.time_at((c.x0 + c.x1) / 2) for c in a.cells]
+        times_b = [b.mosaic.time_at((c.x0 + c.x1) / 2) for c in b.cells]
+        # The usual step comes from the piece before, or the piece after when the one before has one measure
+        inside = times_a if len(times_a) > 1 else times_b
+        if len(inside) < 2:
+            continue
+        typical = float(np.median(np.diff(inside)))
+        ta, tb = times_a[-1], times_b[0]
+        if typical > 0 and tb - ta > GAP_RATIO * typical:
+            out.append({"t0": round(min(ta, b.t0), 2), "t1": round(max(tb, b.t0), 2), "kind": "glide_gap",
+                        "text": f"The tab panel was redrawn at {fmt(b.t0)} during the smooth scroll, and playback "
+                                f"takes {tb - ta:.1f} s from the last measure before it to the first after it; "
+                                f"measures may be missing there."})
     return out
 
 

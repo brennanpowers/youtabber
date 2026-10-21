@@ -108,6 +108,9 @@ class Obs:
     restarted: bool = False              # the band held still while the playhead went back over the page
     part: int = 0                        # id of the part it shows, its place in the reading's parts
     stream: int = 0                      # views of one stream are numbered and joined together
+    first_piece: bool = True             # a glide's first and last pieces hold its start and its end
+    last_piece: bool = True
+    counter: list = field(default_factory=list)   # (start, end, measure) runs of a bar counter shown with a glide
 
 
 @dataclass
@@ -772,7 +775,7 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
     shift_cache: dict = {}
     pairs: dict = {}
     for p, o in zip(obs, obs[1:]):
-        if p.seg == o.seg and p.cells and o.cells:
+        if p.seg == o.seg and p.cells and o.cells and not glided_on(o):
             shift_cache[o.index] = scroll_shifts(p, o, gap)
             # A view that began where the playhead jumped back says nothing about whether the band scrolls
             if not o.wrapped:
@@ -782,7 +785,7 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
     track_joins: dict = {}
     slides: dict = {}
     for p, o in zip(obs, obs[1:]):
-        if p.seg == o.seg and p.cells and o.cells:
+        if p.seg == o.seg and p.cells and o.cells and not glided_on(o):
             if o.move is not None:
                 A.decisions.append(move_decision(p, o, gap))
             tj = track_join(p, o, gap, shift_cache[o.index])
@@ -806,7 +809,10 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
             continue
         decided = len(A.decisions)
         slot_of: list = [None] * len(cells)
-        tj = track_joins.get(o.index) if prev is not None and prev.seg == o.seg else None
+        # Consecutive glide pieces split their measures between them, so no measure is in both: a piece is not
+        # joined to the view before, and place_rest places it as new music
+        joined = prev is not None and prev.seg == o.seg and not glided_on(o)
+        tj = track_joins.get(o.index) if joined else None
         # Only the main reading clears numbers: a view the folded reading folded without evidence may sit on the
         # wrong numbered measures
         if not fold_unresolved and tj is not None and "?" not in tj[1] and any(
@@ -821,7 +827,7 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
         else:
             links: dict = {}
             joins_before = len(A.decisions)
-            if prev is not None and prev.seg == o.seg:
+            if joined:
                 tj, probed = track_joins.get(o.index), False
                 if tj is not None and tj[1].startswith("slide?"):
                     # A slide the playhead didn't confirm only settles a pair the plates and overlaps left open
@@ -881,6 +887,11 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
             d.view = o.index
     A.order = [s.id for s in A.slots]
     return A
+
+
+def glided_on(o: Obs) -> bool:
+    """Whether a view is a glide piece that carries on the piece before."""
+    return o.move is not None and o.move.kind == "glide"
 
 
 def same_count(o: Obs, prev: Obs | None, prev_slots: list) -> bool:
@@ -1019,6 +1030,13 @@ def staff_moved(c, dy: int):
 
 def place_rest(o, slot_of, A, gap, gap_before, prev, use, words_of, fold_unresolved) -> None:
     """Place the cells the join with the previous view didn't explain."""
+    if glided_on(o) and A.replay_next is None:
+        # The band glided on from the piece before, so its measures are new music
+        for i, c in enumerate(o.cells):
+            if slot_of[i] is None:
+                slot_of[i] = new_slot(A, c, o)
+        A.decisions.append(Decision(o.t0, "join", "glide continues", [], "track", True))
+        return
     if all(s is None for s in slot_of) and glide_restart(o, slot_of, A, gap, gap_before):
         return
     i = 0

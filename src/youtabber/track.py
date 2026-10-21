@@ -28,7 +28,7 @@ MAX_DY_PX = 2.0
 
 @dataclass
 class Move:
-    kind: str                          # "still", "slide" or "cut"; "unknown" when the frames couldn't be read
+    kind: str                          # "still", "slide", "cut" or "glide"; "unknown" when the frames couldn't be read
     shifts: list[int] = field(default_factory=list)   # candidate content shifts for a slide, best guess first
     drawn: list[bool] = field(default_factory=list)   # per shift: reached in two or more steps the same way
     steps: int = 0

@@ -2,9 +2,12 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from youtabber.check import (dwell, empty_stretches, glide_gaps, glide_number_gaps, glide_repeats, number_checks,
-                             odd_widths, pieces, too_few)
+from youtabber import track
+from youtabber.check import (dwell, empty_stretches, glide_fade, glide_gaps, glide_number_gaps, glide_piece_cuts,
+                             glide_repeats, glide_rows, glide_steps, number_checks, odd_widths, pieces, redraw_gaps,
+                             too_few)
 from youtabber.assemble import Obs
+from youtabber.glide import Mosaic
 from youtabber.parse import Cell
 
 
@@ -48,6 +51,62 @@ def test_a_long_pause_between_glided_measures_is_flagged():
     xs = [0, 100, 200, 300, 600, 700]
     (w,) = glide_gaps(FakeView([cell(x, x + 90) for x in xs]))
     assert (w["t0"], w["t1"]) == (3.45, 6.45)
+
+
+def test_a_glide_whose_picture_fades_out_while_moving_warns_from_the_last_clear_frame():
+    def view(offsets, until):
+        times = np.arange(11, dtype=float)
+        return SimpleNamespace(mosaic=Mosaic(np.zeros((10, 200, 3), np.uint8), 0, np.array(offsets, float), times,
+                                             50.0, 10, until=until))
+    rising = [10.0 * k for k in range(11)]
+    (w,) = glide_fade(view(rising, 14.0), 2.0)
+    assert (w["kind"], w["t0"], w["t1"]) == ("glide_end", 10.0, 14.0)
+    assert glide_fade(view(rising, 11.0), 2.0) == []
+    assert glide_fade(view(rising[:-1] + [rising[-2]], 14.0), 2.0) == []
+
+
+def piece(cells, t0: float, t1: float, width: int = 2000, doubtful=()) -> SimpleNamespace:
+    """A glide piece whose canvas x / 100 is its play time."""
+    m = FakeMosaic()
+    m.image, m.doubtful = np.zeros((10, width, 3), np.uint8), list(doubtful)
+    return SimpleNamespace(cells=cells, all_cells=cells, systems=[SimpleNamespace(cells=cells)], mosaic=m, t0=t0,
+                           t1=t1, move=None, part=0)
+
+
+def test_unconfirmed_speed_changes_close_together_are_one_notice():
+    ws = glide_steps(piece([], 0.0, 20.0, doubtful=[300, 400, 1200]))
+    assert [(w["kind"], w["t0"], w["t1"]) for w in ws] == [("glide_step", 2.0, 5.0), ("glide_step", 11.0, 13.0)]
+
+
+def test_a_piece_with_little_staff_found_names_the_stretch_without_it():
+    cells = [cell(x, x + 100) for x in (0, 100, 200, 300, 1500, 1600)]
+    (w,) = glide_rows(piece(cells, 0.0, 20.0, width=1700))
+    assert (w["kind"], w["t0"], w["t1"]) == ("glide_rows", 4.0, 15.0)
+    assert glide_rows(piece([cell(x, x + 100) for x in range(0, 1700, 100)], 0.0, 20.0)) == []
+
+
+def test_a_narrow_measure_where_a_glide_is_redrawn_warns():
+    a = piece([cell(x, x + 100) for x in (0, 100, 200)] + [cell(300, 330)], 0.0, 3.3)
+    b = piece([cell(x, x + 100) for x in (400, 500, 600)], 3.3, 7.0)
+    b.move = track.Move("glide")
+    (w,) = glide_piece_cuts([a, b])
+    assert (w["kind"], w["t0"], w["t1"]) == ("glide_piece", 2.3, 4.5)
+    # A still view of another part shown between the pieces doesn't part them
+    other = piece([cell(0, 100)], 3.0, 4.0)
+    other.part = 1
+    assert [(w["t0"], w["t1"]) for w in glide_piece_cuts([a, other, b])] == [(2.3, 4.5)]
+    a.all_cells = a.cells = a.cells[:3]
+    assert glide_piece_cuts([a, b]) == []
+
+
+def test_a_long_wait_across_a_redraw_of_a_glide_is_flagged():
+    a = piece([cell(x, x + 100) for x in (0, 100, 200)], 0.0, 3.0)
+    b = piece([cell(x, x + 100) for x in (900, 1000)], 3.0, 12.0)
+    b.move = track.Move("glide")
+    (w,) = redraw_gaps([a, b])
+    assert (w["kind"], w["t0"], w["t1"]) == ("glide_gap", 2.5, 9.5)
+    b.cells = b.all_cells = [cell(x, x + 100) for x in (300, 400)]
+    assert redraw_gaps([a, b]) == []
 
 
 def test_empty_stretches_come_in_pieces():

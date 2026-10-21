@@ -92,6 +92,41 @@ def test_the_main_part_holding_still_too_little_still_refuses_the_video(monkeypa
     assert "holds still for only 5 of 30 s" in r.message
 
 
+def test_a_gliding_band_is_read_as_a_glide_and_a_still_band_beside_it_as_still_views(monkeypatch):
+    from types import SimpleNamespace
+
+    from youtabber.parts import Part
+
+    def staff(top, bottom):
+        return SimpleNamespace(top=top, tab=SimpleNamespace(x0=20, x1=620, bottom=bottom))
+    upper = {t / 6: [staff(100, 203)] for t in range(180)}
+    lower = {t / 6: [staff(600, 699)] for t in range(180)}
+    seg = Segment(0.0, 30.0, 10.0, "dark", paper=np.array([255.0, 255.0, 255.0]), x1=640, y1=720)
+    monkeypatch.setattr(pipeline, "probe", lambda path: VideoInfo(640, 720, 30.0))
+    monkeypatch.setattr(pipeline, "scan", lambda path, w, h, region=None, progress=None: ([seg], {}, []))
+    monkeypatch.setattr(pipeline, "find_parts", lambda *a: [Part(0, 0, (100, 204), "band", upper, 30.0),
+                                                           Part(1, 0, (600, 700), "band", lower, 30.0)])
+    # Only the upper band's rows glide
+    monkeypatch.setattr(glide, "glides", lambda *a: all(100 <= y0 and y1 <= 204 for y0, y1 in a[6](15.0)))
+    monkeypatch.setattr(pipeline, "first_thresholds", lambda *a: (128.0, 230.0))
+    glided, stills = [], []
+
+    def glide_pieces(path, crop, seg, si, found, thr, fthr, index):
+        glided.append(found)
+        return [SimpleNamespace(t0=0.0, t1=30.0, rows=(100, 204))], None
+
+    def views_in(*a, **kw):
+        stills.append(a[5](15.0))
+        return [still_view(0.0, 30.0)], 128.0, 230.0
+    monkeypatch.setattr(pipeline, "glide_pieces", glide_pieces)
+    monkeypatch.setattr(pipeline, "views_in", views_in)
+    monkeypatch.setattr(pipeline, "finish", lambda path, info, r, *a: r)
+    pipeline.read(Path("unused.mp4"))
+    assert glided == [upper]
+    # The still views are read from the lower band's staffs
+    assert len(stills) == 1 and stills[0][1] == 600
+
+
 def test_a_missing_video_is_a_video_error(tmp_path):
     with pytest.raises(VideoError, match="Can't read"):
         probe(tmp_path / "missing.mp4")

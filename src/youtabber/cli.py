@@ -513,7 +513,7 @@ def meta(reading: pipeline.Reading, src: source.Source, passes: str, pdfs: list[
 
 
 def move_meta(m) -> dict | None:
-    """How a view's band moved from the part's view before; None for a part's first view and for glides."""
+    """How a view's band moved from the part's view before; None for a part's first view and a glide's first piece."""
     if m is None:
         return None
     return {"kind": m.kind, "shift": int(m.shifts[0]) if m.shifts else None, "steps": int(m.steps)}

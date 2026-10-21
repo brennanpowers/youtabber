@@ -9,9 +9,10 @@ import numpy as np
 
 from youtabber import glide, ocr, track
 from youtabber.assemble import Assembly, Obs, assemble, cell_at, number_views
-from youtabber.check import (dwell, empty_stretches, fmt, glide_gaps, glide_number_gaps, glide_repeats, layout_changes,
-                             number_checks, numbers_against_cells, odd_widths, pieces, possible_duplicates,
-                             screen_breaks, too_few)
+from youtabber.check import (dwell, empty_stretches, fmt, glide_fade, glide_gaps, glide_number_gaps, glide_piece_cuts,
+                             glide_repeats, glide_rows, glide_steps, layout_changes, number_checks,
+                             numbers_against_cells, odd_widths, pieces, possible_duplicates, redraw_gaps, screen_breaks,
+                             too_few)
 from youtabber.observe import (ABOVE_GAPS, BELOW_GAPS, OBS_FPS, PRINT_ABOVE_GAPS, ink_map, ink_threshold, set_paper,
                                to_gray, views_in)
 from youtabber.parse import Cell, line_darkness, parse_view
@@ -44,6 +45,9 @@ GLIDE_MIN_SECONDS = 20.0
 HELD_SHARE = 0.4
 # Staff positions tried for a glide, most often seen first
 GLIDE_GROUPS = 3
+# A glide is read in at most this many pieces, each at least this long, with rows from the staffs seen in its
+# first GLIDE_ROWS_SECONDS
+MAX_GLIDE_PIECES, GLIDE_PIECE_SECONDS, GLIDE_ROWS_SECONDS = 8, 2.0, 10.0
 # A glide mosaic wider than this many columns is parsed in pieces this wide...
 MOSAIC_PIECE = 40000
 # ...overlapping by this many columns, several times the widest measure
@@ -192,6 +196,8 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
     # (part id, segment start, segment end, seconds held still, seconds shown) of each part left out for holding
     # still too little
     dropped: list[tuple[int, float, float, float, float]] = []
+    # (from, to) of each stretch of a glide left unread after the tab panel was redrawn
+    unread: list[tuple[float, float]] = []
     for si, seg in enumerate(segments):
         crop = (seg.x0, seg.y0, seg.x1 - seg.x0, seg.y1 - seg.y0)
         set_paper(seg.paper)
@@ -199,24 +205,6 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
         seed_at = seed_function(found, seg)
         if reached is not None:
             reached(seg.t0)
-        if seg.t1 - seg.t0 >= GLIDE_MIN_SECONDS and glide.glides(path, crop, seg.polarity, seg.paper, seg.t0, seg.t1,
-                                                                bands_function(found, seg), seg.gap):
-            # The tab glides past a playhead instead of holding still: read it from a mosaic
-            thr, fthr = first_thresholds(path, crop, seg, seed_at)
-            o = glide_obs(path, crop, seg, si, found, thr, fthr, len(obs))
-            if o is None:
-                return r.fail("check_failed", f"The tab scrolls smoothly from {fmt(seg.t0)} to {fmt(seg.t1)}, but the "
-                                              f"moving band could not be put together, so no PDF was written.")
-            part = Part(len(r.parts), si, (seg.y0, seg.y1), "page", {}, seg.t1 - seg.t0)
-            r.parts.append(part)
-            o.part, o.stream = part.id, part.stream
-            obs.append(o)
-            r.panels.append({"t0": round(seg.t0, 2), "t1": round(seg.t1, 2),
-                             "box": [seg.x0, seg.y0 + o.rows[0], seg.x1 - seg.x0, o.rows[1] - o.rows[0]]})
-            gaps.append(seg.gap)
-            if reached is not None:
-                reached(seg.t1)
-            continue
         seg_parts = find_parts(path, seg, si, found, 1 / SCAN_FPS)
         for part in seg_parts:
             part.id = len(r.parts)
@@ -225,7 +213,27 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
         read_views = []
         thr_of = {}
         for part in seg_parts:
+            part_found = found if part.kind == "page" else part.found
             part_seed = seed_at if part.kind == "page" else seed_function(part.found, seg)
+            if part.seen >= GLIDE_MIN_SECONDS and glide.glides(path, crop, seg.polarity, seg.paper, seg.t0, seg.t1,
+                                                               bands_function(part_found, seg), seg.gap):
+                # The part's tab glides past a playhead instead of holding still: read it from mosaics
+                thr, fthr = first_thresholds(path, crop, seg, part_seed)
+                glided, stopped = glide_pieces(path, crop, seg, si, part_found, thr, fthr, len(obs))
+                if not glided:
+                    return r.fail("check_failed", f"The tab scrolls smoothly from {fmt(seg.t0)} to {fmt(seg.t1)}, "
+                                                  f"but the moving band could not be put together, so no PDF was "
+                                                  f"written.")
+                if stopped is not None:
+                    unread.append((stopped, seg.t1))
+                for o in glided:
+                    o.part, o.stream = part.id, part.stream
+                    obs.append(o)
+                    r.panels.append({"t0": round(o.t0, 2), "t1": round(o.t1, 2),
+                                     "box": [seg.x0, seg.y0 + o.rows[0], seg.x1 - seg.x0, o.rows[1] - o.rows[0]]})
+                if reached is not None:
+                    reached(seg.t1)
+                continue
             views, thr, fthr = views_in(path, crop, seg.polarity, seg.gap, seg.paper, part_seed, seg.t0, seg.t1,
                                         "playhead" in EVIDENCE, progress=reached)
             held = sum(v.t1 - v.t0 for v in views)
@@ -276,12 +284,12 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
             o.move = view_move(path, crop, seg, p, o, thr_of[part.id], (part.rows[0] - seg.y0, part.rows[1] - seg.y0))
     r.views = obs
     tell("read", 1.0)
-    return finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, tell)
+    return finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, tell)
 
 
-def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, tell) -> Reading:
+def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, tell) -> Reading:
     """Assemble the read views into measures, notices and the play path. `dropped` holds the parts left out for
-    holding still too little, as `read` lists them."""
+    holding still too little and `unread` the stretches of a glide left unread, as `read` lists them."""
     tell("assemble", 0.0)
     gap = float(np.median(gaps))
     # A title card or photo laid over the first screen of a page adds marks the next screen doesn't have; the
@@ -313,14 +321,14 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, tell) ->
     # panel that stays while the music scrolls behind it)
     for part in r.parts:
         group = [o for o in obs if o.part == part.id]
-        if len(group) >= FIXED_MIN_VIEWS:
-            share = np.mean([o.band for o in group], axis=0)
-            fixed = cv2.dilate((share >= FIXED_SHARE).astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
-        elif group and group[0].mosaic is None:
-            fixed = np.zeros_like(group[0].band)
-        else:
+        if not group or any(o.mosaic is not None for o in group):
             # A glide's mosaic is never lined up with another view, so it needs no map of frame-fixed ink
             fixed = None
+        elif len(group) >= FIXED_MIN_VIEWS:
+            share = np.mean([o.band for o in group], axis=0)
+            fixed = cv2.dilate((share >= FIXED_SHARE).astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
+        else:
+            fixed = np.zeros_like(group[0].band)
         for o in group:
             o.fixed = fixed
     # A cell much narrower than a typical measure is not one: a clef and key signature before a
@@ -369,8 +377,13 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, tell) ->
         for w in (possible_duplicates(A, mine, gap) + dwell(mine, A) + odd_widths(mine) + numbers_against_cells(mine)
                   + screen_breaks(A, mine)):
             notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
-    for w in layout_changes(segments, obs):
+    for w in layout_changes(segments, obs) + glide_piece_cuts(obs) + redraw_gaps(obs):
         notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
+    for a, b in unread:
+        for p0, p1 in pieces(a, b):
+            notices.append(Notice(round(p0, 2), round(p1, 2), "glide_rows",
+                                  f"The smooth scroll from {fmt(p0)} to {fmt(p1)} wasn't read after the tab panel was "
+                                  f"redrawn; measures played there are missing.", True))
     notices += part_notices(r.parts, obs, primary)
     for _, t0, t1, held, shown in dropped:
         notices.append(Notice(round(t0, 2), round(t1, 2), "parts",
@@ -381,7 +394,7 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, tell) ->
             m = o.mosaic
             # Measures read from the first frame alone: on screen between the playhead and the reading column
             # before the scroll moved
-            seeded = [c for c in o.cells if (c.x0 + c.x1) / 2 < m.seeded]
+            seeded = [c for c in o.cells if (c.x0 + c.x1) / 2 < m.seeded] if o.first_piece else []
             if seeded:
                 notices.append(Notice(round(o.t0, 2), round(m.time_at(seeded[-1].x1), 2), "glide_start",
                                       f"The first measure of this smooth scroll was on screen before it moved and "
@@ -392,7 +405,8 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, tell) ->
             # scroll started, so they may be cut off; this finds them even when no playhead was found
             times = [m.time_at((c.x0 + c.x1) / 2) for c in o.cells]
             step = float(np.median(np.diff(times))) if len(times) > 1 else 0.0
-            early = [c for c, t in zip(o.cells, times) if t < o.t0 + step and (c.x0 + c.x1) / 2 >= m.seeded]
+            early = [c for c, t in zip(o.cells, times)
+                     if t < o.t0 + step and (c.x0 + c.x1) / 2 >= m.seeded] if o.first_piece else []
             if early:
                 notices.append(Notice(round(o.t0, 2), round(m.time_at(early[-1].x1), 2), "glide_start",
                                       f"The first measure of this smooth scroll was already at the playhead when "
@@ -404,14 +418,15 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, tell) ->
             # Measures read from the last frame alone: still ahead of the reading column when the scroll ended.
             # They are played after it stops, so the notice ends where the scroll ends.
             ending = [c for c in o.cells if (c.x0 + c.x1) / 2 >= m.tail_from]
-            if m.tail_from < m.image.shape[1]:
+            if m.tail_from < m.image.shape[1] and o.last_piece:
                 t0 = min(m.time_at(ending[0].x0 if ending else m.tail_from), o.t1 - 1)
                 text = ("The last measures of this smooth scroll were still ahead of the playhead when the scroll "
                         "ended and are read from its last frame only; check them." if ending else
                         "This smooth scroll ended with staff still ahead of the playhead, and no measure was read "
                         "from it; check that the last measures are all printed.")
                 notices.append(Notice(round(t0, 2), round(o.t1, 2), "glide_end", text, True))
-            for w in glide_repeats(o, gap) + glide_gaps(o) + glide_number_gaps(o):
+            for w in (glide_repeats(o, gap) + glide_gaps(o) + (glide_fade(o, step) if o.last_piece else [])
+                      + glide_number_gaps(o) + glide_steps(o) + glide_rows(o)):
                 notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
     for w in empty_stretches(r.tab_spans, [m.play_t for m in primary]):
         notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
@@ -853,9 +868,43 @@ def plate_obs(v, seg: Segment, si: int, thr: float, fthr: float, index: int) -> 
     return o
 
 
-def glide_obs(path: Path, crop, seg: Segment, si: int, found, thr: float, fthr: float, index: int) -> Obs | None:
-    """One view holding the whole glide of a segment, read from its mosaic."""
-    systems_seen = [s for t, ss in found.items() if seg.t0 <= t <= seg.t1 for s in ss]
+def glide_pieces(path: Path, crop, seg: Segment, si: int, found, thr: float, fthr: float,
+                 index: int) -> tuple[list[Obs], float | None]:
+    """The glide of a segment as views read from mosaics, one per stretch where its staffs keep their rows on
+    screen. Where the panel is redrawn with the staffs at other heights, the next piece starts on the new rows.
+    Consecutive pieces both show the screen at the redraw; each measure is kept in the piece it glided through.
+    Also gives the time reading stopped short of the segment's end after a redraw, or None when it read to the end."""
+    pieces: list[Obs] = []
+    t = seg.t0
+    stopped = None
+    while t < seg.t1 - GLIDE_PIECE_SECONDS:
+        if len(pieces) == MAX_GLIDE_PIECES:
+            stopped = t
+            break
+        o = glide_obs(path, crop, seg, si, found, thr, fthr, index + len(pieces), t)
+        if o is None:
+            stopped = t
+            break
+        pieces.append(o)
+        if o.mosaic.moved_at is None:
+            break
+        t = o.mosaic.moved_at
+    for a, b in zip(pieces, pieces[1:]):
+        # Music right of the reading column when a piece ends glides through the next piece
+        a.cells = a.all_cells = [c for c in a.cells if (c.x0 + c.x1) / 2 < a.mosaic.tail_from]
+        b.cells = b.all_cells = [c for c in b.cells if (c.x0 + c.x1) / 2 >= b.mosaic.seeded]
+        b.move = track.Move("glide")
+    for k, o in enumerate(pieces):
+        o.first_piece, o.last_piece = k == 0, k == len(pieces) - 1
+    return pieces, stopped
+
+
+def glide_obs(path: Path, crop, seg: Segment, si: int, found, thr: float, fthr: float, index: int,
+              t0: float) -> Obs | None:
+    """One view holding a segment's glide from t0 on, read from its mosaic; it ends early where the staffs move."""
+    # The rows come from the staffs seen in the piece's first seconds, after any redraw at t0
+    near = [s for t, ss in found.items() if t0 + 0.5 <= t <= min(seg.t1, t0 + GLIDE_ROWS_SECONDS) for s in ss]
+    systems_seen = near or [s for t, ss in found.items() if t0 <= t <= seg.t1 for s in ss]
     if not systems_seen:
         return None
     # Group the systems seen by height on screen; the one that glides is read, others (a fretboard drawn
@@ -877,8 +926,9 @@ def glide_obs(path: Path, crop, seg: Segment, si: int, found, thr: float, fthr: 
         print_rows = (max(0, int(top - PRINT_ABOVE_GAPS * g)), rows[1])
         staff_x = (int(np.median([s.tab.x0 for s in group])) - seg.x0,
                    int(np.median([s.tab.x1 for s in group])) - seg.x0)
-        m = glide.build(path, crop, print_rows, staff_rows, seg.polarity, thr, seg.gap, seg.t0, seg.t1,
-                        analysis_rows=rows, staff_x=staff_x)
+        m = glide.build(path, crop, print_rows, staff_rows, seg.polarity, thr, seg.gap, t0, seg.t1,
+                        analysis_rows=rows, staff_x=staff_x, redrawn=t0 > seg.t0,
+                        tab_rows=(float(np.median([s.tab.top for s in group])) - seg.y0, bottom))
         if m is not None:
             break
     if m is None:
@@ -892,7 +942,7 @@ def glide_obs(path: Path, crop, seg: Segment, si: int, found, thr: float, fthr: 
              if not (c.kind == "tail" and c.ink.sum() < BLANK_TAIL_INK * (c.x1 - c.x0) * c.gap)]
     for c in cells:
         c.glided = True
-    o = Obs(index, seg.t0, seg.t1, cells, [], si, (seg.x0, seg.y0), m.image)
+    o = Obs(index, t0, seg.t1 if m.moved_at is None else m.moved_at, cells, [], si, (seg.x0, seg.y0), m.image)
     o.all_cells = cells
     o.mosaic = m
     o.rows = print_rows
