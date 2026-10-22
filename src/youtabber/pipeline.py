@@ -111,7 +111,7 @@ class Measure:
     play_t: float            # when playback reached it
     x: float                 # source pixels: cell center, or the playhead's x for glides
     y: float                 # source pixels: middle of the tab staff
-    t_ref: float | None      # glides only: when its center crossed the playhead
+    t_ref: float | None      # glides only: when it crossed the playhead, timed by glide_middle
     label: int | None        # measure number, when the view's numbers were trusted
     partial: bool
     stream: int = 0          # the stream its slot belongs to
@@ -1121,7 +1121,7 @@ def counted_numbers(o: Obs) -> None:
     numbered from its neighbors when they are as many measures apart as cells, and measures played before the
     counter's first reading or after its last count on from their neighbor. If any stays unnumbered, the glide's
     numbers are left as they were."""
-    times = [o.mosaic.time_at((c.x0 + c.x1) / 2) for c in o.cells]
+    times = [o.mosaic.time_at(glide_middle(o, c)) for c in o.cells]
     nums = [counter.at(o.counter, t) for t in times]
     known = [i for i, n in enumerate(nums) if n is not None]
     if not known:
@@ -1149,6 +1149,15 @@ def counted_numbers(o: Obs) -> None:
         return
     for c, n in zip(o.cells, nums):
         c.number = n
+
+
+def glide_middle(o: Obs, c: Cell) -> float:
+    """The mosaic column a glided measure is timed by: its middle, or for a last measure with no closing barline,
+    which runs on into blank staff, half a typical measure past its start when that comes first."""
+    if c.kind != "tail":
+        return (c.x0 + c.x1) / 2
+    widths = [d.x1 - d.x0 for d in o.cells if d.kind == "full"]
+    return min((c.x0 + c.x1) / 2, c.x0 + float(np.median(widths)) / 2) if widths else (c.x0 + c.x1) / 2
 
 
 def parse_mosaic(index: int, image: np.ndarray, rect: tuple[int, int, int, int], polarity: str, thr: float,
@@ -1204,7 +1213,7 @@ def play_times(o: Obs) -> list[float]:
     """When playback reached each cell of a view: the first playhead sample over it, or an even share of the
     view's time when the playhead was never seen there."""
     if o.mosaic is not None:
-        return [o.mosaic.time_at((c.x0 + c.x1) / 2) for c in o.cells]
+        return [o.mosaic.time_at(glide_middle(o, c)) for c in o.cells]
     first: dict[int, float] = {}
     for t, x, y in o.playhead:
         i = cell_at(o, (x, y))
@@ -1219,10 +1228,11 @@ def measure_at(sid: int, o: Obs, c: Cell, play: list[float]) -> Measure:
     the measure takes the view's stream."""
     if o.mosaic is not None:
         m = o.mosaic
-        # A glided measure is placed when its center crossed the playhead (the panel centre when none was found)
-        when = round(m.time_at((c.x0 + c.x1) / 2), 2)
+        x = glide_middle(o, c)
+        # A glided measure is placed when column x crossed the playhead (the panel centre when none was found)
+        when = round(m.time_at(x), 2)
         y = round(c.mid_y + o.offset[1] + m.y0, 1)
-        seen = m.seen_at((c.x0 + c.x1) / 2)
+        seen = m.seen_at(x)
         if seen is not None:
             # Never crossed the play column while the band moved: placed where it sat on that still screen
             return Measure(sid, o.index, c, round(seen[0], 2), when, round(seen[1] + o.offset[0], 1), y, None,
