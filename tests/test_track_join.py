@@ -3,9 +3,10 @@ from dataclasses import replace
 import numpy as np
 from test_numbering import band_view, music
 
-from youtabber.assemble import (Assembly, Decision, assemble, choose_shift, measure_time, playhead_at, playhead_join,
-                                playhead_track, register, replay_evidence, scroll_shifts, still_links, track_join)
-from youtabber.pipeline import Measure, Notice, edge_notices, join_notices, readings
+from youtabber.assemble import (Assembly, Decision, Slot, assemble, choose_shift, find_run, measure_time, place_rest,
+                                playhead_at, playhead_join, playhead_track, register, repeat_played, replay_evidence,
+                                rest_of, same_cell, scroll_shifts, split_measure, still_links, track_join)
+from youtabber.pipeline import Measure, Notice, edge_notices, join_notices, readings, repeat_notices
 from youtabber.track import Move
 
 EVIDENCE = {"numbers", "playhead", "navigation"}
@@ -442,3 +443,201 @@ def test_the_folded_reading_places_by_the_numbers_read_while_the_main_reading_cl
     assert folded.view_slots == {0: [0, 1, 2, 3], 1: [4, 5, 6, 7], 2: [0, 1, 2, 3]}
     assert [folded.slots[s].number for s in folded.view_slots[1]] == [11, 12, 13, 14]
     assert [c.number for c in o.cells] == [None] * 4
+
+
+def piece(c, kind: str, a: int, b: int):
+    """Columns a..b of cell c, as a piece of its measure cut by the page edge."""
+    return replace(c, kind=kind, complete=False, x0=c.x0 + a, x1=c.x0 + b, ink=c.ink[:, a:b], faint=c.faint[:, a:b],
+                   tint=c.tint[:, a:b])
+
+
+def slots_of(*views):
+    """One slot per cell of the views in order, each first seen as that cell."""
+    return [Slot(k, c, v.index, None) for k, (v, c) in enumerate((v, c) for v in views for c in v.cells)]
+
+
+def test_a_run_matches_a_slot_by_any_earlier_sighting_when_the_first_was_cut_otherwise():
+    # Bars 1-4 with bar 4 cut to 120 px by the page edge, then bars 4-7 whole; a third page shows bars 2-5 with
+    # bar 4 cut to 160 px, so its bar 4 matches only the whole sighting
+    p, w, o = band_view(0, 1), band_view(1, 4), band_view(2, 2)
+    p.cells[3] = piece(p.cells[3], "tail", 0, 120)
+    slots = slots_of(p) + slots_of(w)[1:]
+    sightings = {3: [(0, p.cells[3]), (1, w.cells[0])]}
+    run = [o.cells[1], piece(o.cells[2], "tail", 0, 160)]
+    assert find_run(slots, run, 10.0, 2, sightings=sightings) == 2
+    assert find_run(slots, run, 10.0, 2) is None
+
+
+def test_a_run_is_matched_against_the_first_sighting_of_a_slot_never_seen_whole():
+    # Bars 1-4 with bar 4 cut to its first 120 px, then bar 4 cut to its last 40 px: bar 4 was never seen whole,
+    # so only the first piece counts
+    p, w, o = band_view(0, 1), band_view(1, 4), band_view(2, 3)
+    p.cells[3] = piece(p.cells[3], "tail", 0, 120)
+    w.cells[0] = piece(w.cells[0], "lead", 160, 200)
+    sightings = {3: [(0, p.cells[3]), (1, w.cells[0])]}
+    assert find_run(slots_of(p), [o.cells[0], piece(o.cells[1], "tail", 0, 120)], 10.0, 2, sightings=sightings) == 2
+    assert find_run(slots_of(p), [o.cells[0], piece(o.cells[1], "lead", 160, 200)], 10.0, 2,
+                    sightings=sightings) is None
+
+
+def test_a_run_is_not_matched_by_a_cut_or_highlighted_sighting_of_a_slot_seen_whole():
+    # Bars 1-4 whole, then bar 4 cut to its last 40 px by the page edge, then bar 4 with the highlight over all
+    # but its last 40 px. A new measure ends like bar 4 but is other music: either later sighting alone matches it
+    p, w, h = band_view(0, 1), band_view(1, 4), band_view(2, 4)
+    w.cells[0] = piece(w.cells[0], "lead", 160, 200)
+    tint = np.zeros_like(h.cells[0].ink)
+    tint[:, :160] = True
+    h.cells[0] = replace(h.cells[0], tint=tint)
+    other = band_view(3, 8).cells[1]
+    ink = other.ink.copy()
+    ink[:, 160:] = p.cells[3].ink[:, 160:]
+    new = replace(other, ink=ink)
+    assert same_cell(w.cells[0], new, 10.0) and same_cell(h.cells[0], new, 10.0)
+    sightings = {3: [(0, p.cells[3]), (1, w.cells[0]), (2, h.cells[0])]}
+    assert find_run(slots_of(p), [new], 10.0, 3, sightings=sightings) is None
+
+
+def test_a_run_matched_only_by_a_cut_sighting_prints_as_new_in_both_readings_with_a_notice():
+    # Bars 1-4 whole, then bar 4 cut to its last 40 px by the page edge. A later page shows bar 3 and a measure that
+    # ends like bar 4 but differs from its whole sighting: only the cut piece matches it
+    p, w = band_view(0, 1), band_view(1, 4)
+    w.cells[0] = piece(w.cells[0], "lead", 160, 200)
+    o = band_view(2, 8)
+    ink = o.cells[1].ink.copy()
+    ink[:, 160:] = p.cells[3].ink[:, 160:]
+    o.cells = [replace(o.cells[0], ink=p.cells[2].ink), replace(o.cells[1], ink=ink)]
+    for fold_unresolved in (False, True):
+        A = Assembly(slots=slots_of(p), sightings={3: [(0, p.cells[3]), (1, w.cells[0])]})
+        slot_of = [None, None]
+        place_rest(o, slot_of, A, 10.0, 0.0, None, EVIDENCE, lambda v: [], fold_unresolved)
+        assert slot_of == [4, 5] and A.unresolved_folds == []
+        assert A.maybe_repeats == [(o.t0, o.t1, 2)]
+
+
+def test_a_view_with_an_unresolved_fold_gets_no_may_repeat_notice():
+    # Two later pages may repeat bars 1-4; the first of them also folds onto bars 1-4 unresolved
+    p, o, q = band_view(0, 1), band_view(1, 5), band_view(2, 9)
+    A = Assembly(slots=slots_of(p), maybe_repeats=[(o.t0, o.t1, 0), (q.t0, q.t1, 0)],
+                 unresolved_folds=[(o.t0, o.t1, 0, 3)])
+    assert [(n.t0, n.t1, n.kind) for n in repeat_notices(A, [p, o, q])] == [(q.t0, q.t1, "possible_duplicate")]
+
+
+def test_after_a_repeat_sign_the_run_looked_for_is_the_latest_that_matches():
+    # Bars 1-4 written out twice, then a page showing bars 1-2 again
+    slots = slots_of(band_view(0, 1), band_view(1, 1))
+    run = band_view(2, 1).cells[:2]
+    assert find_run(slots, run, 10.0, 2) == 0
+    assert find_run(slots, run, 10.0, 2, latest=True) == 4
+
+
+def signed(sign_x: int, at_x: int | None):
+    """A one-system page of bars 1-4 (x 0-800, line gap 10) with an end-repeat sign at sign_x and the playhead last
+    seen at at_x (unseen when None)."""
+    p = band_view(0, 1)
+    p.repeat_end, p.repeat_bars = True, [(0, sign_x)]
+    played(p, *([(9.5, at_x, 30)] if at_x is not None else []))
+    return p
+
+
+def test_a_repeat_sign_sends_the_playhead_back_only_while_it_lies_ahead():
+    assert repeat_played(signed(800, 650))      # the sign ends the measure being played
+    assert repeat_played(signed(800, 250))      # the sign is further on
+    assert not repeat_played(signed(400, 650))  # the sign ends bar 2, already played
+    assert repeat_played(signed(400, None))     # no playhead seen
+
+
+def two_systems(sign: tuple[int, int], at: tuple[int, int]):
+    """A page of bars 1-2 on an upper system and bars 3-4 on a lower one (x 0-400 each, line gap 10), with an
+    end-repeat sign at (system, x) and the playhead last seen at (x, y)."""
+    p = band_view(0, 1)
+    for c in p.cells[2:]:
+        c.system, c.x0, c.x1, c.y0, c.mid_y = 1, c.x0 - 400, c.x1 - 400, 100, 130.0
+    p.rect, p.single = (0, 0, 400, 160), False
+    p.repeat_end, p.repeat_bars = True, [sign]
+    played(p, (9.5, *at))
+    return p
+
+
+def test_a_repeat_sign_on_another_system_is_ahead_only_when_that_system_is_lower():
+    # The sign ends the upper system and the playhead is in bar 4, on the lower one
+    assert not repeat_played(two_systems((0, 400), (250, 130)))
+    # The sign ends bar 3, on the lower system, and the playhead is in bar 2, on the upper one
+    assert repeat_played(two_systems((1, 200), (350, 30)))
+    assert repeat_played(two_systems((1, 400), (350, 130)))
+
+
+def sign_evidence(j: int, landed: int | None):
+    """Replay evidence for a fold at slot j after a page with an end-repeat sign, that page itself placed by the
+    sign at slot `landed` (None when it wasn't)."""
+    A = Assembly()
+    p, o = band_view(0, 1), band_view(1, 1)
+    p.repeat_end = True
+    if landed is not None:
+        A.sign_folds[p.index] = landed
+    return replay_evidence(o, o.cells[:2], j, A, 0.0, p, {"navigation"}, lambda v: [])
+
+
+def test_a_page_placed_by_a_repeat_sign_sends_the_next_one_back_only_to_the_same_place():
+    assert sign_evidence(22, None) == (True, "repeat_sign", True)
+    assert sign_evidence(22, 20) == (True, "repeat_sign", True)
+    assert sign_evidence(18, 20) == (True, "repeat_sign", True)
+    assert sign_evidence(23, 20) == (False, "none", False)
+    assert sign_evidence(17, 20) == (False, "none", False)
+
+
+def test_a_page_placed_by_a_repeat_sign_records_where_it_landed_and_the_next_page_must_land_near_it():
+    # Bars 1-4, then bars 5-8 ending on an end-repeat sign shown twice, then a page like bars 1-4: four slots back
+    # from where the repeat landed, so the sign doesn't send the playhead there
+    obs = [band_view(0, 1), band_view(1, 5), band_view(2, 5), band_view(3, 1)]
+    for o in obs[1:3]:
+        o.repeat_end, o.repeat_bars = True, [(0, 800)]
+        played(o, (9.5, 650, 30))
+    obs[2].wrapped = obs[3].wrapped = True
+    A = assemble(obs, 10.0, False, EVIDENCE, lambda v: [])
+    assert A.sign_folds == {2: 4}
+    assert [(d.view, d.basis, d.resolved) for d in A.decisions if d.kind == "fold"] == [(2, "repeat_sign", True),
+                                                                                       (3, "none", False)]
+
+
+def split_pair(head: np.ndarray):
+    """A page of bars 1-4 whose bar 4 is cut to its first 120 px, and a next page whose first cell, cut by its left
+    edge, holds `head`."""
+    p, o = band_view(0, 1), band_view(1, 5)
+    p.cells[3] = piece(p.cells[3], "tail", 0, 120)
+    o.cells[0] = replace(o.cells[0], kind="lead", complete=False, x1=head.shape[1], ink=head,
+                         faint=np.zeros_like(head), tint=np.zeros_like(head))
+    return p, o
+
+
+def test_a_measure_split_by_a_page_turn_is_shown_whole_again_or_stitched_from_its_two_pieces():
+    p, o = split_pair(music("clef", 4))
+    assert split_measure(p, 3, o, 10.0) == "whole"
+    p, o = split_pair(music("a", 4)[:, 120:])
+    assert split_measure(p, 3, o, 10.0) == "stitch"
+    # 120 + 210 px is wider than 1.6 measures of 200 px: the cut measure may have been whole
+    p, o = split_pair(np.hstack([music("b", 9), np.zeros((60, 10), bool)]))
+    assert split_measure(p, 3, o, 10.0) is None
+
+
+def rest_pair(t_w: int, h_w: int, h_complete: bool = False):
+    """A page of 200 px measures whose last cell is cut to t_w px, and a next page's first cell h_w px wide."""
+    p, o = band_view(0, 1), band_view(1, 5)
+    t = replace(p.cells[3], kind="tail", complete=False, x1=p.cells[3].x0 + t_w)
+    h = replace(o.cells[0], kind="lead", complete=h_complete, x1=h_w)
+    return t, h, p
+
+
+def test_a_narrow_cut_first_cell_holds_the_rest_of_the_cut_measure_when_the_two_make_about_one_measure():
+    assert rest_of(*rest_pair(120, 80))
+    assert not rest_of(*rest_pair(120, 100))   # half a measure or more is no sliver
+    assert not rest_of(*rest_pair(60, 80))     # together under 0.85 of a measure
+    assert not rest_of(*rest_pair(190, 95))    # together over 1.4 measures
+    assert not rest_of(*rest_pair(120, 80, h_complete=True))
+
+
+def test_a_cut_measure_played_long_joins_a_next_page_that_opens_on_its_sliver():
+    # Played from 7.5 s, too long for a cut measure, so only the sliver rule joins it
+    p, o = cut_pair(120, 7.5)
+    assert playhead_join(p, o, 2.0, 10.0) is None
+    o.cells[0] = replace(piece(o.cells[0], "lead", 120, 200), x0=0, x1=80)
+    assert playhead_join(p, o, 2.0, 10.0)[0] == {0: 3}

@@ -390,7 +390,8 @@ def write_outputs(reading: pipeline.Reading, src: source.Source, out: Path, name
         cands = printed_candidates(reading, passes)
         spots = spot_lines(reading.notices)
         for k, cand in enumerate(cands):
-            cells = [printcell.print_cell(reading.views[m.view], m.cell, reading.segments[reading.views[m.view].seg])
+            cells = [layout.side_by_side([printcell.print_cell(reading.views[v], c, reading.segments[reading.views[v].seg])
+                                          for v, c in (m.pieces or [(m.view, m.cell)])])
                      for m in cand.measures]
             path = out / (f"{name}.pdf" if k == 0 else f"{name}-{cand.name}.pdf")
             count = layout.write_pdf(cells, row_breaks(reading, cand), path, src, upscale,
@@ -487,7 +488,8 @@ def meta(reading: pipeline.Reading, src: source.Source, passes: str, pdfs: list[
         for i, (m, pc) in enumerate(zip(cands[0].measures, printed)):
             measures.append({"slot": m.slot, "view": m.view, "t": m.t, "play_t": m.play_t, "label": m.label,
                              "complete": m.cell.complete, "image": f"measures/{i:04d}.png",
-                             "gap": round(pc.gap, 2), "left": int(pc.left), "stream": m.stream})
+                             "gap": round(pc.gap, 2), "left": int(pc.left), "stream": m.stream,
+                             "pieces": [v for v, _ in m.pieces] if m.pieces else None})
     return {
         "version": 2,
         "source": {"id": src.id, "url": src.url, "title": src.title, "credit": src.credit},

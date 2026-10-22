@@ -78,6 +78,7 @@ class ParsedSystem:
     y1: int
     cells: list[Cell] = field(default_factory=list)
     repeat_end: bool = False   # an end-repeat sign (dots before a barline) somewhere in the system
+    repeat_bars: list = field(default_factory=list)   # left edges of the barlines that end a repeat
     band: tuple[int, int] = (0, 0)   # rows to print, crop coordinates
 
 
@@ -248,9 +249,26 @@ def number_crop(g: np.ndarray, marks: np.ndarray, top: float, top_gap: float, ba
     return g[max(0, gy0 - pad):gy1 + pad, max(0, gx0 - pad):gx1 + pad].copy()
 
 
-def end_repeat(dark: np.ndarray, st, bars: list[tuple[int, int]]) -> bool:
-    """True when two or more dots sit just left of some barline inside the staff: an end-repeat sign."""
+# An end-repeat sign's dots are DOT_SIZE line gaps across and stand one above the other: at most DOT_ALIGN line gaps
+# apart in x and at least DOT_APART apart in y. Some scores put both dots in one line space, about 0.7 gaps apart;
+# fret digits beside a barline stand at one height
+DOT_SIZE, DOT_ALIGN, DOT_APART = (0.15, 0.7), 0.3, 0.5
+# The dots sit evenly above and below the staff's middle: their midpoint is at most DOT_CENTER line gaps from it.
+# Pieces of a time signature's digit, split by a staff line, are off center
+DOT_CENTER = 0.3
+# Both dots are one glyph printed twice, so their heights differ by at most this factor; a fret digit cut by a
+# staff line leaves two pieces of unequal height
+DOT_MATCH = 1.5
+# A dot is round: at most this many times longer than wide. Stacked fret digits, string names and pieces of tie
+# arcs beside a barline are long thin marks
+DOT_ELONGATION = 1.75
+
+
+def end_repeats(dark: np.ndarray, st, bars: list[tuple[int, int]]) -> list[int]:
+    """Left edges of the barlines with two dots one above the other just left of them inside the staff: end-repeat
+    signs. Marks side by side at one height are fret digits, not a sign."""
     a, b = int(st.top) + 1, int(st.bottom)
+    out = []
     for p, _ in bars:
         x0, x1 = int(p - 1.3 * st.gap), int(p - 0.1 * st.gap)
         if x0 < 0:
@@ -259,11 +277,16 @@ def end_repeat(dark: np.ndarray, st, bars: list[tuple[int, int]]) -> bool:
         # Staff lines would join the dots; keep only marks taller than a line
         sub = cv2.morphologyEx(sub, cv2.MORPH_OPEN, np.ones((3, 1), np.uint8))
         n, _, stats, _ = cv2.connectedComponentsWithStats(sub, connectivity=8)
-        dots = [s for s in stats[1:] if 0.2 * st.gap <= s[2] <= 0.7 * st.gap and 0.2 * st.gap <= s[3] <= 0.7 * st.gap
-                and s[4] >= 0.5 * s[2] * s[3]]
-        if len(dots) >= 2:
-            return True
-    return False
+        lo, hi = DOT_SIZE[0] * st.gap, DOT_SIZE[1] * st.gap
+        dots = [s for s in stats[1:] if lo <= min(s[2], s[3]) and max(s[2], s[3]) <= hi and s[4] >= 0.5 * s[2] * s[3]
+                and max(s[2], s[3]) <= DOT_ELONGATION * min(s[2], s[3])]
+        mid = (st.top + st.bottom) / 2 - a
+        if any(abs(u[0] - v[0]) <= DOT_ALIGN * st.gap and abs(u[1] - v[1]) >= DOT_APART * st.gap
+               and abs((u[1] + u[3] / 2 + v[1] + v[3] / 2) / 2 - mid) <= DOT_CENTER * st.gap
+               and max(u[3], v[3]) <= DOT_MATCH * min(u[3], v[3])
+               for u in dots for v in dots):
+            out.append(p)
+    return out
 
 
 # A playhead line held still over a view is lighter than the staff lines and than the staff's real barlines.
@@ -362,7 +385,7 @@ def joined_staffs(out: list, lone: list, struct: np.ndarray) -> tuple[list, list
             bars.append(b)
         if len(bars) >= JOINED_MIN_BARS and len(bars) >= JOINED_SHARE * max(len(l.bars), 1):
             out[k] = ParsedSystem(u.system, bars, u.y0, l.y1, repeat_end=u.repeat_end or l.repeat_end,
-                                  band=(u.band[0], l.band[1]))
+                                  band=(u.band[0], l.band[1]), repeat_bars=u.repeat_bars + l.repeat_bars)
             del out[k + 1]
             lone = lone[:k + 1] + lone[k + 2:]
             continue
@@ -439,7 +462,8 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
             if closing:
                 bars = [bar for bar in bars if bar[1] < closing[0][0]] + closing[:1]
         bars = drawn_bars(bar_sub, st, bars)
-        out.append(ParsedSystem(s, bars, y0, y1, repeat_end=end_repeat(dark, st, bars)))
+        repeats = end_repeats(dark, st, bars)
+        out.append(ParsedSystem(s, bars, y0, y1, repeat_end=bool(repeats), repeat_bars=repeats))
     # Print bands: each system's marks, up to halfway to the systems above and below
     for si, ps in enumerate(out):
         s, st = ps.system, ps.system.tab

@@ -61,6 +61,15 @@ BLANK_TAIL_INK = 0.02
 FIXED_SHARE, FIXED_MIN_VIEWS = 0.85, 4
 # A page turn between two views takes less than this
 TURN_SECONDS = 1.0
+# A first segment is an intro in another layout when it lasts at most INTRO_SECONDS, ends INTRO_BREAK_SECONDS or more
+# before the next, which overlaps its panel by less than INTRO_OVERLAP of their union and is spaced INTRO_GAP_SHARE
+# or more apart, and the segments after it hold INTRO_REST_SECONDS of tab
+INTRO_SECONDS, INTRO_BREAK_SECONDS, INTRO_OVERLAP, INTRO_GAP_SHARE, INTRO_REST_SECONDS = 15.0, 0.5, 0.7, 0.04, 60.0
+# The text detector looks for measure numbers from this many line gaps above a system's top staff line to this many
+# below it, and gives each to a barline at most NUMBER_REACH_GAPS line gaps from its middle
+NUMBER_ABOVE_GAPS, NUMBER_BELOW_GAPS, NUMBER_REACH_GAPS = 3.0, 0.6, 2.5
+# A detected number's middle lies at least this many line gaps above the top staff line
+NUMBER_CLEAR_GAPS = 0.3
 # A measure whose start sits more than this far inside its part's right edge showed on screen
 ROOM_PX = 3
 # A view is covered by a title card or photo when at least this share of its marks are missing from the next view
@@ -106,6 +115,7 @@ class Measure:
     label: int | None        # measure number, when the view's numbers were trusted
     partial: bool
     stream: int = 0          # the stream its slot belongs to
+    pieces: list | None = None   # (view, cell) of each piece printed side by side, for a measure split by a page turn
 
 
 @dataclass
@@ -141,6 +151,7 @@ class Reading:
     path: list[tuple[int, int, int, float]] = field(default_factory=list)   # (slot, view, cell, play time)
     notices: list[Notice] = field(default_factory=list)
     parts: list[Part] = field(default_factory=list)   # every segment's parts; a part's id is its place here
+    intro: tuple[float, float] | None = None   # an opening stretch of other tab left out, such as a how-to-read demo
 
     def fail(self, reason: str, message: str) -> "Reading":
         self.outcome, self.fail_reason, self.message = "fail", reason, message
@@ -190,6 +201,9 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
         clips = (segments[0].t0, segments[-1].t1)
     else:
         segments = r.segments = drawn_full_size(segments)
+        if intro(segments):
+            r.intro = (segments[0].t0, segments[0].t1)
+            segments = r.segments = segments[1:]
     tell("find", 1.0)
     tell("read", 0.0)
     # The read stage's share is the video time its frames have reached, as a share of the whole video
@@ -348,7 +362,8 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
     # Each stream is numbered and assembled on its own
     streams = sorted({o.stream for o in obs}) or [0]
     stream_obs = {k: [o for o in obs if o.stream == k] for k in streams}
-    r.numbering = number_streams(stream_obs, ocr.read_number)
+    r.numbering = number_streams(stream_obs, ocr.read_number,
+                                 lambda o: detected_numbers(o, segments[o.seg].polarity))
     for o in obs:
         if o.mosaic is not None and o.counter:
             counted_numbers(o)
@@ -368,6 +383,16 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
         r.candidates.append(Candidate("folded", "once", measures_of(folded, obs, folded.order)))
 
     notices = join_notices(main, obs) + edge_notices(main, obs, r.candidates[0].measures)
+    if r.intro is not None:
+        notices.append(Notice(round(r.intro[0], 2), round(r.intro[1], 2), "intro",
+                              f"The tab at {fmt(r.intro[0])}-{fmt(r.intro[1])} is drawn in another layout than the "
+                              f"rest and is left out as an intro; check that no measure of the song is missing there.",
+                              True))
+    for t0, t1 in main.other_music:
+        notices.append(Notice(round(t0, 2), round(t1, 2), "version_change",
+                              "The measure numbers here repeat ones already printed, but the music looks different: "
+                              "this may be another version or section of the song, printed over the earlier "
+                              "measures. Check these measures.", True))
     ranges = []
     for t0, t1, j0, j1 in main.unresolved_folds:
         first_seen = obs[main.slots[j0].obs]
@@ -376,6 +401,7 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
                               f"The measures at {fmt(t0)}-{fmt(t1)} repeat ones first shown at "
                               f"{fmt(first_seen.t0)}-{fmt(first_seen.t1)}, with no sign whether the song plays "
                               f"them again or the video replays them.", False))
+    notices += repeat_notices(main, obs)
     primary = r.candidates[0].measures
     printing = {obs[m.view].part for m in primary}
     # A part that prints nothing while another part of its segment prints is lines that only look like tab, such as
@@ -545,11 +571,35 @@ def set_numbers(obs: list[Obs], numbers: list[list[int | None]]) -> None:
             c.number = n
 
 
-def number_streams(stream_obs: dict[int, list[Obs]], read) -> str:
+def number_streams(stream_obs: dict[int, list[Obs]], read, more=None) -> str:
     """Number each stream's views apart from the others', since parts shown at once count their measures apart.
     "numbered" when any stream is."""
-    found = [number_views(views, read) for views in stream_obs.values()]
+    found = [number_views(views, read, more) for views in stream_obs.values()]
     return "numbered" if "numbered" in found else "unnumbered"
+
+
+def detected_numbers(o: Obs, polarity: str) -> dict[int, int]:
+    """Measure numbers the OCR's text detector finds above each system of a still view, by cell: each number goes to
+    the cell whose left barline is nearest its middle, within NUMBER_REACH_GAPS line gaps."""
+    out: dict[int, int] = {}
+    if o.image is None:
+        return out
+    gray = to_gray(o.image, polarity)
+    for si, ps in enumerate(o.systems):
+        st = ps.system.notation or ps.system.tab
+        y0, y1 = int(max(0, st.top - NUMBER_ABOVE_GAPS * st.gap)), int(st.top + NUMBER_BELOW_GAPS * st.gap)
+        cells = [(i, c) for i, c in enumerate(o.cells) if c.system == si]
+        if y1 - y0 < 8 or not cells:
+            continue
+        for left, right, row, n in ocr.numbers_in_line(gray[y0:y1]):
+            # A measure number sits above the staff; digits on its top line are frets
+            if y0 + row > st.top - NUMBER_CLEAR_GAPS * st.gap:
+                continue
+            mid = (left + right) / 2
+            i, c = min(cells, key=lambda ic: abs(ic[1].x0 - mid))
+            if abs(c.x0 - mid) <= NUMBER_REACH_GAPS * st.gap:
+                out.setdefault(i, n)
+    return out
 
 
 def slot_offsets(assemblies: list[Assembly]) -> list[int]:
@@ -577,10 +627,13 @@ def joined(assemblies: list[Assembly], obs: list[Obs], place: dict[int, float], 
         keys += [(when[sid], place[obs[A.slots[sid].obs].part], sid + off) for sid in A.order]
         out.decisions += A.decisions
         out.unresolved_folds += [(t0, t1, j0 + off, j1 + off) for t0, t1, j0, j1 in A.unresolved_folds]
+        out.maybe_repeats += [(t0, t1, j + off) for t0, t1, j in A.maybe_repeats]
         out.view_slots.update({v: [None if s is None else s + off for s in sl] for v, sl in A.view_slots.items()})
         out.view_links.update(A.view_links)
         out.sightings.update({s + off: v for s, v in A.sightings.items()})
         out.edge_joins += A.edge_joins
+        out.other_music += A.other_music
+        out.stitches.update(A.stitches)
     out.order = [keys[i][2] for i in merge_order(keys)]
     out.decisions.sort(key=lambda d: d.t)
     return out
@@ -668,13 +721,36 @@ def join_notices(A: Assembly, obs: list[Obs]) -> list[Notice]:
     return notices
 
 
+def repeat_notices(A: Assembly, obs: list[Obs]) -> list[Notice]:
+    """A notice for each view printed as new that may repeat earlier measures it matches only where those were cut
+    off or highlighted."""
+    # A view with an unresolved fold already has its own notice and a folded PDF
+    folded_views = {(t0, t1) for t0, t1, _, _ in A.unresolved_folds}
+    notices = []
+    for t0, t1, j in A.maybe_repeats:
+        if (t0, t1) in folded_views:
+            continue
+        first_seen = obs[A.slots[j].obs]
+        notices.append(Notice(round(t0, 2), round(t1, 2), "possible_duplicate",
+                              f"The measures at {fmt(t0)}-{fmt(t1)} may repeat ones first shown at "
+                              f"{fmt(first_seen.t0)}-{fmt(first_seen.t1)}: they match only where those were cut off or "
+                              f"highlighted, so they are printed again. Check whether they repeat.", True))
+    return notices
+
+
 def edge_notices(A: Assembly, obs: list[Obs], printed: list[Measure] = ()) -> list[Notice]:
     """A notice for each join by the playhead that may leave out notes. It covers the page before, where the cut
     measure was played, the next page, the view that first showed the measure and the one its image prints from."""
     printed_view = {m.slot: m.view for m in printed}
+    whole = {m.slot for m in printed if m.pieces or m.cell.complete}
     notices = []
     for pi, vi in A.edge_joins:
         sid = A.view_slots[vi][0]
+        st = A.stitches.get(vi)
+        resolved = next((d.resolved for d in A.decisions if d.view == vi and d.chosen.startswith("playhead")), False)
+        # A measure printed whole, or from both pieces, after a join the playhead settled has no note left out
+        if resolved and st is not None and (sid in whole or (st[2] == "whole" and printed_view.get(sid) == vi)):
+            continue
         views = [obs[i] for i in (pi, vi, A.slots[sid].obs, printed_view.get(sid, vi))]
         notices.append(Notice(round(min(v.t0 for v in views), 2), round(max(v.t1 for v in views), 2), "edge_join",
                               "A measure cut by the page edge was joined to the next page by where the playhead was; "
@@ -746,6 +822,20 @@ def drawn_full_size(segments: list[Segment]) -> list[Segment]:
     a promo card or an end screen, not the tab being played."""
     longest = max(segments, key=lambda s: s.t1 - s.t0)
     return [s for s in segments if s.t1 - s.t0 >= SMALL_SECONDS or s.gap >= SMALL_GAP_SHARE * longest.gap]
+
+
+def intro(segments: list[Segment]) -> bool:
+    """True when the first segment is a short opening in another layout, such as a channel's how-to-read-tab demo:
+    at most INTRO_SECONDS long, followed after a break by at least INTRO_REST_SECONDS of tab drawn in another panel
+    at another line spacing."""
+    if len(segments) < 2:
+        return False
+    a, b = segments[0], segments[1]
+    ix = max(0, min(a.x1, b.x1) - max(a.x0, b.x0)) * max(0, min(a.y1, b.y1) - max(a.y0, b.y0))
+    union = (a.x1 - a.x0) * (a.y1 - a.y0) + (b.x1 - b.x0) * (b.y1 - b.y0) - ix
+    return (a.t1 - a.t0 <= INTRO_SECONDS and b.t0 - a.t1 >= INTRO_BREAK_SECONDS
+            and sum(s.t1 - s.t0 for s in segments[1:]) >= INTRO_REST_SECONDS
+            and ix < INTRO_OVERLAP * union and abs(a.gap - b.gap) >= INTRO_GAP_SHARE * b.gap)
 
 
 def scattered(segments: list[Segment], duration: float) -> bool:
@@ -874,6 +964,7 @@ def plate_obs(v, seg: Segment, si: int, thr: float, fthr: float, index: int) -> 
     levels = [line_darkness(gray, ps.system.tab) for ps in systems]
     o.line_contrast = float(np.median([paper - line for line, paper in levels])) if levels else 0.0
     o.repeat_end = any(ps.repeat_end for ps in systems)
+    o.repeat_bars = [(k, x) for k, ps in enumerate(systems) for x in ps.repeat_bars]
     band = ink_map(to_gray(v.plate, seg.polarity), thr, seg.gap)
     keep = np.zeros_like(band)
     keep[y0:y1, x0:x1] = True
@@ -1113,12 +1204,18 @@ def measures_of(A: Assembly, obs: list[Obs], order: list[int]) -> list[Measure]:
     is one, then one showing its tab staff, then one between two barlines, then the widest, then one from the view
     the measure before printed from, then the earliest."""
     times = {o.index: play_times(o) for o in obs}
+    split = {A.view_slots[oi][0]: (pi, k, oi) for oi, (pi, k, kind) in A.stitches.items() if kind == "stitch"}
     out = []
     prev = None
     for sid in order:
         vi, c = max(A.sightings[sid], key=lambda vc: (vc[1].complete, not vc[1].notation_only, vc[1].kind == "full",
                                                       vc[1].x1 - vc[1].x0, vc[0] == prev, -vc[0]))
-        out.append(measure_at(sid, obs[vi], c, times[vi]))
+        m = measure_at(sid, obs[vi], c, times[vi])
+        if not c.complete and sid in split:
+            # Each page shows only a piece of this measure, so both pieces print, the earlier page's first
+            pi, k, oi = split[sid]
+            m.pieces = [(pi, obs[pi].cells[k]), (oi, obs[oi].cells[0])]
+        out.append(m)
         prev = vi
     return out
 
@@ -1171,6 +1268,6 @@ def path_measures(A: Assembly, obs: list[Obs], path) -> list[Measure]:
     out = []
     for sid, vi, ci, _ in path:
         here = measure_at(sid, obs[vi], obs[vi].cells[ci], times[vi])
-        here.view, here.cell = best[sid].view, best[sid].cell
+        here.view, here.cell, here.pieces = best[sid].view, best[sid].cell, best[sid].pieces
         out.append(here)
     return out

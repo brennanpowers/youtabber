@@ -7,7 +7,7 @@ from fpdf import FPDF
 from PIL import Image
 
 from youtabber.enhance import Upscaler
-from youtabber.printcell import PrintCell
+from youtabber.printcell import MARK_LEVEL, PrintCell
 from youtabber.source import Source
 
 # Page measurements in points (1/72 inch), on US Letter
@@ -24,6 +24,10 @@ TITLE_SIZE = 20
 MIN_TITLE_SIZE = 10
 # Size of the notes on page 1 and the check list, in points
 NOTE_SIZE = 9
+# A row dark across this share of a piece's width is a staff line
+LINE_SHARE = 0.7
+# Marks cut by a page edge are dropped at most this many line gaps back from it
+EDGE_MARK_GAPS = 1.5
 
 
 def rows(cells: list[PrintCell], breaks: set[int], width: float = USABLE_WIDTH) -> list[list[int]]:
@@ -72,6 +76,38 @@ def compose(row: list[PrintCell]) -> tuple[np.ndarray, float]:
         # Darker wins where neighbors overlap, so marks hanging over a barline join the next measure's ink
         np.minimum(region, img[:region.shape[0], :region.shape[1]], out=region)
     return canvas, g
+
+
+def cut_edge_marks(pc: PrintCell) -> PrintCell:
+    """A piece cut by the page's right edge without the marks the edge cuts through: the next page shows them whole.
+    Columns are dropped from the edge back to the first one holding nothing but staff lines, at most EDGE_MARK_GAPS
+    line gaps."""
+    dark = pc.image < MARK_LEVEL
+    lines = dark.mean(axis=1) >= LINE_SHARE
+    # A digit on a line covers the rows next to it too, so only the line rows themselves are left out
+    marks = dark & ~lines[:, None]
+    end = pc.left + pc.advance
+    x = min(end, pc.image.shape[1]) - 1
+    stop = max(pc.left, end - int(EDGE_MARK_GAPS * pc.gap))
+    while x > stop and marks[:, x].any():
+        x -= 1
+    if x >= min(end, pc.image.shape[1]) - 1 or x <= stop:
+        return pc
+    return PrintCell(pc.image[:, :x + 1], pc.gap, pc.top, pc.left, x - pc.left)
+
+
+def side_by_side(pieces: list[PrintCell]) -> PrintCell:
+    """One measure printed from pieces shown on different screens, each piece's left edge on the one before's right."""
+    if len(pieces) == 1:
+        return pieces[0]
+    pieces = [cut_edge_marks(pieces[0])] + pieces[1:]
+    image, g = compose(pieces)
+    fs = [g / pc.gap for pc in pieces]
+    above = max(pc.top * f for pc, f in zip(pieces, fs))
+    starts = [sum(pc.advance * f for pc, f in zip(pieces[:k], fs[:k])) - pieces[k].left * fs[k]
+              for k in range(len(pieces))]
+    return PrintCell(image, g, int(round(above)), int(round(-min(starts))),
+                     int(round(sum(pc.advance * f for pc, f in zip(pieces, fs)))))
 
 
 class _TabPDF(FPDF):

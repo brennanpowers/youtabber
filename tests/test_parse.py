@@ -1,8 +1,10 @@
+from types import SimpleNamespace
+
 import cv2
 import numpy as np
 
 from youtabber import ocr
-from youtabber.parse import parse_view
+from youtabber.parse import end_repeats, parse_view
 
 
 def plate(light_line: bool) -> np.ndarray:
@@ -265,3 +267,64 @@ def test_barlines_on_each_staff_only_keep_two_systems():
     assert len(systems) == 2
     assert [[c.x0 for c in ps.cells if c.kind == "full"] for ps in systems] == [[99, 399], [99, 399]]
     assert [ps.band for ps in systems] == [(46, 145), (186, 285)]
+
+
+def dotted(gap: float, w: int, h: int, stacked: bool) -> list[int]:
+    """end_repeats on a 6-line staff (top line at row 40) with a barline at x 200 and two w x h dots left of it:
+    one above the other two line gaps apart, or side by side at one height, as two fret digits stand."""
+    top = 40
+    dark = np.zeros((200, 300), bool)
+    for i in range(6):
+        dark[int(round(top + i * gap))] = True
+    y = int(top + 1.5 * gap - h / 2)
+    x = int(200 - 0.4 * gap - w)
+    places = [(x, y), (x, int(y + 2 * gap))] if stacked else [(x - int(0.5 * gap), y), (x, y)]
+    for px, py in places:
+        dark[py:py + h, px:px + w] = True
+    st = SimpleNamespace(top=float(top), bottom=top + 5 * gap, gap=gap)
+    return end_repeats(dark, st, [(200, 202)])
+
+
+def test_an_end_repeat_sign_is_two_dots_one_above_the_other_at_any_dot_size():
+    assert dotted(20.0, 8, 8, stacked=True) == [200]
+    assert dotted(15.5, 3, 4, stacked=True) == [200]
+    # Two fret digits side by side next to a barline are no sign
+    assert dotted(20.0, 8, 8, stacked=False) == []
+    assert dotted(23.5, 5, 8, stacked=False) == []
+    assert dotted(15.5, 3, 4, stacked=False) == []
+
+
+def test_end_repeat_dots_are_round():
+    # The smallest real dots seen, 3 px wide and 5 tall at line gap 15.5, still count
+    assert dotted(15.5, 3, 5, stacked=True) == [200]
+    # Two fret digits stacked in a chord, 7 px wide and 13 tall at line gap 22.9, are no sign
+    assert dotted(22.9, 7, 13, stacked=True) == []
+
+
+def test_an_end_repeat_sign_may_have_both_dots_in_one_line_space():
+    # 6-line staff with line gap 27 and lines at rows 40 to 175; a barline at x 200. Two 10 px wide dots, 9 and 10 rows
+    # tall, sit in the space between rows 94 and 121, the upper touching the line above and the lower the line below
+    dark = np.zeros((220, 300), bool)
+    for i in range(6):
+        dark[40 + i * 27] = True
+    dark[94:103, 186:196] = True
+    dark[112:122, 186:196] = True
+    st = SimpleNamespace(top=40.0, bottom=175.0, gap=27.0)
+    assert end_repeats(dark, st, [(200, 222)]) == [200]
+    # The same pair one space lower is off the staff's middle, as pieces of a time signature's digit can be
+    dark[95:121, 186:196] = False
+    dark[121:130, 186:196] = True
+    dark[139:149, 186:196] = True
+    assert end_repeats(dark, st, [(200, 222)]) == []
+
+
+def test_a_fret_digit_split_by_the_middle_line_is_no_end_repeat():
+    # 5-line staff with line gap 14.7 and its middle line at row 69; a barline at x 200. A 4 px wide digit about 20 px
+    # left of it is cut by the middle line into an 8-row piece above (rows 60-67) and a 3-row piece on it (rows 69-71)
+    dark = np.zeros((150, 300), bool)
+    for i in range(5):
+        dark[int(round(40 + i * 14.7))] = True
+    dark[60:68, 181:185] = True
+    dark[69:72, 181:185] = True
+    st = SimpleNamespace(top=40.0, bottom=40 + 4 * 14.7, gap=14.7)
+    assert end_repeats(dark, st, [(200, 202)]) == []

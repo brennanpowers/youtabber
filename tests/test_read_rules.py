@@ -1,10 +1,14 @@
+from dataclasses import replace
+from types import SimpleNamespace
+
 import cv2
 import numpy as np
 
+from youtabber import pipeline
 from youtabber.assemble import Assembly, Obs, Slot
 from youtabber.check import empty, screen_breaks
 from youtabber.parse import parse_view
-from youtabber.pipeline import drawn_full_size, scattered
+from youtabber.pipeline import detected_numbers, drawn_full_size, intro, scattered
 from youtabber.scan import Segment
 
 
@@ -150,3 +154,45 @@ def test_a_new_place_on_screen_or_a_short_segment_is_not_pointed_out():
     moved = Segment(52.0, 90.0, 14.2, "dark", y0=300, y1=700)
     short = Segment(91.0, 94.0, 20.0, "dark", y0=300, y1=700)
     assert layout_changes([a, moved, short], []) == []
+
+
+def opening(**change) -> list[Segment]:
+    """A 10 s opening drawn at line gap 10.4 in the top of the frame, then 60 s of tab at line gap 10 in the bottom
+    after a 0.5 s break: an intro by every threshold. `change` replaces fields of the opening (a) or the tab (b),
+    as a_<field> or b_<field>."""
+    a = Segment(0.0, 10.0, 10.4, "dark", x0=0, x1=100, y0=0, y1=100)
+    b = Segment(10.5, 70.5, 10.0, "dark", x0=0, x1=100, y0=200, y1=300)
+    a = replace(a, **{k[2:]: v for k, v in change.items() if k.startswith("a_")})
+    b = replace(b, **{k[2:]: v for k, v in change.items() if k.startswith("b_")})
+    return [a, b]
+
+
+def test_a_short_opening_in_another_layout_is_an_intro():
+    assert intro(opening())
+    assert intro(opening(a_t1=15.0, b_t0=15.5, b_t1=80.0))
+    assert not intro(opening(a_t1=15.1, b_t0=15.6, b_t1=80.0))   # over 15 s long
+    assert not intro(opening(b_t0=10.4))                          # no break before the tab
+    assert not intro(opening(b_t1=70.4))                          # under 60 s of tab after it
+    # Panels 100 px square, the tab's moved right by 18 px overlaps under 0.7 of their union, by 17 px it doesn't
+    assert intro(opening(b_x0=18, b_x1=118, b_y0=0, b_y1=100))
+    assert not intro(opening(b_x0=17, b_x1=117, b_y0=0, b_y1=100))
+    assert not intro(opening(a_gap=10.3))                         # line gaps under 4% apart
+    assert not intro(opening()[:1])
+
+
+def numbered_view(monkeypatch, boxes: list) -> dict[int, int]:
+    """detected_numbers on a one-system view whose tab staff's top line is at row 100 (line gap 10), with cells
+    starting at x 0, 200, 400 and 600, when the text detector finds `boxes` (left, right, middle row in the strip,
+    number). The strip starts 3 line gaps above the top line, at row 70."""
+    monkeypatch.setattr(pipeline.ocr, "numbers_in_line", lambda strip: boxes)
+    cells = [SimpleNamespace(system=0, x0=x) for x in (0, 200, 400, 600)]
+    o = Obs(0, 0.0, 5.0, cells, [], 0, (0, 0))
+    o.image = np.full((200, 800, 3), 255, np.uint8)
+    o.systems = [SimpleNamespace(system=SimpleNamespace(notation=None, tab=SimpleNamespace(top=100.0, gap=10.0)))]
+    return detected_numbers(o, "dark")
+
+
+def test_detected_numbers_go_to_the_nearest_barline_and_skip_digits_on_the_top_line(monkeypatch):
+    # Rows 26 and 28 are 0.4 and 0.2 line gaps above the top line; x 305 is 9.5 gaps from the nearest barline
+    boxes = [(0, 10, 26, 7), (195, 205, 26, 8), (400, 410, 28, 3), (300, 310, 26, 9)]
+    assert numbered_view(monkeypatch, boxes) == {0: 7, 1: 8}

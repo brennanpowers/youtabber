@@ -90,6 +90,18 @@ def test_one_measure_drawn_differently_where_the_screens_overlap_is_not_another_
                                                                                    [5, 6, 7, 8]]
 
 
+def other_music(part: str) -> list:
+    """Where assembly flags other music printed over earlier measures, when a screen in another layout shows
+    measures 1-4 drawn as `part` after screens of part "a" measures 1-8."""
+    obs = [view(0, run("a", 1, 4)), view(1, run("a", 5, 8)), view(2, run(part, 1, 4), seg=1)]
+    return assemble(obs, 10.0, False, {"numbers"}, lambda o: []).other_music
+
+
+def test_numbers_placing_other_music_on_earlier_measures_are_flagged():
+    assert other_music("b") == [[20.0, 30.0]]
+    assert other_music("a") == []
+
+
 def band_view(index: int, first: int) -> Obs:
     """A screen of a scrolling band without readable numbers: measures first to first + 3 of part "a"."""
     o = view(index, run("a", first, first + 3))

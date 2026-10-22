@@ -63,3 +63,18 @@ def find_words(image: np.ndarray) -> list[str]:
         result, _ = engine()(np.ascontiguousarray(bgr[:, x:x + WORD_TILE]))
         words += [r[1] for r in result or [] if float(r[2]) >= 0.5]
     return words
+
+
+def numbers_in_line(image: np.ndarray) -> list[tuple[float, float, float, int]]:
+    """(left, right, middle row, number) of each digit-only text the detector finds in a strip, 1 to 3 digits."""
+    bgr = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR) if image.ndim == 2 else image
+    # The detector misses text touching the image edge
+    bgr = cv2.copyMakeBorder(np.ascontiguousarray(bgr), 20, 20, 0, 0, cv2.BORDER_CONSTANT, value=(255, 255, 255))
+    result, _ = engine()(bgr)
+    out = []
+    for box, text, score in result or []:
+        text = text.strip()
+        if float(score) >= 0.5 and re.fullmatch(r"\d{1,3}", text):
+            xs, ys = [p[0] for p in box], [p[1] for p in box]
+            out.append((float(min(xs)), float(max(xs)), (min(ys) + max(ys)) / 2 - 20, int(text)))
+    return out

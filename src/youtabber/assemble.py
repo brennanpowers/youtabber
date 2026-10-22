@@ -44,6 +44,13 @@ GLIDE_RESEMBLE = 0.15
 GLIDE_CONTINUE = 0.4
 # A glide counts as played again when this share of its measures align with an earlier glide
 GLIDE_RESTART_SHARE = 0.6
+# A cell holds notes when its tab staff has this many square line gaps of ink, past the first BAR_GAPS line gaps of
+# its ink box
+NOTES_INK, BAR_GAPS = 0.1, 0.7
+# A sighting with more than this share of its ink under the cursor highlight is not compared when matching a run
+HIGHLIGHT_SHARE = 0.25
+# Two sightings are drawn at one line spacing when their spacings differ by at most this share
+SAME_SPACING = 0.03
 # A number read this many measures or fewer off its view's count points at a missed or extra barline
 CONFLICT_SPAN = 2
 NAV_WORDS = ("D.S", "DS.", "D.C", "DC.", "CODA", "FINE", "SEGNO")
@@ -70,6 +77,18 @@ CUT_WIDTH = 0.95
 # A cut measure this wide, or played this long, is close to a whole measure that only lost its barline to the edge
 EDGE_WIDTH = 0.75
 EDGE_DWELL = 0.6
+# A page's cut first cell narrower than LEAD_SHARE of a typical measure, which with the previous page's cut last cell
+# makes REST_SPAN of a typical measure, holds the rest of that measure
+LEAD_SHARE, REST_SPAN = 0.5, (0.85, 1.4)
+# A page's first measure starts at most this many line gaps right of the staff start (clef, key, time signature)
+STAFF_START_GAPS = 10
+# Two pieces of a measure split by a page turn are together at most this share of a typical whole measure wide,
+# a page's clef and key included; wider, the cut measure may have been a whole one and the next page's first cell
+# the measure after it
+STITCH_WIDTH = 1.6
+# A view placed by an end-repeat sign that shows the sign again sends the next view back to the same place, within
+# this many slots
+SIGN_SLACK = 2
 
 
 @dataclass
@@ -93,6 +112,7 @@ class Obs:
     bars: list = field(default_factory=list)
     frames: int = 0                      # frames that went into the view
     repeat_end: bool = False             # shows an end-repeat sign
+    repeat_bars: list = field(default_factory=list)   # (system, barline x) of its end-repeat signs, for a still view
     mosaic: object = None                # the glide mosaic this view was read from, if any
     all_cells: list = field(default_factory=list)   # every parsed cell, before narrow ones are dropped
     contrast: float = 0.0                # paper against the darkest ink, to spot views caught in a fade
@@ -139,6 +159,8 @@ class Assembly:
     order: list[int] = field(default_factory=list)
     decisions: list[Decision] = field(default_factory=list)
     unresolved_folds: list[tuple[float, float, int, int]] = field(default_factory=list)
+    # (t0, t1, j) of views printed as new whose run matches slots j, ... only through cut or highlighted sightings
+    maybe_repeats: list[tuple[float, float, int]] = field(default_factory=list)
     view_slots: dict = field(default_factory=dict)
     view_links: dict = field(default_factory=dict)   # view index -> cells the join tied to the view before
     sightings: dict = field(default_factory=dict)
@@ -146,17 +168,22 @@ class Assembly:
     segment_starts: set = field(default_factory=set)
     seen_segments: set = field(default_factory=set)
     edge_joins: list = field(default_factory=list)   # (p, o) indexes of playhead joins that may leave out notes
+    # o index -> (p index, cell of p, kind) for those joins: "stitch" when the measure prints from both pieces,
+    # "whole" when o's first cell shows the cut piece again
+    stitches: dict = field(default_factory=dict)
+    other_music: list = field(default_factory=list)   # [t0, t1] where numbers placed other music on earlier measures
+    sign_folds: dict = field(default_factory=dict)   # view index -> first slot its cells folded onto by a repeat sign
     sliding: dict = field(default_factory=dict)   # segment -> its band moves on by measured slides
     stream_orders: dict = field(default_factory=dict)   # stream -> its own slots in print order
 
 
-def number_views(obs: list[Obs], read) -> str:
+def number_views(obs: list[Obs], read, more=None) -> str:
     """Read measure numbers and keep only those that count up consistently within a view.
 
     Every cell's number is read; the view's numbers are trusted only when at least two readings agree
-    on one starting number for the run of cells. Returns "numbered" or "unnumbered".
+    on one starting number for the run of cells. In a numbered video, `more(o)` ({cell: number}) reads the cells
+    of view o whose own crop read nothing. Returns "numbered" or "unnumbered".
     """
-    consistent = checked = 0
     all_reads = []
     for o in obs:
         reads = []
@@ -167,16 +194,24 @@ def number_views(obs: list[Obs], read) -> str:
                 n = c.read = read(c.number_crop)
                 if n is not None:
                     reads.append((i, n))
-        o.start = None
-        o.number_conflicts = []
-        if len(reads) < 2:
-            continue
-        checked += 1
-        start, votes = Counter(n - i for i, n in reads).most_common(1)[0]
-        if votes >= 2 and votes >= 0.6 * len(reads):
-            consistent += 1
-            o.start = start
-    numbered = checked >= 3 and consistent >= 0.6 * checked
+    numbered = vote_starts(obs, all_reads)
+    if numbered and more is not None:
+        added = []
+        for o, reads in zip(obs, all_reads):
+            if o.mosaic is None and len(reads) < len(o.cells):
+                found = more(o)
+                for i, c in enumerate(o.cells):
+                    if c.read is None and i in found:
+                        c.read = found[i]
+                        reads.append((i, found[i]))
+                        added.append((c, reads, i))
+                reads.sort()
+        if not vote_starts(obs, all_reads):
+            # The extra reads broke the count, so they were not measure numbers: keep the crops' reads alone
+            for c, reads, i in added:
+                c.read = None
+                reads.remove((i, next(n for k, n in reads if k == i)))
+            vote_starts(obs, all_reads)
     for k, o in enumerate(obs):
         if o.start is not None and not fits_neighbours(obs, k):
             o.start = None
@@ -190,6 +225,22 @@ def number_views(obs: list[Obs], read) -> str:
     if numbered:
         borrow_numbers(obs)
     return "numbered" if numbered else "unnumbered"
+
+
+def vote_starts(obs: list[Obs], all_reads: list) -> bool:
+    """Set each view's start from its reads, when at least two agree; True when the video counts as numbered."""
+    consistent = checked = 0
+    for o, reads in zip(obs, all_reads):
+        o.start = None
+        o.number_conflicts = []
+        if len(reads) < 2:
+            continue
+        checked += 1
+        start, votes = Counter(n - i for i, n in reads).most_common(1)[0]
+        if votes >= 2 and votes >= 0.6 * len(reads):
+            consistent += 1
+            o.start = start
+    return checked >= 3 and consistent >= 0.6 * checked
 
 
 def fits_neighbours(obs: list[Obs], k: int) -> bool:
@@ -480,16 +531,28 @@ def choose_join(p: Obs, o: Obs, options: list, use: set[str]) -> tuple[int, str,
     return (0 if strong else len(options) - 1), "prior", False
 
 
-def find_run(slots: list[Slot], cells: list, gap: float, before_view: int, expect: int | None = None) -> int | None:
+def find_run(slots: list[Slot], cells: list, gap: float, before_view: int, expect: int | None = None,
+             sightings: dict | None = None, latest: bool = False, every: bool = False) -> int | None:
     """Slot j, first seen on an earlier view, where cells match slots j, j+1, ... in order: `expect` if it
-    fits (a replay going on), else the first that does."""
-    order = ([expect] if expect is not None else []) + list(range(len(slots)))
+    fits (a replay going on), else the first that does, or with `latest` the last. A cell matches a slot when it
+    matches any of the slot's earlier sightings (`sightings`, slot id -> [(view, cell), ...]) that is whole and
+    clear of the cursor highlight, as its first sighting may be a piece cut by the panel edge; a slot never seen
+    that way is compared with its first sighting. With `every`, any earlier sighting counts."""
+    def matches(sid, c):
+        seen = [slots[sid].first] + [x for v, x in (sightings or {}).get(sid, []) if v < before_view]
+        if every:
+            return any(same_cell(x, c, gap) for x in seen)
+        # A cut piece, or a measure under the highlight, leaves so little ink to compare that it can match other
+        # music of the same width
+        clear = [x for x in seen if x.complete and (x.ink & x.tint).sum() <= HIGHLIGHT_SHARE * x.ink.sum()]
+        return any(same_cell(x, c, gap) for x in clear or seen[:1])
+
+    ahead = [j for j in range(len(slots) - len(cells) + 1) if slots[j + len(cells) - 1].obs < before_view]
+    order = ([expect] if expect is not None else []) + (ahead[::-1] if latest else ahead)
     for j in order:
         if j + len(cells) > len(slots) or slots[j + len(cells) - 1].obs >= before_view:
-            if j == expect:
-                continue
-            break
-        if all(same_cell(slots[j + i].first, c, gap) for i, c in enumerate(cells)):
+            continue
+        if all(matches(j + i, c) for i, c in enumerate(cells)):
             return j
         # Two glides are drawn by different mosaics; a run of several measures alike is the same music
         # Inside a replay under way a looser likeness carries it on, since some glided measures are drawn
@@ -528,7 +591,8 @@ def replay_evidence(o, run, j, A, gap_before, prev, use, words_of) -> tuple[bool
     if "numbers" in use and first.number is not None and A.slots[j].number is not None:
         return first.number == A.slots[j].number, "numbers", True
     if "navigation" in use:
-        if prev is not None and prev.repeat_end:
+        if (prev is not None and prev.repeat_end and repeat_played(prev)
+                and abs(A.sign_folds.get(prev.index, j) - j) <= SIGN_SLACK):
             return True, "repeat_sign", True
         word = navigation_before(prev, words_of)
         if word:
@@ -544,6 +608,23 @@ def replay_evidence(o, run, j, A, gap_before, prev, use, words_of) -> tuple[bool
         from_end = prev is not None and cell_at(prev, playhead_at(prev, at_start=False)) == len(prev.cells) - 1
         return True, "track_restart", from_end and cell_at(o, playhead_at(o, at_start=True)) == 0
     return False, "none", False
+
+
+def repeat_played(p: Obs) -> bool:
+    """Whether an end-repeat sign still lay ahead of the playhead when the view ended: one on a lower system than
+    the measure under its last sample, or on the same system at or past that measure's end. A repeat the playhead
+    already played on the screen and left behind sends nothing back. True when the playhead or the signs' places
+    are unknown."""
+    track = playhead_track(p)
+    if not track or not p.repeat_bars:
+        return True
+    _, x, y = track[-1]
+    # A box cursor's samples can drift off the staff in height; one system is placed by x alone
+    i = next((k for k, c in enumerate(p.cells) if c.x0 - 2 <= x <= c.x1 + 2), None) if p.single else cell_at(p, (x, y))
+    if i is None:
+        return True
+    c = p.cells[i]
+    return any(si > c.system or (si == c.system and b >= c.x1 - c.gap) for si, b in p.repeat_bars)
 
 
 def register(p: Obs, o: Obs, dx: int, gap: float, reach: int) -> tuple[int, float] | None:
@@ -732,7 +813,7 @@ def playhead_join(p: Obs, o: Obs, beat: float | None, gap: float) -> tuple[dict[
     if p.cells[e].complete:
         k = e + 1 if played >= MOVED_ON * beat else None
     else:
-        k = e if played < CUT_DWELL * beat else None
+        k = e if played < CUT_DWELL * beat or rest_of(p.cells[e], o.cells[0], p) else None
     # The cut measure is p's last and opens the next page
     if s != 0 or k is None or k != len(p.cells) - 1 or p.cells[k].complete or p.cells[k].kind != "tail":
         return None
@@ -750,6 +831,46 @@ def playhead_join(p: Obs, o: Obs, beat: float | None, gap: float) -> tuple[dict[
     continues = (same_part(p.cells[k], o.cells[0], gap, "left")
                  or resemble(p.cells[k], o.cells[0], gap, any_kind=True) <= REPLAY_RESEMBLE)
     return {0: k}, continues, edge
+
+
+class _Columns:
+    """Columns a..b of a cell's maps, read as a cell by `same_part`."""
+
+    def __init__(self, c, a: int, b: int):
+        self.ink, self.faint, self.tint = c.ink[:, a:b], c.faint[:, a:b], c.tint[:, a:b]
+        self.ref_y, self.gap = c.ref_y, c.gap
+
+
+def split_measure(p: Obs, k: int, o: Obs, gap: float) -> str | None:
+    """How a measure cut by the page edge (cell k of p) carries on as o's first cell, when both are pieces:
+    "whole" when o's first cell shows the cut piece again after the page's clef and key, "stitch" when it holds
+    only the rest, None when the two are too wide to be one measure."""
+    t, h = p.cells[k], o.cells[0]
+    if t.complete or h.complete:
+        return None
+    widths = [c.x1 - c.x0 for c in p.cells if c.kind == "full"]
+    if not widths:
+        return None
+    w, hw, typical = t.ink.shape[1], h.ink.shape[1], float(np.median(widths))
+    # The piece shown again starts a whole measure, so a match with less than a measure after it is chance
+    for dx in range(0, min(hw - w, int(STAFF_START_GAPS * gap), int(hw - CUT_WIDTH * typical)) + 1, 2):
+        if same_part(t, _Columns(h, dx, dx + w), gap, "left"):
+            return "whole"
+    if (t.x1 - t.x0) + (h.x1 - h.x0) > STITCH_WIDTH * typical:
+        return None
+    return "stitch"
+
+
+def rest_of(t, h, p: Obs) -> bool:
+    """Whether a page's narrow cut first cell h is the rest of the previous page's cut last cell t: together they are
+    about one typical measure of page p wide. Time played can't tell: a cut measure nearly whole is played nearly as
+    long as a whole one."""
+    widths = [c.x1 - c.x0 for c in p.cells if c.kind == "full"]
+    if h.complete or h.kind != "lead" or not widths:
+        return False
+    typical = float(np.median(widths))
+    return (h.x1 - h.x0 < LEAD_SHARE * typical
+            and REST_SPAN[0] * typical <= (t.x1 - t.x0) + (h.x1 - h.x0) <= REST_SPAN[1] * typical)
 
 
 def move_decision(p: Obs, o: Obs, gap: float) -> Decision:
@@ -802,6 +923,9 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
         moved = [o for o in obs if o.seg == sg and o.move is not None and o.move.kind in ("slide", "cut")]
         A.sliding[sg] = len(slides.get(sg, [])) >= 5 and len(slides.get(sg, [])) >= 0.7 * len(moved)
     beats = {s: measure_time([o for o in obs if o.seg == s and o.mosaic is None]) for s in {o.seg for o in obs}}
+    # While views keep being placed by their numbers on earlier measures: the first such view, whether each measure
+    # showed the earlier music, the stretch once most did not, and whether the first view came after a break
+    watch = None
     for o in obs:
         cells = o.cells
         # Time without tab on screen before this view; a view with tab but no usable cells still counts
@@ -826,7 +950,23 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
             for c in cells:
                 c.number = None
         if "numbers" in use and all(c.number is not None for c in cells):
+            slots_before = len(A.slots)
             place_numbered(o, slot_of, A, prev, prev_slots, gap, seg_of)
+            seen = earlier_music(o, slot_of, A, prev_slots, slots_before, gap)
+            if not seen or (watch is not None and watch[0].seg != o.seg):
+                watch = None
+            if seen:
+                if watch is None:
+                    watch = (o, [], [], prev is None or prev.seg != o.seg or gap_before >= RESTART_GAP_SECONDS)
+                watch[1].extend(seen)
+                # After a break (a card between versions) half the measures differing is enough
+                other = len(watch[1]) - sum(watch[1])
+                if watch[2]:
+                    # The other music goes on: the notice reaches this view too
+                    watch[2][0][1] = o.t1
+                elif other >= 2 and (other > sum(watch[1]) or (watch[3] and other == sum(watch[1]))):
+                    watch[2].append([watch[0].t0, o.t1])
+                    A.other_music.append(watch[2][0])
         else:
             links: dict = {}
             joins_before = len(A.decisions)
@@ -862,6 +1002,10 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
                                                 ["edge"] if edge else [], "track", resolved))
                     if edge:
                         A.edge_joins.append((prev.index, o.index))
+                        kind = split_measure(prev, links[0], o, gap)
+                        if kind is not None:
+                            A.stitches[o.index] = (prev.index, links[0], kind)
+                            A.decisions[-1].alternatives.append(kind)
             for i, j in links.items():
                 slot_of[i] = prev_slots[j]
             A.view_links[o.index] = set(links)
@@ -890,6 +1034,30 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
             d.view = o.index
     A.order = [s.id for s in A.slots]
     return A
+
+
+def has_notes(c) -> bool:
+    """Whether a cell holds marks on its tab staff, past the first BAR_GAPS line gaps of its ink box. A system's
+    first cell's box starts 1.5 line gaps left of where its staff starts, so marks in the margin and the clef count
+    there."""
+    bottom = int(round(2 * (c.mid_y - c.y0))) - c.ref_y
+    return c.ink[c.ref_y:bottom + 1, int(BAR_GAPS * c.gap):-2].sum() >= NOTES_INK * c.gap * c.gap
+
+
+def earlier_music(o: Obs, slot_of: list, A: Assembly, prev_slots: list, slots_before: int, gap: float) -> list[bool]:
+    """For each whole measure a view's numbers placed on one shown before, other than on the view before, with notes
+    on both whole sightings drawn at one line spacing: whether it shows the music of an earlier sighting."""
+    alike = []
+    for c, sid in zip(o.cells, slot_of):
+        if sid is None or sid >= slots_before or sid in prev_slots or not c.complete or not has_notes(c):
+            continue
+        # Music drawn at another line spacing is another layout and can't be compared. At one spacing, a measure
+        # drawn at another width holds other music
+        earlier = [x for _, x in A.sightings.get(sid, []) if x.complete and has_notes(x)
+                   and abs(x.gap - c.gap) <= SAME_SPACING * gap]
+        if earlier:
+            alike.append(seen_before(c, earlier, gap))
+    return alike
 
 
 def glided_on(o: Obs) -> bool:
@@ -1086,9 +1254,20 @@ def place_rest(o, slot_of, A, gap, gap_before, prev, use, words_of, fold_unresol
             k += 1
         # A single cell is enough to carry on a replay already under way
         single_ok = len(cells) == 1 or (A.replay_next is not None and A.replay_next < len(A.slots))
-        j = find_run(A.slots, run, gap, o.index, A.replay_next) if len(run) >= 2 or (run and single_ok) else None
+        # An end-repeat sign sends the playhead back to the nearest start of the repeat, so the run looked for is
+        # the latest that matches
+        latest = prev is not None and prev.repeat_end and repeat_played(prev)
+        j = (find_run(A.slots, run, gap, o.index, A.replay_next, A.sightings, latest)
+             if len(run) >= 2 or (run and single_ok) else None)
         if j is not None and len(run) == 1 and len(cells) > 1 and j != A.replay_next:
             j = None
+        noted = any(r[:2] == (o.t0, o.t1) for r in A.maybe_repeats)
+        if j is None and (len(run) >= 2 or len(cells) == 1) and not noted:
+            # A run that matches only a cut or highlighted sighting may be a repeat or other music: it prints as
+            # new, with one notice for the view
+            loose = find_run(A.slots, run, gap, o.index, None, A.sightings, latest, every=True)
+            if loose is not None:
+                A.maybe_repeats.append((o.t0, o.t1, loose))
         if j is not None:
             if A.replay_next == j:
                 # The replay already under way goes on
@@ -1100,6 +1279,8 @@ def place_rest(o, slot_of, A, gap, gap_before, prev, use, words_of, fold_unresol
                 A.unresolved_folds.append((o.t0, o.t1, j, j + len(run) - 1))
             A.decisions.append(Decision(o.t0, "fold", "fold" if fold else "new", ["new" if fold else "fold"],
                                         basis, resolved))
+            if fold and basis == "repeat_sign":
+                A.sign_folds.setdefault(o.index, j)
             if fold and o.mosaic is not None and getattr(A.slots[j].first, "glided", False):
                 # A glide replaying an earlier glide: line the rest of it up with that glide as a whole
                 align_glide(o, slot_of, i, j, A, gap)
