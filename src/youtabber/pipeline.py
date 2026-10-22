@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 
 from youtabber import counter, glide, ocr, track
-from youtabber.assemble import GLIDE_CONTINUE, Assembly, Obs, assemble, cell_at, number_views
+from youtabber.assemble import GLIDE_CONTINUE, Assembly, Obs, assemble, cell_at, number_views, same_cell
 from youtabber.check import (dwell, empty_stretches, fmt, glide_fade, glide_gaps, glide_number_gaps, glide_piece_cuts,
                              glide_repeats, glide_rows, glide_steps, layout_changes, number_checks,
                              numbers_against_cells, odd_widths, pieces, possible_duplicates, redraw_gaps, screen_breaks,
@@ -256,7 +256,7 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
                     reached(seg.t1)
                 continue
             views, thr, fthr = views_in(path, crop, seg.polarity, seg.gap, seg.paper, part_seed, seg.t0, seg.t1,
-                                        "playhead" in EVIDENCE, progress=reached)
+                                        "playhead" in EVIDENCE, progress=reached, lead=lead_before(segments, si))
             held = sum(v.t1 - v.t0 for v in views)
             shown = part.seen if part.kind == "band" else seg.t1 - seg.t0
             if shown >= GLIDE_MIN_SECONDS and held < HELD_SHARE * shown:
@@ -276,6 +276,9 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
         mine = []
         for v, part, thr, fthr in sorted(read_views, key=lambda x: (x[0].t0, x[1].rows[0])):
             o = plate_obs(v, seg, si, thr, fthr, len(obs))
+            if v.brief and not o.all_cells:
+                # A first or last screen held briefly with no measures is a page coming or going, not time with tab
+                continue
             o.part, o.stream = part.id, part.stream
             obs.append(o)
             mine.append(o)
@@ -352,6 +355,7 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
             fixed = np.zeros_like(group[0].band)
         for o in group:
             o.fixed = fixed
+    drop_fades(obs)
     # A cell much narrower than a typical measure is not one: a clef and key signature before a
     # start-repeat barline, or a sliver cut by the panel edge
     full_widths = [c.x1 - c.x0 for o in obs for c in o.all_cells if c.kind == "full"]
@@ -778,6 +782,36 @@ def text_tab_shown(path: Path) -> bool:
     return False
 
 
+def lead_before(segments: list[Segment], si: int) -> float:
+    """How far before segment si's start its still views are looked for. The scan sees a segment start only to
+    within one of its steps, so a first screen shown for less than a step may lie just before it; the look back
+    stops where the segment before ends."""
+    before = segments[si - 1].t1 if si > 0 else 0.0
+    return max(0.0, min(1 / SCAN_FPS, segments[si].t0 - before))
+
+
+def drop_fades(obs: list[Obs]) -> None:
+    """Clear the cells of each brief first or last screen with fewer than two whole measures, or whose measures the
+    screen next to it shows again in order: it is a page fading or drawing in or out."""
+    for p, o in part_pairs(obs):
+        if p.brief and (sum(c.kind == "full" for c in p.all_cells) < 2 or shown_again(p, o)):
+            p.all_cells = []
+        if o.brief and (sum(c.kind == "full" for c in o.all_cells) < 2 or shown_again(o, p)):
+            o.all_cells = []
+
+
+def shown_again(a: Obs, b: Obs) -> bool:
+    """Whether view b shows all of view a's whole measures again, in order and next to each other. Cells cut by the
+    panel edge are left out: a page drawing in shows them blank."""
+    cells = [c for c in a.all_cells if c.kind == "full"]
+    other = [c for c in b.all_cells if c.kind == "full"]
+    if not cells:
+        return False
+    gap = cells[0].gap
+    return any(all(same_cell(c, other[k + i], gap) for i, c in enumerate(cells))
+               for k in range(len(other) - len(cells) + 1))
+
+
 def covered(p: Obs, o: Obs) -> bool:
     """True when still view p shows staffs of the next view o plus many marks o doesn't have, gathered over part of
     the page, while nearly all of o's marks are in p. The card can hide a staff of p, so p may show fewer."""
@@ -973,6 +1007,7 @@ def plate_obs(v, seg: Segment, si: int, thr: float, fthr: float, index: int) -> 
     o.image = v.plate
     o.systems = systems
     o.print_rect = v.print_rect
+    o.brief = v.brief
     return o
 
 

@@ -131,6 +131,7 @@ class Obs:
     first_piece: bool = True             # a glide's first and last pieces hold its start and its end
     last_piece: bool = True
     counter: list = field(default_factory=list)   # (start, end, measure) runs of a bar counter shown with a glide
+    brief: bool = False                  # a first or last screen held under observe.MIN_VIEW_SECONDS
 
 
 @dataclass
@@ -936,6 +937,9 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
     watch = None
     for o in obs:
         cells = o.cells
+        if o.brief and not cells:
+            # A page fading in or out around a break says nothing about how long the tab was away
+            continue
         # Time without tab on screen before this view; a view with tab but no usable cells still counts
         gap_before = (o.t0 - last_end) if last_end is not None else 0.0
         last_end = o.t1

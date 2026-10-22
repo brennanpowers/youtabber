@@ -11,6 +11,9 @@ from youtabber.video import frames
 OBS_FPS = 6
 # A view must stay still this long; shorter ones are page-turn animations and fades
 MIN_VIEW_SECONDS = 1.2
+# ...except a segment's first and last screens: one shown only briefly before the first page turn or after the last
+# may hold music no other screen shows
+EDGE_VIEW_SECONDS = 0.5
 # A new picture must hold for this many frames to end the view
 SETTLE_FRAMES = 2
 # Frames kept per view for the median; more adds time, not quality
@@ -43,6 +46,7 @@ class View:
     rect: tuple[int, int, int, int] = (0, 0, 0, 0)   # panel in crop coordinates
     wrapped: bool = False                            # began where the playhead jumped back over part of the page
     print_rect: tuple[int, int, int, int] = (0, 0, 0, 0)   # paper area to print from, crop coordinates
+    brief: bool = False                              # a first or last screen held under MIN_VIEW_SECONDS
 
 
 def to_gray(frame: np.ndarray, polarity: str) -> np.ndarray:
@@ -258,8 +262,12 @@ def panel_rect(frame: np.ndarray, paper: np.ndarray, seed: tuple[int, int, int, 
 
 def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: float, paper: np.ndarray,
              seed_at, t_start: float, t_end: float, use_playhead: bool = True,
-             progress: Callable[[float], None] | None = None) -> tuple[list[View], float, float]:
-    """Still views between t_start and t_end, and the ink threshold used.
+             progress: Callable[[float], None] | None = None, lead: float = 0.0,
+             thresholds: tuple[float, float] | None = None) -> tuple[list[View], float, float]:
+    """Still views between t_start and t_end, and the ink threshold used. A brief screen in the `lead` seconds
+    before t_start, which the scan's steps missed, comes first; it is read with the staffs' box at t_start and the
+    threshold of the views after it. `thresholds` gives the ink thresholds instead of reading them from the first
+    frame.
 
     `seed_at(t)` gives the staffs' box at time t in crop coordinates, from the scan. `progress(t)` is called with
     each frame's time.
@@ -269,7 +277,7 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
     ref = None
     cand = None      # a new picture that may be the next view
     held: list = []  # frames that match cand, waiting to see whether it holds
-    thr = fthr = None
+    thr, fthr = thresholds if thresholds is not None else (None, None)
     # A long view keeps the picture of every `stride`-th frame only; the other frames keep their playhead,
     # found against the plate so far, in `points`
     stride = 1
@@ -362,10 +370,16 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
                 since = k + 1
         return out
 
-    def close() -> None:
-        if not cur or cur[-1][0] - cur[0][0] + 1 / OBS_FPS < MIN_VIEW_SECONDS:
+    def close(last: bool = False) -> None:
+        if not cur:
+            return
+        first = not views and cur[0][0] <= t_start + EDGE_VIEW_SECONDS
+        # Rounded, since frame times carry float error and three frames are exactly EDGE_VIEW_SECONDS
+        seconds = round(cur[-1][0] - cur[0][0] + 1 / OBS_FPS, 3)
+        if seconds < (EDGE_VIEW_SECONDS if first or last else MIN_VIEW_SECONDS):
             return
         whole = build(cur)
+        whole.brief = seconds < MIN_VIEW_SECONDS
         cuts = wraps(whole) if use_playhead else []
         if not cuts:
             views.append(whole)
@@ -444,5 +458,9 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         # Changed from the view, and not yet steady: the start of a possible new view
         cand = start(t, f, g, rect, seed)
         held = [(t, f, rect, seed)]
-    close()
+    close(last=True)
+    if lead and thr is not None and seed_at(t_start) is not None:
+        before, _, _ = views_in(path, crop, polarity, gap, paper, lambda _: seed_at(t_start), t_start - lead, t_start,
+                                use_playhead, thresholds=(thr, fthr))
+        views[:0] = before
     return views, (thr or 128.0), (fthr or 230.0)
