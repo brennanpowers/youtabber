@@ -90,6 +90,10 @@ JOINED_MIN_BARS, JOINED_SHARE = 2, 0.6
 # Barlines of the two staffs this close are one column
 JOINED_SLACK_PX = 3
 
+# A staff whose bottom line lies within this many line gaps of the plate's bottom edge, with fewer lines than the
+# view's other tab staffs, is cut by that edge
+CUT_STAFF_GAPS = 1.5
+
 # In a glide, a barline drawn behind the note tiles covers less of the staff: a thin line covering this share
 # counts too, when the columns on each side of it are inked in less than THIN_BESIDE of the rows the line is inked
 # in (the edge of a column of digits is inked on one side)
@@ -471,8 +475,13 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
         hi = py1 if si == len(out) - 1 else min(py1, int((st.bottom + syss[si + 1].top) / 2))
         ps.band = print_band(print_marks[:, st.x0:st.x1], s.top, st.bottom, st.gap, lo, hi)
     out, lone = joined_staffs(out, lone, faint_struct)
+    most_lines = max((len(ps.system.tab.lines) for ps in out), default=0)
     for si, ps in enumerate(out):
         st = ps.system.tab
+        # The plate reaches a few line gaps below its lowest staff unless the frame ends first, so a staff this
+        # close to its bottom is cut by the frame's edge: it shows only its upper lines and passes for a staff of
+        # fewer strings. Its measures print from another screen that shows them whole
+        cut_off = len(st.lines) < most_lines and st.bottom + CUT_STAFF_GAPS * st.gap >= g.shape[0]
         edges: list[tuple[int, int, str]] = []
         xs = [b for b in ps.bars]
         if xs and xs[0][0] - st.x0 > MIN_CELL * st.gap:
@@ -507,10 +516,10 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
             top = (ps.system.notation or st).top
             top_gap = (ps.system.notation or st).gap
             crop = number_crop(sub, marks, top, top_gap, a)
+            complete = kind == "full" or (kind == "lead" and starts_inside) or (kind == "tail" and ends_inside)
             ps.cells.append(Cell(vi, si, len(ps.cells), a, b, kind, box_ink, box_faint, ps.y0, crop,
                                  gap=st.gap, ref_y=int(round(st.top)) - ps.y0, mid_y=(st.top + st.bottom) / 2,
                                  tint=box_tint,
-                                 complete=kind == "full" or (kind == "lead" and starts_inside)
-                                 or (kind == "tail" and ends_inside), band=ps.band, print_x0=print_x0,
+                                 complete=complete and not cut_off, band=ps.band, print_x0=print_x0,
                                  notation_only=lone[si], top_y=int(round(ps.system.top)) - ps.y0))
     return out

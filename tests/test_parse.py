@@ -328,3 +328,40 @@ def test_a_fret_digit_split_by_the_middle_line_is_no_end_repeat():
     dark[69:72, 181:185] = True
     st = SimpleNamespace(top=40.0, bottom=40 + 4 * 14.7, gap=14.7)
     assert end_repeats(dark, st, [(200, 202)]) == []
+
+
+def guitar_over_cut_staff(below: int, lower: int = 5) -> np.ndarray:
+    """A 6-line staff at y 60 over one of `lower` lines whose bottom line is at y 256, line gap 14, barlines at x 100,
+    400 and 700 on each staff, with `below` rows of plate under the lower staff's bottom line."""
+    img = np.full((257 + below, 800, 3), 255, np.uint8)
+    for top, n in ((60, 6), (256 - (lower - 1) * 14, lower)):
+        for i in range(n):
+            cv2.line(img, (20, top + i * 14), (780, top + i * 14), (60, 60, 60), 1)
+        for x in (100, 400, 700):
+            cv2.line(img, (x, top), (x, top + (n - 1) * 14), (0, 0, 0), 2)
+    return img
+
+
+def completeness(img: np.ndarray, panel_bottom: int) -> list[list[bool]]:
+    systems = parse_view(0, img, (0, 0, 800, panel_bottom), "dark", 140.0, 229.0, 14.0)
+    return [[c.complete for c in ps.cells if c.kind == "full"] for ps in systems]
+
+
+def test_a_staff_of_fewer_lines_at_the_plate_s_bottom_edge_is_cut_by_it():
+    img = guitar_over_cut_staff(below=14)
+    assert completeness(img, img.shape[0]) == [[True, True], [False, False]]
+
+
+def test_a_staff_of_fewer_lines_well_above_the_plate_s_bottom_edge_is_whole():
+    img = guitar_over_cut_staff(below=42)
+    assert completeness(img, img.shape[0]) == [[True, True], [True, True]]
+
+
+def test_a_panel_ending_just_below_a_staff_of_fewer_lines_does_not_cut_it():
+    img = guitar_over_cut_staff(below=42)
+    assert completeness(img, 257 + 14) == [[True, True], [True, True]]
+
+
+def test_a_staff_of_as_many_lines_as_the_others_at_the_plate_s_bottom_edge_is_whole():
+    img = guitar_over_cut_staff(below=14, lower=6)
+    assert completeness(img, img.shape[0]) == [[True, True], [True, True]]
