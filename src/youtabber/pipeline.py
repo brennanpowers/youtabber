@@ -90,6 +90,9 @@ SCATTERED_SECONDS, SCATTERED_SHARE, SCATTERED_GAP_RATIO = 10.0, 0.25, 1.5
 # A segment shorter than SMALL_SECONDS whose lines are spaced closer than SMALL_GAP_SHARE of the longest segment's is a
 # small picture of a page (a thumbnail on a promo card or an end screen), not the tab being played
 SMALL_SECONDS, SMALL_GAP_SHARE = 10.0, 0.6
+# A segment where several parts print can't be put in order when more than TANGLED_SHARE of its joins between screens
+# are left unresolved, over at least TANGLED_JOINS joins, and so are more than TANGLED_SHARE of its folds
+TANGLED_SHARE, TANGLED_JOINS = 0.5, 10
 # A video without tab staffs shows text tab when this many of its frames, taken this many seconds apart, show a staff
 # of typed dashes
 TEXT_TAB_FRAMES, TEXT_TAB_STEP = 3, 5.0
@@ -500,6 +503,11 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
     short = too_few(obs, n) if n else None
     if short:
         return r.fail("check_failed", short)
+    tangle = tangled(segments, r.parts, obs, main, primary)
+    if tangle is not None:
+        return r.fail("check_failed", f"Several parts of the tab show at once at {fmt(tangle.t0)}-{fmt(tangle.t1)}, "
+                                      f"and most screens there couldn't be joined to the one before, so their "
+                                      f"measures can't be put in order; no PDF was written.")
     # Short stretches of other lines can hold segments while the tab itself is typed as text
     if not n and text_tab_shown(path):
         return r.fail("text_tab", TEXT_TAB_MESSAGE)
@@ -687,6 +695,24 @@ def shared_shift(p: Obs, o: Obs, p_slots: list, o_slots: list, tied: set[int]) -
         if "tail" not in (a.kind, b.kind):
             moved.append(a.x1 - b.x1)
     return float(np.median(moved)) if moved else None
+
+
+def tangled(segments: list[Segment], parts: list[Part], obs: list[Obs], A: Assembly,
+            primary: list[Measure]) -> Segment | None:
+    """The first segment where two or more parts print measures and most joins between its screens and most runs of
+    music shown again are left unresolved, so its measures can't be put in order. Unresolved joins alone are common
+    where split-screen panels turn their pages apart."""
+    printing = {obs[m.view].part for m in primary}
+    for si in sorted({p.seg for p in parts}):
+        if sum(p.id in printing for p in parts if p.seg == si) < 2:
+            continue
+        mine = [d for d in A.decisions if d.view is not None and obs[d.view].seg == si]
+        joins = [d for d in mine if d.kind == "join"]
+        folds = [d for d in mine if d.kind == "fold"]
+        if (len(joins) >= TANGLED_JOINS and sum(not d.resolved for d in joins) > TANGLED_SHARE * len(joins)
+                and sum(not d.resolved for d in folds) > TANGLED_SHARE * len(folds)):
+            return segments[si]
+    return None
 
 
 def part_notices(parts: list[Part], obs: list[Obs], primary: list[Measure]) -> list[Notice]:
