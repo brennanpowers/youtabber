@@ -341,7 +341,11 @@ def cell_at(o: Obs, xy) -> int | None:
         return None
     x, y = xy
     for i, c in enumerate(o.cells):
-        if c.x0 - 2 <= x <= c.x1 + 2 and abs(y - c.mid_y) < 4 * c.gap:
+        # A cursor drawn over notation and tab centers between the two staffs, so any height on the system counts:
+        # from a line gap above its top staff line to a line gap below its tab staff's bottom line
+        top = c.y0 + c.top_y - c.gap
+        bottom = 2 * c.mid_y - (c.y0 + c.ref_y) + c.gap
+        if c.x0 - 2 <= x <= c.x1 + 2 and (abs(y - c.mid_y) < 4 * c.gap or top <= y <= bottom):
             return i
     return None
 
@@ -665,6 +669,10 @@ def playhead_restarts(p: Obs, o: Obs, gap: float) -> bool | None:
     a, b = playhead_at(p, at_start=False), playhead_at(o, at_start=True)
     if a is None or b is None:
         return None
+    # On pages of one system there is no other system to go up to, and a tall cursor's height swings with its
+    # notes, so only going back along the system counts
+    if p.single and o.single:
+        return b[0] < a[0] - WRAP_GAPS * gap
     # A box or highlight cursor rides up and down a system with its notes; another system is further away
     if b[1] < a[1] - 5 * gap:
         return True

@@ -3,9 +3,11 @@ from dataclasses import replace
 import numpy as np
 from test_numbering import band_view, music
 
-from youtabber.assemble import (Assembly, Decision, Slot, assemble, choose_shift, find_run, measure_time, place_rest,
-                                playhead_at, playhead_join, playhead_track, register, repeat_played, replay_evidence,
-                                rest_of, same_cell, scroll_shifts, split_measure, still_links, track_join)
+from youtabber.assemble import (Assembly, Decision, Obs, Slot, assemble, cell_at, choose_shift, find_run, measure_time,
+                                place_rest, playhead_at, playhead_join, playhead_restarts, playhead_track, register,
+                                repeat_played, replay_evidence, rest_of, same_cell, scroll_shifts, split_measure,
+                                still_links, track_join)
+from youtabber.parse import Cell
 from youtabber.pipeline import Measure, Notice, edge_notices, join_notices, readings, repeat_notices
 from youtabber.track import Move
 
@@ -641,3 +643,39 @@ def test_a_cut_measure_played_long_joins_a_next_page_that_opens_on_its_sliver():
     assert playhead_join(p, o, 2.0, 10.0) is None
     o.cells[0] = replace(piece(o.cells[0], "lead", 120, 200), x0=0, x1=80)
     assert playhead_join(p, o, 2.0, 10.0)[0] == {0: 3}
+
+
+def system_view() -> Obs:
+    """A view of one measure, x 100-200, on a system of a notation staff (lines at y 100-140) over a tab staff
+    (lines at y 200-250), line gap 10, its cell box starting at y 90."""
+    ink = np.zeros((180, 100), bool)
+    c = Cell(0, 0, 0, 100, 200, "full", ink, ink, 90, gap=10.0, ref_y=110, mid_y=225.0, top_y=10)
+    return Obs(0, 0.0, 10.0, [c], [], 0, (0, 0))
+
+
+def test_a_playhead_between_the_notation_and_tab_staffs_is_on_the_measure():
+    assert cell_at(system_view(), (150, 170)) == 0
+
+
+def test_a_playhead_more_than_a_gap_outside_the_system_is_on_no_measure():
+    assert cell_at(system_view(), (150, 85)) is None
+    assert cell_at(system_view(), (150, 265)) is None
+
+
+def paged(p_end, o_start, single: bool = True):
+    """Two views, the playhead at p_end (x, y) as the first ends and at o_start as the second starts."""
+    p = Obs(0, 0.0, 10.0, [], [], 0, (0, 0), single=single, track=[(9.5, *p_end)])
+    o = Obs(1, 12.0, 22.0, [], [], 0, (0, 0), single=single, track=[(12.1, *o_start)])
+    return p, o
+
+
+def test_on_pages_of_one_system_a_playhead_gone_back_restarts_though_a_tall_cursor_rose():
+    assert playhead_restarts(*paged((900, 400), (50, 250)), 20.0) is True
+
+
+def test_on_pages_of_one_system_a_playhead_gone_on_does_not_restart_though_a_tall_cursor_rose():
+    assert playhead_restarts(*paged((300, 400), (500, 250)), 20.0) is False
+
+
+def test_on_pages_of_several_systems_a_playhead_gone_up_a_system_restarts():
+    assert playhead_restarts(*paged((300, 400), (500, 250), single=False), 20.0) is True
