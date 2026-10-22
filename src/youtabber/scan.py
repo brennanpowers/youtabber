@@ -241,12 +241,14 @@ def scan(path: Path, width: int, height: int, region: tuple[int, int, int, int] 
     """Segments of steady tab, the systems seen in each scanned frame, and spans where the page scrolls up
     continuously (read by nothing, so they are reported). `progress(t)` is called with each scanned frame's time."""
     found: dict[float, list[System]] = {}
-    papers: list[np.ndarray] = []
+    papers: list[tuple[float, np.ndarray]] = []
     for t, f in frames(path, SCAN_FPS):
         if progress is not None:
             progress(t)
         g = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
         found[t] = [s for s in systems_in(g) if region is None or inside(s, region)]
+        # Paper is sampled between the lines of every staff in the frame, including staffs a segment later drops
+        # as footage (guitar strings), so a segment's paper color can come partly from the footage
         for s in found[t]:
             st = s.tab
             for a, b in zip(st.lines, st.lines[1:]):
@@ -262,30 +264,51 @@ def scan(path: Path, width: int, height: int, region: tuple[int, int, int, int] 
         steady[t] = [s for s in found[t]
                      if any(abs(o.tab.top - s.tab.top) <= STEADY_PX and abs(o.tab.gap - s.tab.gap) <= 0.05 * s.tab.gap
                             and abs(o.tab.x0 - s.tab.x0) <= 4 * s.tab.gap for other in near for o in other)]
-    found = steady
-    segments: list[Segment] = []
-    cur: Segment | None = None
-    last_seen = -1e9
-    for t in sorted(found):
-        syss = found[t]
-        if not syss:
-            continue
-        gap = max(s.tab.gap for s in syss)
-        # The topmost system sets the theme, unless it is spaced much closer than the widest: a title bar or banner
-        # above the tab can pass for a close staff of the other polarity
-        pol = next(s for s in syss if s.tab.gap >= THEME_GAP_SHARE * gap).tab.polarity
-        if (cur is not None and t - last_seen <= BRIDGE_SECONDS and pol == cur.polarity
-                and abs(gap - cur.gap) <= GAP_DRIFT * cur.gap):
-            cur.t1 = t
-            cur.times.append(t)
-            cur.gaps.append(gap)
-        else:
-            if cur is not None:
-                segments.append(cur)
-            cur = Segment(t, t, gap, pol, [t], [gap])
-        last_seen = t
-    if cur is not None:
-        segments.append(cur)
+    # Split the frames into segments; if a segment too short to keep hid staffs of the other polarity, split again
+    # with those frames showing every staff
+    no_bridge: set[float] = set()
+    while True:
+        found = dict(steady)
+        segments: list[Segment] = []
+        cur: Segment | None = None
+        last_seen = -1e9
+        dropped: set[float] = set()   # times of frames whose staffs of the other polarity were left out
+        for t in sorted(found):
+            syss = found[t]
+            if not syss:
+                continue
+            gap = max(s.tab.gap for s in syss)
+            # The topmost system sets the theme, unless it is spaced much closer than the widest: a title bar or
+            # banner above the tab can pass for a close staff of the other polarity
+            pol = next(s for s in syss if s.tab.gap >= THEME_GAP_SHARE * gap).tab.polarity
+            # Lines in the footage (guitar strings) come and go above the tab as a staff of the other polarity;
+            # while the frame still shows a staff of the segment's polarity and spacing, the segment goes on
+            # without them. Whichever polarity starts the segment keeps it, so footage that starts one hides the
+            # real tab after it
+            if cur is not None and pol != cur.polarity and t - last_seen <= BRIDGE_SECONDS and t not in no_bridge:
+                same = [s for s in syss if s.tab.polarity == cur.polarity
+                        and abs(s.tab.gap - cur.gap) <= GAP_DRIFT * cur.gap]
+                if same:
+                    pol, gap = cur.polarity, max(s.tab.gap for s in same)
+                    dropped.add(t)
+                    found[t] = [s for s in syss if s.tab.polarity == pol]
+            if (cur is not None and t - last_seen <= BRIDGE_SECONDS and pol == cur.polarity
+                    and abs(gap - cur.gap) <= GAP_DRIFT * cur.gap):
+                cur.t1 = t
+                cur.times.append(t)
+                cur.gaps.append(gap)
+            else:
+                if cur is not None:
+                    segments.append(cur)
+                cur = Segment(t, t, gap, pol, [t], [gap])
+            last_seen = t
+        if cur is not None:
+            segments.append(cur)
+        short = [s for s in segments if s.t1 - s.t0 + 1 / SCAN_FPS < MIN_SEGMENT_SECONDS]
+        hid = {t for s in short for t in s.times} & dropped
+        if not hid:
+            break
+        no_bridge |= hid
     segments = [s for s in segments if s.t1 - s.t0 + 1 / SCAN_FPS >= MIN_SEGMENT_SECONDS]
     for seg in segments:
         cols = [c for t, c in papers if seg.t0 <= t <= seg.t1]
