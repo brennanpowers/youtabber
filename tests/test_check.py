@@ -5,7 +5,7 @@ import numpy as np
 from youtabber import track
 from youtabber.check import (dwell, empty_stretches, glide_fade, glide_gaps, glide_number_gaps, glide_piece_cuts,
                              glide_repeats, glide_rows, glide_steps, judged_width, number_checks, odd_widths, pieces,
-                             redraw_gaps, settled, slow_measures, too_few)
+                             redraw_gaps, settled, slow_measures, too_few, unread_stretches)
 from youtabber.assemble import Obs
 from youtabber.glide import Mosaic
 from youtabber.parse import Cell
@@ -112,6 +112,22 @@ def test_a_long_wait_across_a_redraw_of_a_glide_is_flagged():
 def test_empty_stretches_come_in_pieces():
     ws = empty_stretches([(0.0, 100.0)], [1.0, 2.0, 3.0, 60.0])
     assert [(w["t0"], w["t1"]) for w in ws] == [(3.0, 33.0), (33.0, 60.0), (60.0, 90.0), (90.0, 100.0)]
+
+
+def test_unread_stretches_need_four_seconds_with_no_view_read():
+    spans = [(0.0, 40.0)]
+    read = [(0.0, 10.0), (13.0, 20.0), (25.0, 34.0)]
+    assert [(w["t0"], w["t1"]) for w in unread_stretches(spans, read)] == [(20.0, 25.0), (34.0, 40.0)]
+
+
+def test_an_unread_stretch_of_exactly_four_seconds_is_named_and_one_just_shorter_is_not():
+    assert [(w["t0"], w["t1"]) for w in unread_stretches([(0.0, 20.0)], [(0.0, 10.0), (14.0, 20.0)])] == [(10.0, 14.0)]
+    assert unread_stretches([(0.0, 20.0)], [(0.0, 10.0), (13.9, 20.0)]) == []
+
+
+def test_a_long_unread_stretch_comes_in_pieces():
+    ws = unread_stretches([(0.0, 80.0)], [(0.0, 5.0), (75.0, 80.0)])
+    assert [(w["t0"], w["t1"]) for w in ws] == [(5.0, 35.0), (35.0, 65.0), (65.0, 75.0)]
 
 
 def test_number_checks():

@@ -132,6 +132,7 @@ class Obs:
     last_piece: bool = True
     counter: list = field(default_factory=list)   # (start, end, measure) runs of a bar counter shown with a glide
     brief: bool = False                  # a first or last screen held under observe.MIN_VIEW_SECONDS
+    faded: bool = False                  # a brief screen with the weak contrast of a fade
 
 
 @dataclass

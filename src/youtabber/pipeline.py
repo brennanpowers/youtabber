@@ -14,8 +14,7 @@ from youtabber.assemble import GLIDE_CONTINUE, Assembly, Obs, assemble, cell_at,
 from youtabber.check import (dwell, empty_stretches, fmt, glide_fade, glide_gaps, glide_number_gaps, glide_piece_cuts,
                              glide_repeats, glide_rows, glide_steps, layout_changes, number_checks,
                              numbers_against_cells, odd_widths, pieces, possible_duplicates, redraw_gaps, screen_breaks,
-                             slow_measures,
-                             too_few)
+                             slow_measures, too_few, unread_stretches)
 from youtabber.match import resemble_scaled
 from youtabber.observe import (ABOVE_GAPS, BELOW_GAPS, OBS_FPS, PRINT_ABOVE_GAPS, ink_map, ink_threshold, set_paper,
                                to_gray, views_in)
@@ -48,6 +47,13 @@ SHORT_SHARE, SHORT_MIN_GAPS = 0.2, 5.0
 # A view is mid-fade when its ink contrast is below FADE_SHARE of its segment's typical view and its staff lines
 # stand out from the paper by less than FADE_LINE_SHARE of the typical view's
 FADE_SHARE, FADE_LINE_SHARE = 0.85, 0.8
+# A faded brief screen shows the same page as its neighbour when barlines of the two lie within this many line
+# gaps of each other...
+FADED_BAR_GAPS = 0.25
+# ...and when at least this share of the neighbour's barlines have one of its barlines that close
+FADED_BAR_SHARE = 0.2
+# A brief screen with more than this share of its cells narrower than EDGE_SHARE of a measure had its barlines misread
+BRIEF_SLIVER_SHARE = 0.5
 # Only a segment at least this long is tested for gliding; shorter moves are page-turn animations
 GLIDE_MIN_SECONDS = 20.0
 # Such a segment that doesn't glide but whose still views cover less than this share of it can't be read
@@ -274,8 +280,11 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
                 if reached is not None:
                     reached(seg.t1)
                 continue
+            # Before a later segment, a screen cut short by a fade or a card is a transition whose music shows again
+            # after it, so only the last segment keeps such a screen
             views, thr, fthr = views_in(path, crop, seg.polarity, seg.gap, seg.paper, part_seed, seg.t0, seg.t1,
-                                        "playhead" in EVIDENCE, progress=reached, lead=lead_before(segments, si))
+                                        "playhead" in EVIDENCE, progress=reached, lead=lead_before(segments, si),
+                                        last_screen=si == len(segments) - 1)
             held = sum(v.t1 - v.t0 for v in views)
             shown = part.seen if part.kind == "band" else seg.t1 - seg.t0
             if shown >= GLIDE_MIN_SECONDS and held < HELD_SHARE * shown:
@@ -340,26 +349,7 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
     for p, o in part_pairs(obs):
         if covered(p, o):
             p.all_cells = []
-    # A view caught in a fade has weak contrast and loses its barlines; its music is shown again at full
-    # contrast, so it is left out. Both its darkest ink and its staff lines are weak. A part of one or two views
-    # is judged against the clearest views of its theme.
-    clearest: dict[str, tuple[float, float]] = {}
-    for o in obs:
-        if o.mosaic is None:
-            pol = segments[o.seg].polarity
-            ink, line = clearest.get(pol, (0.0, 0.0))
-            clearest[pol] = (max(ink, o.contrast), max(line, o.line_contrast))
-    for part in r.parts:
-        seg = segments[part.seg]
-        group = [o for o in obs if o.part == part.id and o.mosaic is None]
-        if len(group) >= 3:
-            ink = float(np.median([o.contrast for o in group]))
-            line = float(np.median([o.line_contrast for o in group]))
-        else:
-            ink, line = clearest.get(seg.polarity, (0.0, 0.0))
-        for o in group:
-            if o.contrast < FADE_SHARE * ink and o.line_contrast < FADE_LINE_SHARE * line:
-                o.all_cells = []
+    mark_fades(obs, r.parts, segments, len(segments) - 1)
     # Ink at the same screen place in nearly every view of a part is fixed to the frame (a clef and key
     # panel that stays while the music scrolls behind it)
     for part in r.parts:
@@ -374,7 +364,9 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
             fixed = np.zeros_like(group[0].band)
         for o in group:
             o.fixed = fixed
-    drop_fades(obs)
+    # Views with two or more whole measures, counted before drop_fades may clear a brief last screen
+    held = {id(o) for o in obs if sum(c.kind == "full" for c in o.all_cells) >= 2}
+    cleared = drop_fades(obs)
     # A cell much narrower than a typical measure is not one: a clef and key signature before a
     # start-repeat barline, or a sliver cut by the panel edge
     full_widths = [c.x1 - c.x0 for o in obs for c in o.all_cells if c.kind == "full"]
@@ -491,6 +483,11 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
                 notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
     for w in empty_stretches(r.tab_spans, [m.play_t for m in primary]):
         notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
+    # A view counts as read when a staff was found on it; a glide's mosaic covers its whole time
+    read = [(o.t0, o.t1) for o in obs if o.systems or o.mosaic is not None]
+    for w in unread_stretches(r.tab_spans, read):
+        notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
+    notices += last_screen_notice(obs, len(segments) - 1, held, cleared)
     # Parts shown at once count their measures apart, so each stream's numbers are checked on their own
     for k in streams:
         for w in stream_number_checks(k, primary, r.parts, stream_obs[k], info.duration):
@@ -841,14 +838,115 @@ def lead_before(segments: list[Segment], si: int) -> float:
     return max(0.0, min(1 / SCAN_FPS, segments[si].t0 - before))
 
 
-def drop_fades(obs: list[Obs]) -> None:
-    """Clear the cells of each brief first or last screen with fewer than two whole measures, or whose measures the
-    screen next to it shows again in order: it is a page fading or drawing in or out."""
-    for p, o in part_pairs(obs):
-        if p.brief and (sum(c.kind == "full" for c in p.all_cells) < 2 or shown_again(p, o)):
-            p.all_cells = []
-        if o.brief and (sum(c.kind == "full" for c in o.all_cells) < 2 or shown_again(o, p)):
+def mark_fades(obs: list[Obs], parts: list[Part], segments: list[Segment], last_seg: int) -> None:
+    """Clear the cells of each view caught in a fade, or mark it `faded` when it is a brief screen in the video's
+    last segment (`last_seg`) that is not its part's first."""
+    # A view caught in a fade has weak contrast and loses its barlines; its music is shown again at full
+    # contrast, so it is left out. Both its darkest ink and its staff lines are weak. A part of one or two views
+    # is judged against the clearest views of its theme.
+    clearest: dict[str, tuple[float, float]] = {}
+    for o in obs:
+        if o.mosaic is None:
+            pol = segments[o.seg].polarity
+            ink, line = clearest.get(pol, (0.0, 0.0))
+            clearest[pol] = (max(ink, o.contrast), max(line, o.line_contrast))
+    for part in parts:
+        seg = segments[part.seg]
+        group = [o for o in obs if o.part == part.id and o.mosaic is None]
+        if len(group) >= 3:
+            ink = float(np.median([o.contrast for o in group]))
+            line = float(np.median([o.line_contrast for o in group]))
+        else:
+            ink, line = clearest.get(seg.polarity, (0.0, 0.0))
+        for o in group:
+            if o.contrast < FADE_SHARE * ink and o.line_contrast < FADE_LINE_SHARE * line:
+                # A brief last screen may hold music no other screen shows, so drop_fades judges it against the
+                # screen before it and last_screen_notice can note it. A first screen fading in shows the page the
+                # next screen shows clearly.
+                if o.brief and o is not group[0] and part.seg == last_seg:
+                    o.faded = True
+                else:
+                    o.all_cells = []
+
+
+def drop_fades(obs: list[Obs]) -> dict[int, str]:
+    """Clear the cells of each brief first or last screen that is a page fading or drawing in or out: one with fewer
+    than two whole measures, one whose measures the screen next to it shows again (for a faded screen, its barlines
+    or a neighbour with no measures left), or one mostly slivers from misread barlines. Returns why each was cleared,
+    by its id: "few", "shown_again", "misread", or "faded" for a faded screen cleared
+    as misread or for its barlines."""
+    widths = [c.x1 - c.x0 for o in obs for c in o.all_cells if c.kind == "full"]
+    typical = float(np.median(widths)) if widths else 0.0
+
+    def misread(a: Obs) -> bool:
+        slivers = sum(c.x1 - c.x0 < EDGE_SHARE * typical for c in a.all_cells)
+        return slivers > BRIEF_SLIVER_SHARE * len(a.all_cells)
+
+    def gone(a: Obs, b: Obs) -> str | None:
+        if not a.brief:
+            return None
+        if sum(c.kind == "full" for c in a.all_cells) < 2:
+            return "few"
+        if shown_again(a, b):
+            return "shown_again"
+        if misread(a):
+            return "faded" if a.faded else "misread"
+        # A faded last page whose barlines stand where the page before's do is taken as that page fading out, even
+        # if its notes changed, so it gives no notice
+        if a.faded and (not b.all_cells or same_barlines(a, b)):
+            return "faded"
+        return None
+    why: dict[int, str] = {}
+
+    def clear(a: Obs, b: Obs) -> None:
+        reason = gone(a, b)
+        if reason:
+            # A screen judged against both its neighbours keeps the reason it was first cleared for
+            why.setdefault(id(a), reason)
+            a.all_cells = []
+    pairs = part_pairs(obs)
+    for p, o in pairs:
+        clear(p, o)
+        clear(o, p)
+    # A brief screen with no neighbour of its part to compare can still be told misread by its slivers (a
+    # fretboard's strings and frets read as a tab staff and its barlines)
+    paired = {id(v) for pair in pairs for v in pair}
+    for o in obs:
+        if o.brief and o.mosaic is None and id(o) not in paired and misread(o):
+            why[id(o)] = "faded" if o.faded else "misread"
             o.all_cells = []
+    return why
+
+
+def last_screen_notice(obs: list[Obs], last_seg: int, held: set[int], why: dict[int, str]) -> list[Notice]:
+    """A notice when the video ends on a brief screen with two or more whole measures (its id in `held`) that
+    drop_fades kept or cleared as misread (`why`): it may hide measures or print a passing picture. Of parts shown
+    at once, only the one ending latest is named. It spans the screen before it of its part and its own time."""
+    still = sorted((o for o in obs if o.seg == last_seg and o.mosaic is None), key=lambda o: o.t0)
+    last = {o.part: o for o in still}
+    named = [o for o in last.values()
+             if o.brief and id(o) in held and why.get(id(o)) in (None, "misread")]
+    if not named:
+        return []
+    o = max(named, key=lambda v: v.t1)
+    before = [v for v in still if v.part == o.part and v.t0 < o.t0]
+    t0 = before[-1].t0 if before else o.t0
+    return [Notice(round(t0, 2), round(o.t1, 2), "last_screen",
+                   f"The last screen at {fmt(o.t0)} shows only briefly as the video fades or cuts away; its measures "
+                   f"may be missing, or printed from a passing picture.", True)]
+
+
+def same_barlines(a: Obs, b: Obs) -> bool:
+    """Whether at least FADED_BAR_SHARE of view b's barlines lie within FADED_BAR_GAPS line gaps of one of view a's.
+    A fade adds false barlines and loses real ones, but a page that moved on has its barlines elsewhere."""
+    def bars(o: Obs) -> list[int]:
+        return sorted({c.x0 for c in o.all_cells if c.kind != "lead"} | {c.x1 for c in o.all_cells if c.kind != "tail"})
+    xa, xb = bars(a), bars(b)
+    if not xa or not xb:
+        return False
+    gap = a.all_cells[0].gap
+    near = sum(any(abs(p - q) <= FADED_BAR_GAPS * gap for p in xa) for q in xb)
+    return near >= FADED_BAR_SHARE * len(xb)
 
 
 def shown_again(a: Obs, b: Obs) -> bool:
@@ -1091,9 +1189,15 @@ def part_pairs(obs: list[Obs]) -> list[tuple[Obs, Obs]]:
 
 def plate_obs(v, seg: Segment, si: int, thr: float, fthr: float, index: int) -> Obs:
     """One still view, parsed into measure cells."""
+    x0, y0, x1, y1 = v.rect
+    if v.brief and x1 > x0 and y1 > y0:
+        # A screen shown briefly while the page fades can have paper darker than the segment's faint-ink level,
+        # which would make all of it ink; it is read with thresholds set from its own paper
+        own = np.median(v.plate[y0:y1, x0:x1].reshape(-1, 3), axis=0)
+        if float(to_gray(own.astype(np.uint8)[None, None], seg.polarity)[0, 0]) < fthr:
+            thr, fthr = ink_threshold(to_gray(v.plate, seg.polarity)[y0:y1, x0:x1], own, seg.polarity)
     systems = parse_view(index, v.plate, v.rect, seg.polarity, thr, fthr, seg.gap, v.print_rect)
     cells = [c for ps in systems for c in ps.cells]
-    x0, y0, x1, y1 = v.rect
     o = Obs(index, v.t0, v.t1, cells, v.playhead, si, (seg.x0, seg.y0), v.plate[y0:y1, x0:x1])
     o.all_cells = cells
     o.wrapped = v.wrapped

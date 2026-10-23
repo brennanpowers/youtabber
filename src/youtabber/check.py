@@ -196,6 +196,8 @@ REPEAT_RESEMBLE = 0.15
 GAP_RATIO = 1.6
 # Tab on screen this long with no new printed measure may mean music was lost
 EMPTY_SECONDS = 25.0
+# Tab on screen this long with no still view read means its measures may be missing
+UNREAD_SECONDS = 4.0
 # Long stretches are reported in pieces this long, so each points at a findable part of the video
 PIECE_SECONDS = 30.0
 # The highest-numbered measure printed more than this many places after its number means some printed twice
@@ -409,6 +411,24 @@ def empty_stretches(spans: list[tuple[float, float]], play_times: list[float]) -
                                 "text": f"Tab is on screen at {fmt(p0)}-{fmt(p1)}, but no new measure was printed "
                                         f"from it. If the video isn't replaying earlier music here, measures are "
                                         f"missing."})
+    return out
+
+
+def unread_stretches(spans: list[tuple[float, float]], read: list[tuple[float, float]]) -> list[dict]:
+    """Stretches of at least UNREAD_SECONDS inside a span of tab on screen where no still view with a staff was
+    read: the screen kept changing, or the staff couldn't be found on the views held there."""
+    out = []
+    for s0, s1 in spans:
+        edge = s0
+        for a, b in sorted(read) + [(s1, s1)]:
+            if a > s1:
+                break
+            if a - edge >= UNREAD_SECONDS:
+                for p0, p1 in pieces(edge, a):
+                    out.append({"t0": round(p0, 2), "t1": round(p1, 2), "kind": "unread_tab",
+                                "text": f"Tab is on screen at {fmt(p0)}-{fmt(p1)}, but no still screen of it could "
+                                        f"be read there; measures shown there may be missing."})
+            edge = max(edge, b)
     return out
 
 

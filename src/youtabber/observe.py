@@ -263,11 +263,13 @@ def panel_rect(frame: np.ndarray, paper: np.ndarray, seed: tuple[int, int, int, 
 def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: float, paper: np.ndarray,
              seed_at, t_start: float, t_end: float, use_playhead: bool = True,
              progress: Callable[[float], None] | None = None, lead: float = 0.0,
-             thresholds: tuple[float, float] | None = None) -> tuple[list[View], float, float]:
+             thresholds: tuple[float, float] | None = None,
+             last_screen: bool = False) -> tuple[list[View], float, float]:
     """Still views between t_start and t_end, and the ink threshold used. A brief screen in the `lead` seconds
     before t_start, which the scan's steps missed, comes first; it is read with the staffs' box at t_start and the
     threshold of the views after it. `thresholds` gives the ink thresholds instead of reading them from the first
-    frame.
+    frame. With `last_screen`, a screen held briefly after the last view is kept even when a fade or a cut after it
+    ends it before t_end.
 
     `seed_at(t)` gives the staffs' box at time t in crop coordinates, from the scan. `progress(t)` is called with
     each frame's time.
@@ -283,6 +285,9 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
     stride = 1
     points: dict[float, tuple[float, float] | None] = {}
     so_far = None    # (plate, panel rect) of the view's frames when it was last thinned
+    # The first screen held under MIN_VIEW_SECONDS since the last view. When no view follows it, it is the
+    # last screen, even if a fade or a cut to black after it closed a chunk of its own
+    tail: list = []
 
     def plate_of(chunk) -> np.ndarray:
         kept = [f for _, f, _, _ in chunk if f is not None]
@@ -374,10 +379,12 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         if not cur:
             return
         first = not views and cur[0][0] <= t_start + EDGE_VIEW_SECONDS
-        # Rounded, since frame times carry float error and three frames are exactly EDGE_VIEW_SECONDS
-        seconds = round(cur[-1][0] - cur[0][0] + 1 / OBS_FPS, 3)
+        seconds = held_for(cur)
         if seconds < (EDGE_VIEW_SECONDS if first or last else MIN_VIEW_SECONDS):
+            if seconds >= EDGE_VIEW_SECONDS and not tail:
+                tail[:] = cur
             return
+        tail.clear()
         whole = build(cur)
         whole.brief = seconds < MIN_VIEW_SECONDS
         cuts = wraps(whole) if use_playhead else []
@@ -393,6 +400,10 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
                 v = build(chunk, shared)
                 v.wrapped = n > 0
                 views.append(v)
+
+    def held_for(chunk) -> float:
+        # Rounded, since frame times carry float error and three frames are exactly EDGE_VIEW_SECONDS
+        return round(chunk[-1][0] - chunk[0][0] + 1 / OBS_FPS, 3)
 
     def tinted(f):
         """Colored pixels and their surroundings: cursors, highlights and recolored notes are ignored."""
@@ -459,6 +470,10 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         cand = start(t, f, g, rect, seed)
         held = [(t, f, rect, seed)]
     close(last=True)
+    if tail and last_screen:
+        v = build(tail)
+        v.brief = True
+        views.append(v)
     if lead and thr is not None and seed_at(t_start) is not None:
         before, _, _ = views_in(path, crop, polarity, gap, paper, lambda _: seed_at(t_start), t_start - lead, t_start,
                                 use_playhead, thresholds=(thr, fthr))
