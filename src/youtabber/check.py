@@ -1,7 +1,7 @@
 """Checks on the assembled score that turn likely mistakes into warnings next to the measures concerned."""
 import numpy as np
 
-from youtabber.assemble import glided_on
+from youtabber.assemble import cell_at, glided_on, measure_time, playhead_track
 from youtabber.match import resemble, resemble_scaled
 from youtabber.track import pairs
 
@@ -101,6 +101,23 @@ def fmt(t: float) -> str:
 WIDE_RATIO = 1.7
 
 
+def judged_width(o, c) -> float | None:
+    """A cell's width in line gaps, for a cell that can't be much wider than a measure: one between two barlines,
+    or on a still screen a system's first cell cut by the panel edge before a barline (so no clef and key widen it),
+    or its last cell up to its last mark (blank staff may run on after the last measure). None for other cells."""
+    if c.kind == "full":
+        return (c.x1 - c.x0) / c.gap
+    if o.mosaic is not None:
+        return None
+    if c.kind == "tail":
+        inked = np.flatnonzero(c.ink.any(axis=0))
+        return (int(inked[-1]) + 1) / c.gap if inked.size else None
+    # A staff with no barline at all is one lead cell as wide as the staff, however many measures it holds
+    if c.kind == "lead" and not c.complete and o.systems[c.system].bars:
+        return (c.x1 - c.x0) / c.gap
+    return None
+
+
 def odd_widths(obs) -> list[dict]:
     """Measures much wider than usual, where a barline was likely missed and a measure may be lost. Widths are
     counted in line gaps, so tab drawn at different sizes compares fairly. A still view gets one notice however
@@ -112,7 +129,8 @@ def odd_widths(obs) -> list[dict]:
     out = []
     for o in obs:
         for c in o.cells:
-            if c.kind == "full" and (c.x1 - c.x0) / c.gap > WIDE_RATIO * typical:
+            width = judged_width(o, c)
+            if width is not None and width > WIDE_RATIO * typical:
                 t = o.mosaic.time_at((c.x0 + c.x1) / 2) if o.mosaic is not None else (o.t0 + o.t1) / 2
                 w = {"t0": round(max(t - 3, o.t0), 2), "t1": round(min(t + 3, o.t1), 2), "kind": "wide_measure",
                      "text": f"A measure around {fmt(t)} is much wider than the others; a barline may have been "
@@ -120,6 +138,55 @@ def odd_widths(obs) -> list[dict]:
                 if w not in out:
                     out.append(w)
     return out
+
+
+# The playhead crossing a measure this many times slower than the typical measure of its segment crossed two
+# measures: a barline between them was missed
+SLOW_RATIO = 1.75
+# A crossing is timed only when the playhead was first seen in each of the two measures within this share of the
+# measure's width from its left barline; a view that opens with the playhead mid-measure gives no timing
+ENTRY_SHARE = 0.15
+
+
+def slow_measures(obs) -> list[dict]:
+    """Still screens where the playhead took about two measures' time to cross one measure, so a barline was likely
+    missed there. This catches a merged measure no wider than the others, as on a screen of fewer, wider bars.
+    A view gets one notice at most, and only a measure at least as wide as the view's typical measure is named:
+    a merged measure is wide as well as slow, while a bar played slowly is not."""
+    out = []
+    for seg in sorted({o.seg for o in obs}):
+        still = [o for o in obs if o.seg == seg and o.mosaic is None]
+        beat = measure_time(still)
+        if beat is None:
+            continue
+        # A segment's first timed measure is often a slow count-in, so it is never named
+        first = True
+        for o in still:
+            fulls = [c.x1 - c.x0 for c in o.cells if c.kind == "full" and c.complete]
+            typical = float(np.median(fulls)) if fulls else None
+            entered: dict[int, float] = {}
+            for t, x, y in playhead_track(o):
+                i = cell_at(o, (x, y))
+                if i is not None and i not in entered:
+                    c = o.cells[i]
+                    # A first sample far inside the measure says nothing about when the playhead got there
+                    entered[i] = t if x - c.x0 <= ENTRY_SHARE * (c.x1 - c.x0) else -1.0
+            for i, t in entered.items():
+                after = entered.get(i + 1, -1.0)
+                c = o.cells[i]
+                if t < 0 or after < 0 or not c.complete:
+                    continue
+                if first:
+                    first = False
+                    continue
+                if after - t <= SLOW_RATIO * beat or typical is None or c.x1 - c.x0 < typical:
+                    continue
+                out.append({"t0": round(t, 2), "t1": round(after, 2), "kind": "long_measure",
+                            "text": f"The measure played at {fmt(t)}-{fmt(after)} takes about "
+                                    f"{(after - t) / beat:.0f} measures' time; a barline may have been missed there."})
+                break
+    return out
+
 
 # Glided measures repeat an earlier stretch of the same glide when this many in a row look alike
 REPEAT_RUN = 4

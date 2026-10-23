@@ -19,6 +19,12 @@ ORDER = ["find", "read", "assemble"]
 # Label of each notice kind's line in the terminal's spot list, for a count of one and for more
 LABELS = {
     "wide_measure": ("wide measure, a barline may be missing", "wide measures, a barline may be missing"),
+    "long_measure": ("measure played as long as two, a barline may be missing",
+                     "measures played as long as two, a barline may be missing"),
+    "header": ("first cell left out as a clef and key, a measure may be missing",
+               "first cells left out as a clef and key, measures may be missing"),
+    "header_kept": ("first cell that may be a clef and key printed as a measure",
+                    "first cells that may be a clef and key printed as measures"),
     "unresolved_join": ("screen that may not join up", "screens that may not join up"),
     "edge_join": ("page edge joined by the playhead, a measure or part of one may be missing",
                   "page edges joined by the playhead, a measure or part of one may be missing"),

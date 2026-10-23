@@ -67,6 +67,9 @@ class Cell:
     band: tuple[int, int] = (0, 0)          # rows to print, crop coordinates
     print_x0: int = 0                       # first column to print, crop coordinates
     notation_only: bool = False             # on a notation staff whose tab staff is out of the panel
+    header: bool = False                    # a system's clef, key and time signature standing alone before a barline
+    # Shaped like a header but with marks past the clef: a pickup bar, or a header with a time signature on the tab
+    maybe_header: bool = False
     top_y: int = 0                          # row of the system's top staff line (notation or tab) in the cell box
 
 
@@ -334,6 +337,57 @@ def opening_line(struct: np.ndarray, st) -> bool:
     return band.size > 0 and bool((band.mean(axis=0) >= BAR_COVER).any())
 
 
+# A system's first cell is its clef, key and time signature alone when the barline closing it is at least
+# HEADER_BAR_GAPS line gaps wide (a start-repeat or heavy barline; a plain one is about 0.1, a thin double one 0.4)
+# and the cell is narrower than HEADER_SHARE of the system's median measure and than HEADER_MAX_GAPS line gaps
+HEADER_BAR_GAPS, HEADER_SHARE, HEADER_MAX_GAPS = 0.55, 0.85, 11.0
+
+
+def header_cell(edges: list[tuple[int, int, str]], bars: list[tuple[int, int]], repeats: list[int], x0: int,
+                gap: float) -> bool:
+    """True when a system's first cell, opening at the staff start, holds only the clef, key and time signature:
+    it closes on a wide barline that is no end-repeat sign and is narrow beside the system's measures."""
+    fulls = [b - a for a, b, kind in edges if kind == "full"]
+    if len(fulls) < 2 or len(bars) < 2 or edges[0][2] != "full" or edges[0][0] > x0 + 2:
+        return False
+    p, q = bars[1]
+    width = edges[0][1] - edges[0][0]
+    return (q - p >= HEADER_BAR_GAPS * gap and p not in repeats
+            and width < min(HEADER_SHARE * float(np.median(fulls)), HEADER_MAX_GAPS * gap))
+
+
+def staff_ink(c: Cell, skip: int) -> tuple[float, float]:
+    """Solid ink on a cell's tab staff and on the notation staff above it, in square line gaps, over the columns
+    from `skip` past its left edge to its right barline."""
+    # The ink box runs from a margin left of the left edge to the right barline's first column
+    start = max(0, c.x0 - (c.x1 + 1 - c.ink.shape[1]) + skip)
+    end = c.ink.shape[1] - 2
+    bottom = int(round(2 * c.mid_y)) - (c.y0 + c.ref_y) - c.y0
+    # The tab staff starts half a line gap above its top line, so a fret digit sitting on that line counts whole
+    tab_top = max(0, c.ref_y - int(round(c.gap / 2)))
+    tab = c.ink[tab_top:bottom + 1, start:end].sum()
+    # A system cut by the panel top starts above the cell box; its notation rows then start at the box top
+    notation = c.ink[max(0, c.top_y):tab_top, start:end].sum()
+    return tab / (c.gap * c.gap), notation / (c.gap * c.gap)
+
+
+# Past the first HEADER_SKIP_GAPS line gaps of a header cell, where the clef stands, its tab staff holds less than
+# HEADER_TAB_INK square line gaps of ink; a narrow first measure with fret digits there is a pickup
+HEADER_SKIP_GAPS, HEADER_TAB_INK = 4.0, 0.08
+
+
+def bare_header(c: Cell) -> bool:
+    """True when a cell has no fret digits on its tab staff right of where a clef stands."""
+    return staff_ink(c, int(HEADER_SKIP_GAPS * c.gap))[0] < HEADER_TAB_INK
+
+
+def mark_header(c: Cell) -> None:
+    """Flags a system's first cell shaped like a header: a header when its tab staff is bare past the clef,
+    otherwise a possible header that is kept as a measure."""
+    c.header = bare_header(c)
+    c.maybe_header = not c.header
+
+
 # A run of blank rows this many line gaps tall ends the marks that belong to a system; chord names can sit
 # 2.5 gaps of blank paper above the measure numbers
 BLANK_GAPS = 3.0
@@ -496,6 +550,8 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
         # A lead cell is the system's own first measure when its staff starts inside the panel or has an
         # opening line; otherwise the panel edge cut a measure in two
         starts_inside = st.x0 >= rx0 + INSIDE_GAPS * st.gap or opening_line(dark, st)
+        # Glides read barlines more loosely, so their first cell isn't judged
+        header = not hidden_bars and header_cell(edges, xs, ps.repeat_bars, st.x0, st.gap)
         ends_inside = st.x1 <= rx1 - INSIDE_GAPS * st.gap
         for ci, (a, b, kind) in enumerate(edges):
             # The first measure of a system takes in the margin to its left, where some players print the
@@ -517,9 +573,12 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
             top_gap = (ps.system.notation or st).gap
             crop = number_crop(sub, marks, top, top_gap, a)
             complete = kind == "full" or (kind == "lead" and starts_inside) or (kind == "tail" and ends_inside)
-            ps.cells.append(Cell(vi, si, len(ps.cells), a, b, kind, box_ink, box_faint, ps.y0, crop,
-                                 gap=st.gap, ref_y=int(round(st.top)) - ps.y0, mid_y=(st.top + st.bottom) / 2,
-                                 tint=box_tint,
-                                 complete=complete and not cut_off, band=ps.band, print_x0=print_x0,
-                                 notation_only=lone[si], top_y=int(round(ps.system.top)) - ps.y0))
+            cell = Cell(vi, si, len(ps.cells), a, b, kind, box_ink, box_faint, ps.y0, crop,
+                        gap=st.gap, ref_y=int(round(st.top)) - ps.y0, mid_y=(st.top + st.bottom) / 2,
+                        tint=box_tint,
+                        complete=complete and not cut_off, band=ps.band, print_x0=print_x0,
+                        notation_only=lone[si], top_y=int(round(ps.system.top)) - ps.y0)
+            if header and ci == 0:
+                mark_header(cell)
+            ps.cells.append(cell)
     return out

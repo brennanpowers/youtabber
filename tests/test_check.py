@@ -4,8 +4,8 @@ import numpy as np
 
 from youtabber import track
 from youtabber.check import (dwell, empty_stretches, glide_fade, glide_gaps, glide_number_gaps, glide_piece_cuts,
-                             glide_repeats, glide_rows, glide_steps, number_checks, odd_widths, pieces, redraw_gaps,
-                             settled, too_few)
+                             glide_repeats, glide_rows, glide_steps, judged_width, number_checks, odd_widths, pieces,
+                             redraw_gaps, settled, slow_measures, too_few)
 from youtabber.assemble import Obs
 from youtabber.glide import Mosaic
 from youtabber.parse import Cell
@@ -177,6 +177,72 @@ def test_wide_measures_are_judged_in_line_gaps_with_one_notice_per_view():
     assert (w["kind"], w["t0"], w["t1"]) == ("wide_measure", 25.0, 30.0)
 
 
+def test_judged_width_measures_a_tail_to_its_last_mark_and_a_cut_lead_whole():
+    still_view = SimpleNamespace(mosaic=None, systems=[SimpleNamespace(bars=[(250, 252)])])
+    glide_view = SimpleNamespace(mosaic=FakeMosaic())
+    tail = cell(0, 400)
+    tail.kind, tail.ink = "tail", np.zeros((60, 400), bool)
+    tail.ink[20:30, 340:350] = True
+    assert judged_width(still_view, tail) == 35.0
+    lead = cell(0, 250)
+    lead.kind, lead.complete = "lead", False
+    assert judged_width(still_view, lead) == 25.0
+    lead.complete = True
+    assert judged_width(still_view, lead) is None
+    assert judged_width(glide_view, tail) is None
+    lead.complete = False
+    assert judged_width(glide_view, lead) is None
+    # A cut staff with no barline is one lead cell holding any number of measures
+    bare_view = SimpleNamespace(mosaic=None, systems=[SimpleNamespace(bars=[])])
+    assert judged_width(bare_view, lead) is None
+
+
+def played(index: int, widths: list[int], times: list[float], seg: int = 0) -> Obs:
+    """A still screen of one system whose playhead enters each measure just past its barline at the given times."""
+    o = still(index, 10.0, widths)
+    for c in o.cells:
+        c.mid_y, c.y0, c.ref_y = 30.0, 0, 10
+    o.seg = seg
+    o.t0, o.t1 = times[0], times[-1] + 2.0
+    o.track = [(t, c.x0 + 5, 30.0) for t, c in zip(times, o.cells)]
+    return o
+
+
+def steady_views(seg: int = 0, first: int = 0) -> list[Obs]:
+    """Three screens whose measures each take 2 s."""
+    return [played(i, [200, 200, 200, 200], [10.0 * i + k * 2.0 for k in range(4)], seg)
+            for i in range(first, first + 3)]
+
+
+def test_a_measure_played_for_two_measures_time_is_named():
+    steady = steady_views()
+    assert slow_measures(steady) == []
+    # The second cell holds two measures: the playhead takes 4 s over it against the usual 2 s
+    merged = played(3, [200, 400, 200], [40.0, 42.0, 46.0])
+    (w,) = slow_measures(steady + [merged])
+    assert (w["kind"], w["t0"], w["t1"]) == ("long_measure", 42.0, 46.0)
+    # A view that opens with the playhead deep inside a measure gives that measure no timing
+    late = played(4, [200, 400, 200], [50.0, 52.0, 56.0])
+    late.track[1] = (52.0, late.cells[1].x0 + 200, 30.0)
+    assert slow_measures(steady + [late]) == []
+
+
+def test_a_view_with_two_slow_measures_gets_one_notice():
+    both = played(3, [400, 400, 400], [40.0, 44.0, 48.0])
+    (w,) = slow_measures(steady_views() + [both])
+    assert (w["t0"], w["t1"]) == (40.0, 44.0)
+
+
+def test_a_slow_first_measure_of_a_segment_is_a_count_in():
+    count_in = played(0, [400, 200, 200], [0.0, 4.0, 6.0], seg=1)
+    assert slow_measures([count_in] + steady_views(seg=1, first=1)) == []
+
+
+def test_a_slow_measure_narrower_than_the_views_typical_measure_is_not_named():
+    narrow = played(3, [400, 200, 400, 400], [40.0, 42.0, 46.0, 48.0])
+    assert slow_measures(steady_views() + [narrow]) == []
+
+
 class HeldView:
     def __init__(self, t0: float, t1: float, n: int, wrapped: bool = False, index: int = 0):
         self.t0, self.t1, self.cells, self.wrapped, self.seg, self.index = t0, t1, [None] * n, wrapped, 0, index
@@ -249,3 +315,9 @@ def test_settled_is_true_when_every_view_reads_measures_and_every_decision_is_re
     A = SimpleNamespace(decisions=[SimpleNamespace(kind="move", resolved=True),
                                    SimpleNamespace(kind="join", resolved=True)])
     assert settled([lesson_view()], A)
+
+
+def test_a_segment_seen_too_little_to_time_its_measures_names_no_slow_measure():
+    # The steady screens time their own segment only; the other segment has too few crossings to time
+    merged = played(3, [200, 400, 200], [40.0, 42.0, 46.0], seg=1)
+    assert slow_measures(steady_views() + [merged]) == []

@@ -14,11 +14,12 @@ from youtabber.assemble import GLIDE_CONTINUE, Assembly, Obs, assemble, cell_at,
 from youtabber.check import (dwell, empty_stretches, fmt, glide_fade, glide_gaps, glide_number_gaps, glide_piece_cuts,
                              glide_repeats, glide_rows, glide_steps, layout_changes, number_checks,
                              numbers_against_cells, odd_widths, pieces, possible_duplicates, redraw_gaps, screen_breaks,
+                             slow_measures,
                              too_few)
 from youtabber.match import resemble_scaled
 from youtabber.observe import (ABOVE_GAPS, BELOW_GAPS, OBS_FPS, PRINT_ABOVE_GAPS, ink_map, ink_threshold, set_paper,
                                to_gray, views_in)
-from youtabber.parse import Cell, line_darkness, parse_view
+from youtabber.parse import Cell, line_darkness, parse_view, staff_ink
 from youtabber.parts import Part, find_parts, merge_order, stream_of
 from youtabber.scan import SCAN_FPS, Segment, scan
 from youtabber.staff import find_staffs
@@ -37,8 +38,13 @@ EMPTY_NOTATION_INK = 1.0
 # Line gaps at a cell's left taken up by its barline, a thick or double one included
 BAR_SKIP_GAPS = 0.7
 # An empty bar is drawn at least this many line gaps wide; narrower blank cells sit between a barline and a
-# column of stems or stacked digits that was read as one
+# column of stems or stacked digits that was read as one...
 EMPTY_MIN_GAPS = 3.5
+# ...unless at least REST_RUN of them stand in a row, their widths within REST_RUN_WIDTH of each other
+REST_RUN, REST_RUN_WIDTH = 3, 0.15
+# A measure on a still screen, between two barlines, is at least SHORT_SHARE of a typical measure and SHORT_MIN_GAPS
+# line gaps wide; a narrower piece lies between a barline and a strum arrow or stem read as one
+SHORT_SHARE, SHORT_MIN_GAPS = 0.2, 5.0
 # A view is mid-fade when its ink contrast is below FADE_SHARE of its segment's typical view and its staff lines
 # stand out from the paper by less than FADE_LINE_SHARE of the typical view's
 FADE_SHARE, FADE_LINE_SHARE = 0.85, 0.8
@@ -399,7 +405,8 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
     if folded is not None:
         r.candidates.append(Candidate("folded", "once", measures_of(folded, obs, folded.order)))
 
-    notices = join_notices(main, obs) + edge_notices(main, obs, r.candidates[0].measures)
+    notices = (join_notices(main, obs) + edge_notices(main, obs, r.candidates[0].measures)
+               + header_notices(obs) + header_kept_notices(obs))
     if r.intro is not None:
         notices.append(Notice(round(r.intro[0], 2), round(r.intro[1], 2), "intro",
                               f"The tab at {fmt(r.intro[0])}-{fmt(r.intro[1])} is drawn in another layout than the "
@@ -427,7 +434,8 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
     # Each stream is checked on its own views, so another part's views shown in between aren't its neighbours
     for k, A in zip(streams, by_stream):
         mine = [o for o in stream_obs[k] if o.part not in idle]
-        for w in (possible_duplicates(A, mine, gap) + dwell(mine, A) + odd_widths(mine) + numbers_against_cells(mine)
+        for w in (possible_duplicates(A, mine, gap) + dwell(mine, A) + odd_widths(mine) + slow_measures(mine)
+                  + numbers_against_cells(mine)
                   + screen_breaks(A, mine)):
             notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
     for w in layout_changes(segments, obs) + glide_piece_cuts(obs) + redraw_gaps(obs):
@@ -945,29 +953,88 @@ def editor_screen(path: Path, seg: Segment) -> bool:
     return long_edges >= EDITOR_EDGES
 
 
-def empty_bar(c: Cell) -> bool:
+def empty_bar(c: Cell, min_gaps: float = EMPTY_MIN_GAPS) -> bool:
     """True for a bar with nothing on its tab staff between its two barlines: a rest bar, count-in, closing empty
     bar or bar of notes tied over, which prints however short it is drawn. A measure number above it doesn't count.
     A system's first cell may be a clef and key signature standing alone before a start-repeat barline, so there only
     a rest on the notation staff, smaller than a square line gap, is allowed."""
     # A notation staff whose tab is out of view says nothing about the tab
-    if c.kind != "full" or not c.complete or c.notation_only or c.x1 - c.x0 < EMPTY_MIN_GAPS * c.gap:
+    if c.kind != "full" or not c.complete or c.notation_only or c.x1 - c.x0 < min_gaps * c.gap:
         return False
-    # The ink box runs from a margin left of the left barline to the right barline's first column; only the
-    # columns between the two barlines count
-    start = c.x0 - (c.x1 + 1 - c.ink.shape[1]) + int(BAR_SKIP_GAPS * c.gap)
-    end = c.ink.shape[1] - 2
-    bottom = int(round(2 * c.mid_y)) - (c.y0 + c.ref_y) - c.y0
-    tab = c.ink[c.ref_y:bottom + 1, start:end].sum()
-    # A system cut by the panel top starts above the cell box; its notation rows then start at the box top
-    notation = c.ink[max(0, c.top_y):c.ref_y, start:end].sum()
-    return tab < EMPTY_BAR_INK * c.gap * c.gap and (c.index > 0 or notation < EMPTY_NOTATION_INK * c.gap * c.gap)
+    tab, notation = staff_ink(c, int(BAR_SKIP_GAPS * c.gap))
+    return tab < EMPTY_BAR_INK and (c.index > 0 or notation < EMPTY_NOTATION_INK)
+
+
+def rest_run(cells: list[Cell], i: int) -> bool:
+    """True when cell i is one of at least REST_RUN empty bars in a row drawn alike wide: rest bars or a count-in,
+    which some players draw narrower than EMPTY_MIN_GAPS. A blank sliver beside a misread barline stands alone."""
+    w = cells[i].x1 - cells[i].x0
+
+    def alike(k: int) -> bool:
+        c = cells[k]
+        return (c.system == cells[i].system and abs((c.x1 - c.x0) - w) <= REST_RUN_WIDTH * w
+                and empty_bar(c, min_gaps=0.0))
+
+    if not alike(i):
+        return False
+    a = i
+    while a > 0 and alike(a - 1):
+        a -= 1
+    b = i
+    while b + 1 < len(cells) and alike(b + 1):
+        b += 1
+    return b - a + 1 >= REST_RUN
+
+
+def short_bar(c: Cell, typical: float) -> bool:
+    """True for a measure on a still screen between two barlines, at least SHORT_SHARE of a typical measure and
+    SHORT_MIN_GAPS line gaps wide: a short bar holding a whole or tied note. In a glide, misread barlines split
+    measures into such pieces."""
+    return (c.kind == "full" and c.complete and not c.glided and not c.notation_only
+            and c.x1 - c.x0 >= max(SHORT_SHARE * typical, SHORT_MIN_GAPS * c.gap))
 
 
 def kept_cells(cells: list[Cell], typical: float) -> list[Cell]:
-    """The cells that are measures: those at least EDGE_SHARE of a typical measure wide, and empty bars however
-    short."""
-    return [c for c in cells if c.x1 - c.x0 >= EDGE_SHARE * typical or empty_bar(c)]
+    """The cells that are measures: those at least EDGE_SHARE of a typical measure wide, short bars on still screens,
+    and empty bars however short. A clef and key header standing alone is no measure."""
+    return [c for i, c in enumerate(cells)
+            if not c.header
+            and (c.x1 - c.x0 >= EDGE_SHARE * typical or short_bar(c, typical) or empty_bar(c) or rest_run(cells, i))]
+
+
+def header_notices(obs: list[Obs]) -> list[Notice]:
+    """One notice per stretch of screens whose first cell was left out as a clef and key header, since a short
+    first measure closed by a repeat barline would look the same."""
+    out: list[Notice] = []
+    for o in obs:
+        if not any(c.header for c in o.all_cells):
+            continue
+        if out and o.t0 - out[-1].t1 <= TURN_SECONDS:
+            out[-1].t1 = round(o.t1, 2)
+            continue
+        out.append(Notice(round(o.t0, 2), round(o.t1, 2), "header",
+                          f"A narrow first cell at {fmt(o.t0)}, closed by a repeat or heavy barline, was taken as the "
+                          f"clef and key signature and isn't printed. If it holds notes, that measure is missing.",
+                          True))
+    return out
+
+
+def header_kept_notices(obs: list[Obs]) -> list[Notice]:
+    """One notice per stretch of screens printing a first cell shaped like a clef and key header but with marks
+    past the clef, since a time signature on the tab staff looks like fret digits there."""
+    out: list[Notice] = []
+    for o in obs:
+        if not any(c.maybe_header for c in o.cells):
+            continue
+        if out and o.t0 - out[-1].t1 <= TURN_SECONDS:
+            out[-1].t1 = round(o.t1, 2)
+            continue
+        out.append(Notice(round(o.t0, 2), round(o.t1, 2), "header_kept",
+                          f"A narrow first cell at {fmt(o.t0)}, closed by a repeat or heavy barline, looks like the "
+                          f"clef and key signature but has marks past the clef, so it is printed as a measure. If it "
+                          f"holds only the clef, key and time signature, that measure is extra.",
+                          True))
+    return out
 
 
 def seed_function(found, seg):
