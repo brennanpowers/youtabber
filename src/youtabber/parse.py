@@ -269,6 +269,9 @@ DOT_MATCH = 1.5
 # A dot is round: at most this many times longer than wide. Stacked fret digits, string names and pieces of tie
 # arcs beside a barline are long thin marks
 DOT_ELONGATION = 1.75
+# A barline at most this many line gaps right of the barline before it ends no measure, so dots before it are no
+# end-repeat sign: the time signature's digits after a system's opening barline
+REPEAT_ROOM_GAPS = 3.0
 
 
 def end_repeats(dark: np.ndarray, st, bars: list[tuple[int, int]]) -> list[int]:
@@ -276,9 +279,9 @@ def end_repeats(dark: np.ndarray, st, bars: list[tuple[int, int]]) -> list[int]:
     signs. Marks side by side at one height are fret digits, not a sign."""
     a, b = int(st.top) + 1, int(st.bottom)
     out = []
-    for p, _ in bars:
+    for k, (p, _) in enumerate(bars):
         x0, x1 = int(p - 1.3 * st.gap), int(p - 0.1 * st.gap)
-        if x0 < 0:
+        if x0 < 0 or (k > 0 and p - bars[k - 1][1] <= REPEAT_ROOM_GAPS * st.gap):
             continue
         sub = dark[a:b, x0:x1].astype(np.uint8)
         # Staff lines would join the dots; keep only marks taller than a line

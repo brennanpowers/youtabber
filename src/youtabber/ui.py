@@ -41,6 +41,8 @@ LABELS = {
                       "first number read is high, opening measures may be missing"),
     "count_over": ("more measures than numbers read", "more measures than numbers read"),
     "glide_repeat": ("measure that may repeat an earlier one", "measures that may repeat earlier ones"),
+    "unsure_repeat": ("measure first shown where the video may have gone back, which may repeat",
+                      "measures first shown where the video may have gone back, which may repeat"),
     "glide_gap": ("long gap between measures, some may be missing", "long gaps between measures, some may be missing"),
     "glide_number_gap": ("measure number that skips, a barline may be missing",
                          "measure numbers that skip, a barline may be missing"),

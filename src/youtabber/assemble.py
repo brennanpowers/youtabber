@@ -86,6 +86,8 @@ STAFF_START_GAPS = 10
 # a page's clef and key included; wider, the cut measure may have been a whole one and the next page's first cell
 # the measure after it
 STITCH_WIDTH = 1.6
+# A playhead that leaves a page with at least this many of its measures still to play jumped away from it
+UNPLAYED_CELLS = 2
 # A view placed by an end-repeat sign that shows the sign again sends the next view back to the same place, within
 # this many slots
 SIGN_SLACK = 2
@@ -177,6 +179,10 @@ class Assembly:
     sign_folds: dict = field(default_factory=dict)   # view index -> first slot its cells folded onto by a repeat sign
     sliding: dict = field(default_factory=dict)   # segment -> its band moves on by measured slides
     stream_orders: dict = field(default_factory=dict)   # stream -> its own slots in print order
+    # (t0, t1, j) of views the playhead jumped back to whose new measures look like earlier slots, the first being j
+    jump_repeats: list = field(default_factory=list)
+    # slot id -> (t0, t1) of the view where it was printed as new under an unresolved fold
+    unsure_slots: dict = field(default_factory=dict)
 
 
 def number_views(obs: list[Obs], read, more=None) -> str:
@@ -606,7 +612,9 @@ def replay_evidence(o, run, j, A, gap_before, prev, use, words_of) -> tuple[bool
     # A view right after a break that shows the opening measures of an earlier segment again (an intro or
     # count-in may be cut differently, so within a few measures of its start) is the song starting over
     near_start = j <= RESTART_SLACK or any(0 <= j - s <= RESTART_SLACK for s in A.segment_starts)
-    if near_start and gap_before >= RESTART_GAP_SECONDS:
+    # A band seen sliding since the view before stayed on screen, so the time between is no break
+    slid = o.move is not None and o.move.kind == "slide"
+    if near_start and gap_before >= RESTART_GAP_SECONDS and not slid:
         return True, "restart", True
     # A band that moves on by sliding and instead cuts back to the opening measures was sent back to the start.
     # Settled only when the playhead went from the end of the page before straight to the first measure here
@@ -1031,6 +1039,8 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
                 del A.slots[slots_before:]
                 A.seen_segments, A.segment_starts = seen_before, starts_before
                 fold_view(o, slot_of, prev_slots, A, fold_unresolved)
+            if joined and len(A.decisions) == decisions_before:
+                jumped_back(o, slot_of, A, prev, prev_slots, slots_before, gap)
             if (o.restarted and not links and len(A.decisions) == decisions_before
                     and not any(d.kind == "join" and not d.resolved for d in A.decisions[joins_before:])):
                 # A page the playhead started over that nothing tied to the music or folded is printed as new music,
@@ -1073,6 +1083,30 @@ def earlier_music(o: Obs, slot_of: list, A: Assembly, prev_slots: list, slots_be
     return alike
 
 
+def jumped_back(o: Obs, slot_of: list, A: Assembly, prev: Obs, prev_slots: list, slots_before: int, gap: float) -> None:
+    """Note a view the playhead jumped back to whose new measures, one by one and in order, look like measures shown
+    before the view before: a replay that no run of slots matched, as when a measure cut by a page edge was given a
+    slot of its own."""
+    if o.mosaic is not None or not playhead_restarts(prev, o, gap):
+        return
+    # Going back to the top of a page is also how a page turn looks; a jump leaves the page before with measures
+    # still unplayed
+    e = cell_at(prev, playhead_at(prev, at_start=False))
+    if e is None or e > len(prev.cells) - 1 - UNPLAYED_CELLS:
+        return
+    found = []
+    for c, sid in zip(o.cells, slot_of):
+        if sid is None or sid < slots_before:
+            continue
+        after = found[-1] + 1 if found else 0
+        j = next((s for s in range(after, slots_before) if s not in prev_slots
+                  and any(same_cell(x, c, gap) for _, x in A.sightings.get(s, []))), None)
+        if j is not None:
+            found.append(j)
+    if len(found) >= 2:
+        A.jump_repeats.append((o.t0, o.t1, found[0]))
+
+
 def glided_on(o: Obs) -> bool:
     """Whether a view is a glide piece that carries on the piece before."""
     return o.move is not None and o.move.kind == "glide"
@@ -1092,6 +1126,8 @@ def fold_view(o: Obs, slot_of: list, prev_slots: list, A: Assembly, fold_unresol
                                 ["new" if fold_unresolved else "fold"], "wrap", False))
     for i, c in enumerate(o.cells):
         slot_of[i] = prev_slots[i] if fold_unresolved else new_slot(A, c, o)
+        if not fold_unresolved:
+            A.unsure_slots[slot_of[i]] = (o.t0, o.t1)
     A.replay_next = None
 
 
@@ -1287,6 +1323,11 @@ def place_rest(o, slot_of, A, gap, gap_before, prev, use, words_of, fold_unresol
                 fold, basis, resolved = True, "replay_continues", True
             else:
                 fold, basis, resolved = replay_evidence(o, run, j, A, gap_before, prev, use, words_of)
+                if (fold and resolved and (basis == "repeat_sign" or basis.startswith("navigation"))
+                        and not any(has_notes(c) for c in run)):
+                    # Measures without notes match earlier ones at any offset: a repeat sign or a D.S. says the
+                    # video went back, not to which of them
+                    resolved = False
             if not resolved:
                 fold = fold_unresolved
                 A.unresolved_folds.append((o.t0, o.t1, j, j + len(run) - 1))
@@ -1300,6 +1341,8 @@ def place_rest(o, slot_of, A, gap, gap_before, prev, use, words_of, fold_unresol
                 return
             for m, c in enumerate(run):
                 slot_of[i + m] = j + m if fold else new_slot(A, c, o)
+                if not resolved and not fold:
+                    A.unsure_slots[slot_of[i + m]] = (o.t0, o.t1)
             A.replay_next = j + len(run) if fold else None
             i += len(run)
             continue

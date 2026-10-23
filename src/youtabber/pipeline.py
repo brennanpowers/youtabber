@@ -419,6 +419,7 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
                               f"them again or the video replays them.", False))
     notices += repeat_notices(main, obs)
     primary = r.candidates[0].measures
+    notices += unsure_notices(main, obs, primary)
     printing = {obs[m.view].part for m in primary}
     # A part that prints nothing while another part of its segment prints is lines that only look like tab, such as
     # guitar strings in footage, so its views are left out of the checks
@@ -668,6 +669,8 @@ def joined(assemblies: list[Assembly], obs: list[Obs], place: dict[int, float], 
         out.edge_joins += A.edge_joins
         out.other_music += A.other_music
         out.stitches.update(A.stitches)
+        out.jump_repeats += [(t0, t1, j + off) for t0, t1, j in A.jump_repeats]
+        out.unsure_slots.update({s + off: span for s, span in A.unsure_slots.items()})
     out.order = [keys[i][2] for i in merge_order(keys)]
     out.decisions.sort(key=lambda d: d.t)
     return out
@@ -787,6 +790,33 @@ def repeat_notices(A: Assembly, obs: list[Obs]) -> list[Notice]:
                               f"The measures at {fmt(t0)}-{fmt(t1)} may repeat ones first shown at "
                               f"{fmt(first_seen.t0)}-{fmt(first_seen.t1)}: they match only where those were cut off or "
                               f"highlighted, so they are printed again. Check whether they repeat.", True))
+    for t0, t1, j in A.jump_repeats:
+        first_seen = obs[A.slots[j].obs]
+        notices.append(Notice(round(t0, 2), round(t1, 2), "possible_duplicate",
+                              f"The playhead jumped back at {fmt(t0)}, and the measures at {fmt(t0)}-{fmt(t1)} look "
+                              f"like ones first shown at {fmt(first_seen.t0)}-{fmt(first_seen.t1)}, so they may be "
+                              f"printed twice. Check whether they repeat.", True))
+    return notices
+
+
+def unsure_notices(A: Assembly, obs: list[Obs], printed: list[Measure]) -> list[Notice]:
+    """A notice for each view that prints measures first placed under an unresolved fold, when the view lies outside
+    that fold's notice and placed them by folding onto them: a later pass's sighting can be the one that prints. A
+    measure the view only carried on from the view before is still the pass the notice is about."""
+    times: dict[int, list[float]] = {}
+    for m in printed:
+        span = A.unsure_slots.get(m.slot)
+        if (span is not None and not span[0] <= m.t <= span[1]
+                and index_of(obs[m.view], m.cell) not in A.view_links.get(m.view, ())):
+            times.setdefault(m.view, []).append(m.t)
+    notices = []
+    for vi, ts in sorted(times.items()):
+        o = obs[vi]
+        t0, t1 = (o.t0, o.t1) if o.mosaic is None else (min(ts), max(ts))
+        notices.append(Notice(round(t0, 2), round(t1, 2), "unsure_repeat",
+                              f"Some measures printed from {fmt(t0)}-{fmt(t1)} may repeat earlier ones: they were first "
+                              f"shown where the video may have gone back, with no sign whether the song plays them "
+                              f"again. Check whether they repeat.", True))
     return notices
 
 

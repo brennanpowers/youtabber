@@ -3,10 +3,10 @@ from dataclasses import replace
 import numpy as np
 from test_numbering import band_view, music
 
-from youtabber.assemble import (Assembly, Decision, Obs, Slot, assemble, cell_at, choose_shift, find_run, measure_time,
-                                place_rest, playhead_at, playhead_join, playhead_restarts, playhead_track, register,
-                                repeat_played, replay_evidence, rest_of, same_cell, scroll_shifts, split_measure,
-                                still_links, track_join)
+from youtabber.assemble import (RESTART_GAP_SECONDS, Assembly, Decision, Obs, Slot, assemble, cell_at, choose_shift,
+                                find_run, jumped_back, measure_time, place_rest, playhead_at, playhead_join,
+                                playhead_restarts, playhead_track, register, repeat_played, replay_evidence, rest_of,
+                                same_cell, scroll_shifts, split_measure, still_links, track_join)
 from youtabber.parse import Cell
 from youtabber.pipeline import Measure, Notice, edge_notices, join_notices, readings, repeat_notices
 from youtabber.track import Move
@@ -679,3 +679,77 @@ def test_on_pages_of_one_system_a_playhead_gone_on_does_not_restart_though_a_tal
 
 def test_on_pages_of_several_systems_a_playhead_gone_up_a_system_restarts():
     assert playhead_restarts(*paged((300, 400), (500, 250), single=False), 20.0) is True
+
+
+def restart_after_break(move: Move | None):
+    """Replay evidence for a view of bars 1-4 shown a break after a page of bars 9-12, the band moving by `move`."""
+    p, o = band_view(0, 9), band_view(1, 1)
+    o.move = move
+    return replay_evidence(o, o.cells[:2], 0, Assembly(), RESTART_GAP_SECONDS, p, set(), lambda v: [])
+
+
+def test_the_opening_shown_again_after_a_break_restarts_unless_the_band_was_seen_sliding_meanwhile():
+    assert restart_after_break(None) == (True, "restart", True)
+    assert restart_after_break(Move("slide", shifts=[400], drawn=[True], steps=5)) == (False, "none", False)
+
+
+def jumped(leave_x: int, other: list[int]):
+    """Bars 1-4, then bars 5-8 left with the playhead at x leave_x, then a page the playhead starts over on, showing
+    bars 1-4 with the measures at positions `other` drawn as other music."""
+    obs = [band_view(0, 1), band_view(1, 5), band_view(2, 1)]
+    o = obs[2]
+    for i in other:
+        o.cells[i] = replace(o.cells[i], ink=music("b", i + 1))
+    o.band = np.hstack([c.ink for c in o.cells])
+    o.tall, o.fixed = o.band, np.zeros_like(o.band)
+    played(obs[1], (9.5, leave_x, 30))
+    played(o, (0.1, 20, 30))
+    return assemble(obs, 10.0, False, EVIDENCE, lambda v: []), obs
+
+
+def test_a_jump_back_whose_new_measures_look_like_earlier_ones_in_order_may_repeat_them():
+    # Left in bar 6 with two measures unplayed; the page after shows bars 2 and 4 between other music
+    A, obs = jumped(300, [0, 2])
+    assert A.view_slots[2] == [8, 9, 10, 11]
+    assert A.jump_repeats == [(20.0, 30.0, 1)]
+    # A glide is not a page the playhead jumps back on
+    A.jump_repeats.clear()
+    obs[2].mosaic = np.zeros((1, 1), bool)
+    jumped_back(obs[2], A.view_slots[2], A, obs[1], A.view_slots[1], 8, 10.0)
+    assert A.jump_repeats == []
+
+
+def test_a_page_left_with_one_measure_unplayed_is_a_page_turn_not_a_jump():
+    assert jumped(500, [0, 2])[0].jump_repeats == []
+
+
+def test_one_new_measure_like_an_earlier_one_is_no_jump_back():
+    assert jumped(300, [0, 2, 3])[0].jump_repeats == []
+
+
+def sign_replay(notes: bool) -> Assembly:
+    """Bars 1-4, then bars 5-8 ending on an end-repeat sign still ahead of the playhead, then a page like bars 1-4.
+    Without notes, bars 1-4 and the page are rest bars: a barline mark at each edge and nothing between."""
+    obs = [band_view(0, 1), band_view(1, 5), band_view(2, 1)]
+    obs[1].repeat_end, obs[1].repeat_bars = True, [(0, 800)]
+    played(obs[1], (9.5, 650, 30))
+    if not notes:
+        rest = np.zeros((60, 200), bool)
+        rest[:, :3] = rest[:, 198:] = True
+        for o in (obs[0], obs[2]):
+            o.cells = [replace(c, ink=rest.copy()) for c in o.cells]
+    return assemble(obs, 10.0, False, EVIDENCE, lambda v: [])
+
+
+def test_a_repeat_sign_fold_onto_rest_bars_is_unresolved_and_its_new_measures_are_unsure():
+    A = sign_replay(notes=False)
+    assert [(d.chosen, d.basis, d.resolved) for d in A.decisions if d.kind == "fold"] == [("new", "repeat_sign", False)]
+    assert A.unresolved_folds == [(20.0, 30.0, 0, 3)]
+    assert A.unsure_slots == {s: (20.0, 30.0) for s in (8, 9, 10, 11)}
+
+
+def test_a_repeat_sign_fold_onto_measures_with_notes_is_resolved():
+    A = sign_replay(notes=True)
+    assert [(d.chosen, d.basis, d.resolved) for d in A.decisions if d.kind == "fold"] == [("fold", "repeat_sign", True)]
+    assert A.view_slots[2] == [0, 1, 2, 3]
+    assert A.unresolved_folds == [] and A.unsure_slots == {}

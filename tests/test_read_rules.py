@@ -7,8 +7,8 @@ import numpy as np
 from youtabber import pipeline
 from youtabber.assemble import Assembly, Obs, Slot
 from youtabber.check import empty, screen_breaks
-from youtabber.parse import parse_view
-from youtabber.pipeline import detected_numbers, drawn_full_size, intro, scattered
+from youtabber.parse import Cell, parse_view
+from youtabber.pipeline import Measure, detected_numbers, drawn_full_size, intro, scattered
 from youtabber.scan import Segment
 
 
@@ -196,3 +196,27 @@ def test_detected_numbers_go_to_the_nearest_barline_and_skip_digits_on_the_top_l
     # Rows 26 and 28 are 0.4 and 0.2 line gaps above the top line; x 305 is 9.5 gaps from the nearest barline
     boxes = [(0, 10, 26, 7), (195, 205, 26, 8), (400, 410, 28, 3), (300, 310, 26, 9)]
     assert numbered_view(monkeypatch, boxes) == {0: 7, 1: 8}
+
+
+def unsure_printed(view: int, links: tuple = ()) -> list:
+    """Notices for slot 5, first placed as new under an unresolved fold at 10-12 s, printed from view 0 (10-12 s) or
+    view 1 (30-32 s), view 1 carrying on the cells at `links` from the view before."""
+    ink = np.zeros((60, 200), bool)
+    obs = [Obs(i, t, t + 2, [Cell(i, 0, 0, 0, 200, "full", ink, ink, 0, gap=10.0, mid_y=30.0)], [], 0, (0, 0))
+           for i, t in ((0, 10.0), (1, 30.0))]
+    A = Assembly(unsure_slots={5: (10.0, 12.0)}, view_links={1: set(links)})
+    o = obs[view]
+    m = Measure(5, view, o.cells[0], o.t0 + 1, o.t0 + 1, 100.0, 30.0, None, None, False)
+    return [(n.t0, n.t1, n.kind) for n in pipeline.unsure_notices(A, obs, [m])]
+
+
+def test_a_measure_first_placed_under_an_unresolved_fold_and_printed_from_a_later_fold_is_noted():
+    assert unsure_printed(1) == [(30.0, 32.0, "unsure_repeat")]
+
+
+def test_a_measure_printed_where_its_unresolved_fold_is_noted_needs_no_other_notice():
+    assert unsure_printed(0) == []
+
+
+def test_a_measure_carried_on_from_the_view_before_needs_no_other_notice():
+    assert unsure_printed(1, links=(0,)) == []

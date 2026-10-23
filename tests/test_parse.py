@@ -269,20 +269,22 @@ def test_barlines_on_each_staff_only_keep_two_systems():
     assert [ps.band for ps in systems] == [(46, 145), (186, 285)]
 
 
-def dotted(gap: float, w: int, h: int, stacked: bool) -> list[int]:
-    """end_repeats on a 6-line staff (top line at row 40) with a barline at x 200 and two w x h dots left of it:
-    one above the other two line gaps apart, or side by side at one height, as two fret digits stand."""
-    top = 40
-    dark = np.zeros((200, 300), bool)
+def dotted(gap: float, w: int, h: int, stacked: bool, bar: int = 200, before: int | None = None,
+           top: int = 40) -> list[int]:
+    """end_repeats on a 6-line staff (top line at row `top`) with a barline at x `bar` and two w x h dots left of
+    it: one above the other two line gaps apart, or side by side at one height, as two fret digits stand. With
+    `before`, a one-pixel barline at that x comes before it."""
+    dark = np.zeros((200, bar + 100), bool)
     for i in range(6):
         dark[int(round(top + i * gap))] = True
     y = int(top + 1.5 * gap - h / 2)
-    x = int(200 - 0.4 * gap - w)
+    x = int(bar - 0.4 * gap - w)
     places = [(x, y), (x, int(y + 2 * gap))] if stacked else [(x - int(0.5 * gap), y), (x, y)]
     for px, py in places:
         dark[py:py + h, px:px + w] = True
     st = SimpleNamespace(top=float(top), bottom=top + 5 * gap, gap=gap)
-    return end_repeats(dark, st, [(200, 202)])
+    bars = ([(before, before)] if before is not None else []) + [(bar, bar + 2)]
+    return end_repeats(dark, st, bars)
 
 
 def test_an_end_repeat_sign_is_two_dots_one_above_the_other_at_any_dot_size():
@@ -292,6 +294,14 @@ def test_an_end_repeat_sign_is_two_dots_one_above_the_other_at_any_dot_size():
     assert dotted(20.0, 8, 8, stacked=False) == []
     assert dotted(23.5, 5, 8, stacked=False) == []
     assert dotted(15.5, 3, 4, stacked=False) == []
+
+
+def test_dots_just_after_the_barline_before_are_no_end_repeat():
+    # Line gap 10, staff rows 0-50, the barline before at x 100. Dots before a barline 2.5 gaps on are taken for the
+    # digits of a time signature after a system's opening barline; more than 3 gaps on, they end a measure
+    assert dotted(10.0, 4, 4, stacked=True, bar=300, before=100, top=0) == [300]
+    assert dotted(10.0, 4, 4, stacked=True, bar=125, before=100, top=0) == []
+    assert dotted(10.0, 4, 4, stacked=True, bar=131, before=100, top=0) == [131]
 
 
 def test_end_repeat_dots_are_round():

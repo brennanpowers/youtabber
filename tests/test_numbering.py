@@ -166,6 +166,7 @@ def test_a_screen_shown_again_after_the_playhead_jumped_back_is_an_unresolved_fo
         c.ink[20:40, 80:120] = True
     main = assemble(obs, 10.0, False, {"numbers", "playhead", "navigation"}, lambda o: [])
     assert main.view_slots[1] == [4, 5, 6, 7] and len(main.unresolved_folds) == 1
+    assert main.unsure_slots == {s: (10.0, 20.0) for s in (4, 5, 6, 7)}
     folded = assemble(obs, 10.0, True, {"numbers", "playhead", "navigation"}, lambda o: [])
     assert folded.view_slots[1] == [0, 1, 2, 3]
 
