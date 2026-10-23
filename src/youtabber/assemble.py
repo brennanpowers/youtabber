@@ -26,6 +26,10 @@ PROFILE_CANDIDATES = 8
 MIN_OVERLAP_GAPS = 4
 # A segment scrolls when this share of its view pairs line up under some shift
 SCROLL_SEGMENT_SHARE = 0.8
+# The width check allows this many line gaps of difference for a system's first measure, whose box starts at the
+# staff's start, and for a measure with a barline within KEEP_EDGE_GAPS of the columns both views show, where the
+# panel's edge may stand in for it
+KEEP_LOOSE_GAPS, KEEP_EDGE_GAPS = 2.0, 0.5
 # Cells overlap after registration when they share this share of the narrower one's width
 CELL_OVERLAP = 0.6
 # A view's playhead counts as tracked when it was found in this share of the view's frames
@@ -66,6 +70,9 @@ SLIDE_REACH = 6
 CARRY_MEASURES = 1.5
 # ...and its two ends lie at most this many line gaps apart in height (a highlight rides up and down with the notes)
 CURSOR_DRIFT_GAPS = 5
+# Without a slide the playhead confirmed, a segment's usual slide is learned from at least this many slides drawn in
+# several steps
+USUAL_MIN_DRAWN = 3
 # A segment's typical time on one measure needs at least this many measures seen played from start to end
 MIN_DWELLS = 5
 # A page's last measure, cut by the page edge, was played for less than this share of a measure's time
@@ -412,6 +419,7 @@ def keeps_widths(p: Obs, o: Obs, dx: int) -> bool:
     Scrolling moves the page without redrawing it; a page that only looks alike (the same music printed
     again elsewhere in the score) is laid out differently. Only measures inside the columns both views
     show are compared, since a measure running past them can't be checked for a barline missed there.
+    A system's first measure and a measure at the edge of those columns are compared more loosely.
     """
     lo, hi = max(p.rect[0], o.rect[0] + dx), min(p.rect[2], o.rect[2] + dx)
     for i, j in scroll_links(p, o, dx).items():
@@ -419,18 +427,23 @@ def keeps_widths(p: Obs, o: Obs, dx: int) -> bool:
         if a.kind != "full" or b.kind != "full" or min(a.x0 + dx, b.x0) < lo or max(a.x1 + dx, b.x1) > hi:
             continue
         wa, wb = a.x1 - a.x0, b.x1 - b.x0
-        if abs(wa - wb) > max(WIDTH_PX, WIDTH_SHARE * max(wa, wb)):
+        edge = KEEP_EDGE_GAPS * a.gap
+        loose = (a.index == 0 or b.index == 0 or min(a.x0 + dx, b.x0) < lo + edge or max(a.x1 + dx, b.x1) > hi - edge)
+        if abs(wa - wb) > (KEEP_LOOSE_GAPS * a.gap if loose else max(WIDTH_PX, WIDTH_SHARE * max(wa, wb))):
             return False
     return True
 
 
-def choose_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float, usual: float | None = None):
+def choose_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float, usual: float | None = None,
+                 confirmed: bool = True):
     """(dx or None, basis, resolved): whether o is p scrolled by one of the shifts, or a new page.
 
     The playhead decides when it was seen at both ends: after a scroll it carries on from where it was,
     which in o's coordinates is (where it was in p) - dx. Next, in a segment whose band was seen sliding by
     about `usual` px, the shift nearest that is taken, unless the slide drawn between the two views lies within
     a gap of another of the shifts. Without either, a segment where nearly every pair lines up is taken to scroll.
+    `confirmed` says the playhead confirmed the slides `usual` was learned from; slides drawn in several steps can be
+    measured a riff's length short, so then a drawn slide agreeing with it doesn't settle the pick.
     """
     if "playhead" in use and tracked(p) and tracked(o):
         a, b = playhead_at(p, at_start=False), playhead_at(o, at_start=True)
@@ -452,7 +465,10 @@ def choose_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float
             # A slide drawn to another of the shifts points away from the usual one, so the pick is left to the
             # rules below
             if agrees or not drawn or not any(abs(drawn[0] - dx) <= gap for dx, _ in shifts):
-                return near[0], "usual_slide", agrees
+                # The only shift that lines up, in a segment that scrolls, is settled as well, unless a slide drawn
+                # here points elsewhere
+                lone = len(shifts) == 1 and share >= SCROLL_SEGMENT_SHARE and (not drawn or agrees)
+                return near[0], "usual_slide", (agrees and confirmed) or lone
     if share >= SCROLL_SEGMENT_SHARE:
         return shifts[0][0], "segment_scrolls", len(shifts) == 1
     return None, "prior", False
@@ -484,9 +500,23 @@ def same_cell(a, b, gap: float) -> bool:
         return same(a, b, gap)
     if "tail" in (a.kind, b.kind):
         part, whole = (a, b) if a.kind == "tail" else (b, a)
-        return whole.kind == "full" and same_part(part, whole, gap, "left")
+        if whole.kind == "full" and same_part(part, whole, gap, "left"):
+            return True
+        return after_header(part, whole, gap)
     part, whole = (a, b) if a.kind == "lead" else (b, a)
     return same_part(part, whole, gap, "right")
+
+
+def after_header(part, whole, gap: float) -> bool:
+    """Whether a measure cut by the page edge (`part`) shows the start of a system's first measure (`whole`) after the
+    clef, key and time signature drawn there, which end between SYSTEM_START_GAPS and STAFF_START_GAPS line gaps
+    into it."""
+    # Only a cell that starts its staff has a header; its box also takes in the margin left of the staff
+    w, hw = part.ink.shape[1], whole.ink.shape[1]
+    if whole.index != 0 or not whole.complete or hw <= whole.x1 - whole.x0 + 1:
+        return False
+    return any(same_part(part, _Columns(whole, dx, dx + w), gap, "left")
+               for dx in range(int(SYSTEM_START_GAPS * gap), min(hw - w, int(STAFF_START_GAPS * gap)) + 1, 2))
 
 
 def sequence_links(p: Obs, o: Obs, gap: float) -> list[dict[int, int]]:
@@ -757,6 +787,38 @@ def slide_join(p: Obs, o: Obs, gap: float, cands) -> tuple[dict[int, int], str] 
     return None
 
 
+def drawn_near(m, dx: int) -> bool:
+    """Whether a move was drawn in several steps by about dx pixels."""
+    return m is not None and any(dr and abs(d - dx) <= SLIDE_REACH for d, dr in zip(m.shifts, m.drawn))
+
+
+def scroll_shares(obs: list[Obs], shift_cache: dict, track_joins: dict) -> dict:
+    """The share of view pairs per segment that line up under some registered shift.
+
+    A view that began where the playhead jumped back, or two views of one screen the band held still on, say nothing
+    about whether the band scrolls between screens, so they are left out.
+    """
+    pairs: dict = {}
+    for o in obs:
+        if o.index in shift_cache and not o.wrapped and not track_joins.get(o.index, ({}, ""))[1].startswith("still"):
+            pairs.setdefault(o.seg, []).append(bool(shift_cache[o.index]))
+    return {s: sum(v) / len(v) for s, v in pairs.items() if v}
+
+
+def usual_slides(slides: dict, drawn_slides: dict, gap: float) -> dict:
+    """{segment: (px, confirmed)}: the shift each segment's band was usually seen sliding by.
+
+    It comes from the slides the playhead confirmed. Where the playhead confirmed none, slides drawn in several steps
+    stand in when there are at least USUAL_MIN_DRAWN of them and most lie within a gap of their median.
+    """
+    usual = {s: (float(np.median(v)), True) for s, v in slides.items()}
+    for s, v in drawn_slides.items():
+        mid = float(np.median(v))
+        if s not in usual and len(v) >= USUAL_MIN_DRAWN and sum(abs(d - mid) <= gap for d in v) > len(v) / 2:
+            usual[s] = (mid, False)
+    return usual
+
+
 def existing_join(prev, o, gap, shift_cache, scroll_share, usual, use, A) -> dict:
     """The join made without the band's measured movement: a registered shift, else an overlap of look-alike
     cells. Its decisions go to A."""
@@ -764,8 +826,8 @@ def existing_join(prev, o, gap, shift_cache, scroll_share, usual, use, A) -> dic
     options = []
     shifts = shift_cache.get(o.index, [])
     if shifts:
-        dx, basis, resolved = choose_shift(prev, o, shifts, scroll_share.get(o.seg, 0.0), use, gap,
-                                            usual.get(o.seg))
+        step, confirmed = usual.get(o.seg, (None, True))
+        dx, basis, resolved = choose_shift(prev, o, shifts, scroll_share.get(o.seg, 0.0), use, gap, step, confirmed)
         if dx is not None:
             links = scroll_links(prev, o, dx)
             # A page shown again whole can line up with itself one measure on; a riff scrolled on by its
@@ -912,19 +974,15 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
     prev: Obs | None = None
     prev_slots: list = []
     last_end = None
-    # Registration of every consecutive pair, and the share of pairs per segment that line up
+    # Registration of every consecutive pair
     shift_cache: dict = {}
-    pairs: dict = {}
     for p, o in zip(obs, obs[1:]):
         if p.seg == o.seg and p.cells and o.cells and not glided_on(o):
             shift_cache[o.index] = scroll_shifts(p, o, gap)
-            # A view that began where the playhead jumped back says nothing about whether the band scrolls
-            if not o.wrapped:
-                pairs.setdefault(o.seg, []).append(bool(shift_cache[o.index]))
-    scroll_share = {s: sum(v) / len(v) for s, v in pairs.items() if v}
     # Joins decided by how the band moved between the two views
     track_joins: dict = {}
     slides: dict = {}
+    drawn_slides: dict = {}
     for p, o in zip(obs, obs[1:]):
         if p.seg == o.seg and p.cells and o.cells and not glided_on(o):
             if o.move is not None:
@@ -934,8 +992,10 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
                 track_joins[o.index] = tj
                 if tj[1].startswith("slide "):
                     slides.setdefault(o.seg, []).append(int(tj[1].split()[1]))
-    # The shift each segment's band was usually seen sliding by, from the slides the playhead confirmed
-    usual = {s: float(np.median(v)) for s, v in slides.items()}
+                elif tj[1].startswith("slide? ") and drawn_near(o.move, int(tj[1].split()[1])):
+                    drawn_slides.setdefault(o.seg, []).append(int(tj[1].split()[1]))
+    scroll_share = scroll_shares(obs, shift_cache, track_joins)
+    usual = usual_slides(slides, drawn_slides, gap)
     # A segment slides when the playhead confirmed most of the slides and cuts its band was seen making
     for sg in {o.seg for o in obs}:
         moved = [o for o in obs if o.seg == sg and o.move is not None and o.move.kind in ("slide", "cut")]

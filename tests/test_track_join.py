@@ -1,12 +1,14 @@
 from dataclasses import replace
+from types import SimpleNamespace
 
 import numpy as np
 from test_numbering import band_view, music
 
-from youtabber.assemble import (RESTART_GAP_SECONDS, Assembly, Decision, Obs, Slot, assemble, cell_at, choose_shift,
-                                find_run, jumped_back, measure_time, place_rest, playhead_at, playhead_join,
-                                playhead_restarts, playhead_track, register, repeat_played, replay_evidence, rest_of,
-                                same_cell, scroll_shifts, split_measure, still_links, track_join)
+from youtabber.assemble import (RESTART_GAP_SECONDS, Assembly, Decision, Obs, Slot, after_header, assemble, cell_at,
+                                choose_shift, drawn_near, find_run, jumped_back, keeps_widths, measure_time, place_rest,
+                                playhead_at, playhead_join, playhead_restarts, playhead_track, register, repeat_played,
+                                replay_evidence, rest_of, same_cell, scroll_shares, scroll_shifts, split_measure,
+                                still_links, track_join, usual_slides)
 from youtabber.parse import Cell
 from youtabber.pipeline import Measure, Notice, edge_notices, join_notices, readings, repeat_notices
 from youtabber.track import Move
@@ -228,6 +230,30 @@ def test_a_jump_whose_drawn_slide_lands_on_another_shift_skips_the_usual_slide()
 
 def test_with_no_usual_slide_a_jump_falls_back_on_the_segment_share():
     assert usual_pick(Move("slide", shifts=[400], drawn=[True], steps=5), usual=None) == (None, "prior", False)
+
+
+def test_drawn_near_needs_a_shift_drawn_in_several_steps_within_reach():
+    assert drawn_near(Move("slide", shifts=[400], drawn=[True], steps=5), 402)
+    assert not drawn_near(Move("slide", shifts=[400], drawn=[False], steps=5), 402)
+    assert not drawn_near(Move("slide", shifts=[400], drawn=[True], steps=5), 420)
+    assert not drawn_near(None, 402)
+
+
+def test_only_slides_drawn_in_several_steps_teach_a_segment_its_usual_slide():
+    # Four slides under a box cursor that stayed in one column, then a cut the usual slide would place
+    def last_join(drawn: bool):
+        views = [riff_view(i, 1 + 2 * i) for i in range(6)]
+        for v in views:
+            v.playhead = [(v.t0 + 0.1, 705, 30), (v.t1 - 0.5, 700, 30)]
+        for v in views[1:5]:
+            v.move = Move("slide", shifts=[400], drawn=[drawn], steps=5)
+        views[5].move, views[5].playhead = Move("cut"), []
+        A = assemble(views, 10.0, False, EVIDENCE, lambda v: [])
+        d = [d for d in A.decisions if d.kind == "join"][-1]
+        return d.chosen, d.basis
+
+    assert last_join(True) == ("shift 398", "usual_slide")
+    assert last_join(False) == ("shift 198", "segment_scrolls")
 
 
 def played(o, *pts):
@@ -753,3 +779,97 @@ def test_a_repeat_sign_fold_onto_measures_with_notes_is_resolved():
     assert [(d.chosen, d.basis, d.resolved) for d in A.decisions if d.kind == "fold"] == [("fold", "repeat_sign", True)]
     assert A.view_slots[2] == [0, 1, 2, 3]
     assert A.unresolved_folds == [] and A.unsure_slots == {}
+
+
+def test_usual_slide_learned_from_drawn_slides_alone_does_not_settle_a_jump():
+    p, o = band_view(0, 1), band_view(1, 3)
+    o.move = Move("slide", shifts=[400], drawn=[True], steps=5)
+    assert choose_shift(p, o, [(398, 0.0), (598, 0.1)], 0.5, set(), 10.0, 400.0, False) == (398, "usual_slide", False)
+
+
+def test_the_only_shift_near_the_usual_slide_in_a_scrolling_segment_is_settled():
+    p, o = band_view(0, 1), band_view(1, 3)
+    o.move = Move("cut")
+    assert choose_shift(p, o, [(398, 0.0)], 0.9, set(), 10.0, usual=400.0) == (398, "usual_slide", True)
+
+
+def test_the_only_shift_near_the_usual_slide_stays_unsettled_when_a_slide_drawn_there_points_elsewhere():
+    p, o = band_view(0, 1), band_view(1, 3)
+    o.move = Move("slide", shifts=[900], drawn=[True], steps=5)
+    assert choose_shift(p, o, [(398, 0.0)], 0.9, set(), 10.0, usual=400.0) == (398, "usual_slide", False)
+
+
+def test_the_only_shift_near_the_usual_slide_is_settled_when_a_slide_drawn_there_agrees():
+    p, o = band_view(0, 1), band_view(1, 3)
+    o.move = Move("slide", shifts=[400], drawn=[True], steps=5)
+    assert choose_shift(p, o, [(398, 0.0)], 0.9, set(), 10.0, usual=400.0) == (398, "usual_slide", True)
+
+
+def test_the_usual_slide_is_learned_from_three_drawn_slides_that_mostly_agree():
+    assert usual_slides({}, {0: [400, 402, 398]}, 10.0) == {0: (400.0, False)}
+    assert usual_slides({}, {0: [400, 402]}, 10.0) == {}
+    assert usual_slides({}, {0: [400, 600, 800]}, 10.0) == {}
+
+
+def test_a_slide_the_playhead_confirmed_sets_the_usual_slide_over_drawn_ones():
+    assert usual_slides({0: [500]}, {0: [400, 402, 398]}, 10.0) == {0: (500.0, True)}
+
+
+def headed(lead: int):
+    """A system's first measure of part "a" whose box starts `lead` px left of its music, with a clef drawn there, and
+    a piece of the same measure cut to its first 120 px by the page edge."""
+    c = band_view(0, 1).cells[0]
+    clef = np.zeros((60, lead), bool)
+    clef[10:50, 2:lead - 2] = True
+    ink = np.hstack([clef, c.ink])
+    whole = replace(c, x0=c.x0 + lead, x1=c.x1 + lead, ink=ink, faint=np.zeros_like(ink), tint=np.zeros_like(ink))
+    return piece(c, "tail", 0, 120), whole
+
+
+def test_a_cut_measure_matches_a_system_start_past_its_header():
+    part, whole = headed(50)
+    assert after_header(part, whole, 10.0) and same_cell(part, whole, 10.0)
+
+
+def test_a_cut_measure_matches_a_system_start_only_past_a_header_of_a_few_line_gaps():
+    assert not after_header(*headed(10), 10.0)
+
+
+def test_a_cut_measure_matches_past_a_header_only_a_whole_measure_that_starts_its_system():
+    part, whole = headed(50)
+    assert not after_header(part, replace(whole, index=1), 10.0)
+    assert not after_header(part, replace(whole, complete=False), 10.0)
+
+
+def laid(bars, right: int):
+    """A view of whole measures between the barlines `bars` on one staff, showing columns 0 to `right`."""
+    cells = [SimpleNamespace(kind="full", index=i, x0=a, x1=b, gap=10.0)
+             for i, (a, b) in enumerate(zip(bars, bars[1:]))]
+    return SimpleNamespace(cells=cells, rect=(0, 0, right, 60))
+
+
+def test_a_systems_first_measure_may_change_width_a_little_on_a_scroll():
+    # Scrolled 50 px: the first measure is 200 px wide in one view and 215 in the other
+    p = laid([100, 300, 500, 700, 900], 1000)
+    assert keeps_widths(p, laid([50, 265, 465, 665, 865], 1000), 50)
+
+
+def test_an_inner_measure_changing_width_on_a_scroll_is_another_page():
+    p = laid([100, 300, 500, 700, 900], 1000)
+    assert not keeps_widths(p, laid([50, 250, 465, 665, 865], 1000), 50)
+
+
+def test_a_measure_at_the_edge_of_the_columns_both_views_show_may_change_width_a_little():
+    # The second view's right edge lies 3 px past the 215 px measure, so its barline there may be the panel's edge
+    p = laid([100, 300, 500, 700, 900], 1000)
+    assert keeps_widths(p, laid([50, 250, 465], 468), 50)
+    assert not keeps_widths(p, laid([50, 250, 475], 478), 50)
+
+
+def test_views_of_a_screen_the_band_held_still_on_leave_the_scroll_share():
+    # Four pairs: two of one held screen registering no shift, two registering one
+    obs = [SimpleNamespace(index=i, seg=0, wrapped=False) for i in range(5)]
+    shift_cache = {1: [], 2: [], 3: [(400, 0.0)], 4: [(400, 0.0)]}
+    still = {1: ({}, "still"), 2: ({}, "still?")}
+    assert scroll_shares(obs, shift_cache, still) == {0: 1.0}
+    assert scroll_shares(obs, shift_cache, {}) == {0: 0.5}
