@@ -18,14 +18,23 @@ DWELL_MIN_SECONDS = 4.0
 MAX_SECONDS_PER_MEASURE = 15.0
 
 
-def too_few(obs, printed: int) -> str | None:
-    """A message when the whole video yields far fewer measures than its time with tab on screen allows."""
+def too_few(obs, printed: int, A) -> str | None:
+    """A message when the whole video yields far fewer measures than its time with tab on screen allows and the
+    reading itself shows signs of lost measures. A lesson can hold a few measures on screen for minutes, so time
+    alone doesn't refuse."""
     shown = sum(o.t1 - o.t0 for o in obs)
-    if shown >= 2 * MAX_SECONDS_PER_MEASURE and printed < shown / MAX_SECONDS_PER_MEASURE:
+    if shown >= 2 * MAX_SECONDS_PER_MEASURE and printed < shown / MAX_SECONDS_PER_MEASURE and not settled(obs, A):
         return (f"Read only {printed} measure{'' if printed == 1 else 's'} from {shown:.0f} s of tab on screen; "
                 f"at least {shown / MAX_SECONDS_PER_MEASURE:.0f} would fit. Measures were missed, so no PDF was "
                 f"written.")
     return None
+
+
+def settled(obs, A) -> bool:
+    """True when nothing in the reading points to lost measures: every view reads measures, every join between
+    screens and every fold of music shown again is settled, and no measure is much wider than the others."""
+    return (all(o.cells for o in obs) and all(d.resolved for d in A.decisions if d.kind in ("join", "fold"))
+            and not odd_widths(obs))
 
 
 def possible_duplicates(A, obs, gap: float) -> list[dict]:

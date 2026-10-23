@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from synth import Song, write_video
+from synth import Song, views, write_video
 from youtabber import glide, pipeline
 from youtabber.observe import View
 from youtabber.scan import Segment
@@ -60,6 +60,63 @@ def test_a_long_segment_that_neither_holds_still_nor_glides_fails(monkeypatch):
     r = pipeline.read(Path("unused.mp4"))
     assert r.outcome == "fail" and r.fail_reason == "check_failed"
     assert "holds still for only 5 of 30 s" in r.message
+
+
+def brief_tab(monkeypatch, t1: float, duration: float):
+    """A video of `duration` s whose only tab is one still segment from 0 to `t1` s."""
+    seg = Segment(0.0, t1, 10.0, "dark", paper=np.array([255.0, 255.0, 255.0]), x1=640, y1=360)
+    monkeypatch.setattr(pipeline, "probe", lambda path: VideoInfo(640, 360, duration))
+    monkeypatch.setattr(pipeline, "scan", lambda path, w, h, region=None, progress=None: ([seg], {}, []))
+    monkeypatch.setattr(glide, "glides", lambda *a: False)
+    monkeypatch.setattr(pipeline, "text_tab_shown", lambda path: False)
+    monkeypatch.setattr(pipeline, "views_in", lambda *a, **kw: ([still_view(0.0, t1)], 128.0, 230.0))
+    return pipeline.read(Path("unused.mp4"))
+
+
+def test_tab_shown_too_briefly_in_a_long_video_is_no_tab(monkeypatch):
+    r = brief_tab(monkeypatch, 8.0, 330.0)
+    assert r.outcome == "fail" and r.fail_reason == "no_tab"
+    assert "only 8 s of 330 s" in r.message
+
+
+def test_brief_tab_holding_enough_of_a_short_video_is_not_refused_as_brief(monkeypatch):
+    # 8 s of 200 s is 4% of the video
+    assert "too briefly" not in brief_tab(monkeypatch, 8.0, 200.0).message
+
+
+def test_tab_shown_ten_seconds_or_more_is_not_refused_as_brief(monkeypatch):
+    # 12 s of 400 s is 3% of the video
+    assert "too briefly" not in brief_tab(monkeypatch, 12.0, 400.0).message
+
+
+def read_tab_for(monkeypatch, pages: int):
+    """A 60 s segment held as twelve 5 s views, of which only the last `pages` show tab; the others show blank
+    paper, so no measure is found on them."""
+    song = Song()
+    shown = views(song)[:pages]
+    blank = np.full_like(shown[0], 255)
+    plates = [blank] * (12 - pages) + shown
+    h, w = blank.shape[:2]
+    held = [View(5.0 * i, 5.0 * i + 5.0, plate, rect=(0, 0, w, h), print_rect=(0, 0, w, h))
+            for i, plate in enumerate(plates)]
+    seg = Segment(0.0, 60.0, float(song.line_spacing), "dark", paper=np.array([255.0, 255.0, 255.0]), x1=w, y1=h)
+    monkeypatch.setattr(pipeline, "probe", lambda path: VideoInfo(w, h, 60.0))
+    monkeypatch.setattr(pipeline, "scan", lambda path, w, h, region=None, progress=None: ([seg], {}, []))
+    monkeypatch.setattr(glide, "glides", lambda *a: False)
+    monkeypatch.setattr(pipeline, "views_in", lambda *a, **kw: (held, 128.0, 230.0))
+    monkeypatch.setattr(pipeline, "view_move", lambda *a: None)
+    return pipeline.read(Path("unused.mp4"))
+
+
+def test_lines_read_as_measures_for_little_of_their_time_are_no_tab(monkeypatch):
+    r = read_tab_for(monkeypatch, 1)
+    assert r.outcome == "fail" and r.fail_reason == "no_tab"
+    assert "found on them for only 5 s" in r.message
+
+
+def test_lines_read_as_measures_for_a_sixth_of_their_time_are_not_refused_as_no_tab(monkeypatch):
+    r = read_tab_for(monkeypatch, 2)
+    assert "found on them for only" not in r.message
 
 
 def two_bands(monkeypatch, seen: tuple[float, float]):

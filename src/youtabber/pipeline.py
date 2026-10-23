@@ -87,6 +87,11 @@ EDGE_STEP, EDGE_SHARE_WIDTH, EDITOR_EDGES = 25, 1 / 6, 4
 # Tab whose every segment is shorter than SCATTERED_SECONDS, which together cover less than SCATTERED_SHARE of the
 # video, and whose line spacing varies by more than SCATTERED_GAP_RATIO is no play-along
 SCATTERED_SECONDS, SCATTERED_SHARE, SCATTERED_GAP_RATIO = 10.0, 0.25, 1.5
+# Tab on screen for less than BRIEF_SECONDS in all, and for less than BRIEF_SHARE of the video, is no play-along: a
+# picture of a page on a promo card, or lines that only look like a staff
+BRIEF_SECONDS, BRIEF_SHARE = 10.0, 0.035
+# Tab whose views find measures for less than READ_SHARE of their time is lines that only look like a staff
+READ_SHARE = 0.12
 # A segment shorter than SMALL_SECONDS whose lines are spaced closer than SMALL_GAP_SHARE of the longest segment's is a
 # small picture of a page (a thumbnail on a promo card or an end screen), not the tab being played
 SMALL_SECONDS, SMALL_GAP_SHARE = 10.0, 0.6
@@ -190,10 +195,15 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
         return r.fail("no_tab", f"No tab on screen: no steady set of evenly spaced staff lines on paper in "
                                 f"{info.duration:.0f} s of video. youtabber can't read text tab (e|--3--) or tab "
                                 f"drawn see-through over the video either.")
+    held = sum(s.t1 - s.t0 for s in segments)
+    if held < BRIEF_SECONDS and held < BRIEF_SHARE * info.duration:
+        return r.fail("no_tab", f"No tab to read: lines like a tab staff show for only {held:.0f} s of "
+                                f"{info.duration:.0f} s of video, too briefly for the song to be played from them. "
+                                f"They are likely a small picture of a page, such as on a promo card, or lines "
+                                f"that only look like tab, such as the frets of a guitar neck.")
     # Tab in short scattered pieces may be a screen recording of an editor, with short play-along clips in it
     clips = None
     if scattered(segments, info.duration):
-        held = sum(s.t1 - s.t0 for s in segments)
         segments = [s for s in segments if not editor_screen(path, s)]
         r.segments = segments
         if not segments:
@@ -500,7 +510,14 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
                      f"({spans}). The main PDF prints those measures every time; the folded PDF prints them once.")
     else:
         r.message = f"Read {n} measure{'' if n == 1 else 's'}."
-    short = too_few(obs, n) if n else None
+    # Lines that only look like tab, such as chord diagrams or a picking pattern, give a stray cell now and then
+    shown = sum(o.t1 - o.t0 for o in obs)
+    read_time = sum(o.t1 - o.t0 for o in obs if o.cells)
+    if n and read_time < READ_SHARE * shown:
+        return r.fail("no_tab", f"No tab to read: lines like a tab staff show for {shown:.0f} s, but measures "
+                                f"were found on them for only {read_time:.0f} s. They are likely chord diagrams or "
+                                f"other drawings that only look like tab.")
+    short = too_few(obs, n, main) if n else None
     if short:
         return r.fail("check_failed", short)
     tangle = tangled(segments, r.parts, obs, main, primary)

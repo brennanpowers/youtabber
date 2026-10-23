@@ -5,7 +5,7 @@ import numpy as np
 from youtabber import track
 from youtabber.check import (dwell, empty_stretches, glide_fade, glide_gaps, glide_number_gaps, glide_piece_cuts,
                              glide_repeats, glide_rows, glide_steps, number_checks, odd_widths, pieces, redraw_gaps,
-                             too_few)
+                             settled, too_few)
 from youtabber.assemble import Obs
 from youtabber.glide import Mosaic
 from youtabber.parse import Cell
@@ -213,4 +213,39 @@ def test_a_screen_held_long_for_one_measure_says_measure():
 
 
 def test_one_measure_from_a_long_video_says_measure():
-    assert too_few([HeldView(0.0, 60.0, 1)], 1).startswith("Read only 1 measure from 60 s of tab")
+    unsettled = SimpleNamespace(decisions=[SimpleNamespace(kind="join", resolved=False)])
+    assert too_few([HeldView(0.0, 60.0, 1)], 1, unsettled).startswith("Read only 1 measure from 60 s of tab")
+
+
+def test_a_lesson_holding_few_measures_long_prints_when_its_reading_is_settled():
+    view = HeldView(0.0, 120.0, 0)
+    view.cells = [cell(0, 300), cell(300, 620)]
+    settled = SimpleNamespace(decisions=[SimpleNamespace(kind="move", resolved=True)])
+    assert too_few([view], 2, settled) is None
+    # A view that reads no measure leaves time on screen unaccounted for
+    assert too_few([view, HeldView(120.0, 130.0, 0)], 2, settled) is not None
+
+
+def lesson_view() -> HeldView:
+    view = HeldView(0.0, 120.0, 0)
+    view.cells = [cell(0, 300), cell(300, 620)]
+    return view
+
+
+def test_settled_is_false_while_a_fold_is_unresolved():
+    A = SimpleNamespace(decisions=[SimpleNamespace(kind="move", resolved=True),
+                                   SimpleNamespace(kind="fold", resolved=False)])
+    assert not settled([lesson_view()], A)
+
+
+def test_settled_is_false_when_a_measure_is_much_wider_than_the_others():
+    obs = [still(0, 10.0, [100, 100]), still(1, 10.0, [100, 300])]
+    A = SimpleNamespace(decisions=[SimpleNamespace(kind="join", resolved=True)])
+    assert odd_widths(obs)
+    assert not settled(obs, A)
+
+
+def test_settled_is_true_when_every_view_reads_measures_and_every_decision_is_resolved():
+    A = SimpleNamespace(decisions=[SimpleNamespace(kind="move", resolved=True),
+                                   SimpleNamespace(kind="join", resolved=True)])
+    assert settled([lesson_view()], A)
