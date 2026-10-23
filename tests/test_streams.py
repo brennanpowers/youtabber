@@ -53,12 +53,16 @@ THREE = [(0, 300), (300, 600), (600, 900)]
 
 def test_the_assemblies_of_two_streams_join_with_slot_ids_of_their_own():
     obs = [screen(0, 0.0, 5.0, THREE, part=0), screen(1, 0.0, 5.0, THREE[:2], part=1)]
-    out = joined([placed({0: [0, 1, 2]}, obs), placed({1: [0, 1]}, obs)], obs, {0: 100, 1: 600},
-                 {0: 1200, 1: 1200}, [0, 3])
+    second = placed({1: [0, 1]}, obs)
+    second.switches = [(12.0, 15.0)]
+    second.jump_repeats, second.unsure_slots = [(12.0, 15.0, 1)], {0: (12.0, 15.0)}
+    out = joined([placed({0: [0, 1, 2]}, obs), second], obs, {0: 100, 1: 600}, {0: 1200, 1: 1200}, [0, 3])
     assert [s.id for s in out.slots] == [0, 1, 2, 3, 4]
     assert [s.stream for s in out.slots] == [0, 0, 0, 3, 3]
     assert out.stream_orders == {0: [0, 1, 2], 3: [3, 4]}
     assert out.view_slots == {0: [0, 1, 2], 1: [3, 4]}
+    assert out.switches == [(12.0, 15.0)]
+    assert out.jump_repeats == [(12.0, 15.0, 4)] and out.unsure_slots == {3: (12.0, 15.0)}
 
 
 def test_the_assembly_of_one_stream_is_kept_as_it_is():
@@ -136,7 +140,7 @@ def test_a_part_beside_the_main_one_misses_no_numbers_from_before_it_came_on_scr
         part = Part(1, 0, (0, 100), "band", found={61.0: ["system"], 63.0: ["system"]}, stream=stream)
         primary = [Measure(i, 0, view.cells[i], 62.0 + i, 62.0 + i, 0, 0, None, 22 + i, False, stream)
                    for i in range(3)]
-        kinds = [w["kind"] for w in stream_number_checks(stream, primary, [part], [view], 100.0)]
+        kinds = [w["kind"] for w in stream_number_checks(stream, primary, [part], [view])]
         assert ("numbers_start" in kinds) == warned, stream
 
 

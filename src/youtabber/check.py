@@ -3,6 +3,7 @@ import numpy as np
 
 from youtabber.assemble import cell_at, glided_on, measure_time, playhead_track
 from youtabber.match import resemble, resemble_scaled
+from youtabber.parse import JOINED_SLACK_PX
 from youtabber.track import pairs
 
 # Two cells this alike (share of unmatched ink) that were still placed in different slots may be one measure
@@ -432,7 +433,7 @@ def unread_stretches(spans: list[tuple[float, float]], read: list[tuple[float, f
     return out
 
 
-def number_checks(labels: list[tuple[float, int | None]], once: bool, duration: float) -> list[dict]:
+def number_checks(labels: list[tuple[float, int | None]], once: bool) -> list[dict]:
     """Measure numbers of the printed measures, in print order with their play times: a measure printed later
     in the list than its number allows, numbers that skip ahead by more than the unread measures between them,
     and (when replays print once) numbers that come back."""
@@ -447,13 +448,8 @@ def number_checks(labels: list[tuple[float, int | None]], once: bool, duration: 
         out.append({"t0": round(max(0.0, t0 - 5), 2), "t1": round(t0, 2), "kind": "numbers_start",
                     "text": f"The first measure number read is {n0}, at {fmt(t0)}. Measures 1-{n0 - i0 - 1} weren't "
                             "printed; check whether the video shows them before that."})
-    top = max(n for _, _, n in read)
-    # The last measure carrying the top number, counted from 1 in print order
-    position = max(i for i, _, n in read if n == top) + 1
-    if once and position > top + COUNT_SLACK:
-        out.append({"t0": 0.0, "t1": round(duration, 2), "kind": "count_over",
-                    "text": f"{position - 1} measures are printed before measure {top}, the highest measure number "
-                            f"read; some measures may be printed twice."})
+    if once:
+        out += count_over(labels, read)
     for (ia, ta, a), (ib, tb, b) in zip(read, read[1:]):
         if b - a - 1 > ib - ia - 1:
             which = f"Measure {a + 1} wasn't" if a + 1 == b - 1 else f"Measures {a + 1}-{b - 1} weren't"
@@ -462,6 +458,25 @@ def number_checks(labels: list[tuple[float, int | None]], once: bool, duration: 
         elif once and b <= a:
             out.append({"t0": round(tb - 2, 2), "t1": round(tb + 2, 2), "kind": "number_again",
                         "text": f"Measure {b} is printed again at {fmt(tb)}."})
+    return out
+
+
+def count_over(labels: list[tuple[float, int | None]], read: list[tuple[int, float, int]]) -> list[dict]:
+    """Where more measures are printed before a numbered measure than its number allows, by more than COUNT_SLACK:
+    the first such place, and each later place where the count runs further ahead. Each notice spans the measures
+    printed since the number read before, so it points at the measures that may be printed twice."""
+    out = []
+    ahead = COUNT_SLACK
+    since = labels[0][0]
+    for i, t, n in read:
+        over = i + 1 - n
+        if over > ahead:
+            for p0, p1 in pieces(min(since, t), max(since, t)) or [(t, t)]:
+                out.append({"t0": round(p0, 2), "t1": round(p1, 2), "kind": "count_over",
+                            "text": f"{i} measures are printed before measure {n}, {over} more than its number "
+                                    f"allows; some measures printed at {fmt(p0)}-{fmt(p1)} may be printed twice."})
+            ahead = over
+        since = t
     return out
 
 
@@ -562,4 +577,44 @@ def layout_changes(segments, obs) -> list[dict]:
         first = [o for o in obs if o.seg == si]
         t1 = first[0].t1 if first else b.t0 + LAYOUT_SECONDS
         out.append(part_switch(a.t1, t1, b.t0, "the tab's line spacing or theme changes there"))
+    return out
+
+
+# Two staves on one screen whose barlines stand in the same columns, in at least this share of a part's views...
+SHARED_BARS_SHARE = 0.5
+# ...where the upper staff's numbers are read in at least this many views and the lower staff's in at most this share
+# of them, are likely two parts played together rather than one part's systems in turn
+SHARED_BARS_MIN_NUMBERED, SHARED_BARS_LOWER_READS = 3, 0.1
+
+
+def same_columns(a: list[tuple[int, int]], b: list[tuple[int, int]]) -> bool:
+    """Whether two staves' barlines stand in the same columns, within JOINED_SLACK_PX."""
+    def near(x, bars):
+        return any(abs(x[0] - y[0]) <= JOINED_SLACK_PX for y in bars)
+    return bool(a) and bool(b) and all(near(x, b) for x in a) and all(near(x, a) for x in b)
+
+
+def shared_barlines(obs) -> list[dict]:
+    """Stretches where each screen shows two tab staves with barlines in the same columns and measure numbers only
+    over the upper one. Those staves are likely two parts played together, but they are read as one part's systems
+    one after the other, so their measures may be printed out of order or in place of each other."""
+    out = []
+    groups: dict = {}
+    for o in obs:
+        if o.mosaic is None:
+            groups.setdefault((o.seg, o.part), []).append(o)
+    for views in groups.values():
+        paired = [o for o in views if len(o.systems) >= 2 and same_columns(o.systems[0].bars, o.systems[1].bars)]
+        if len(paired) < SHARED_BARS_SHARE * len(views):
+            continue
+        upper = sum(any(c.read is not None for c in o.cells if c.system == 0) for o in paired)
+        lower = sum(any(c.read is not None for c in o.cells if c.system == 1) for o in paired)
+        if upper < SHARED_BARS_MIN_NUMBERED or lower > SHARED_BARS_LOWER_READS * upper:
+            continue
+        for p0, p1 in pieces(paired[0].t0, paired[-1].t1):
+            out.append({"t0": round(p0, 2), "t1": round(p1, 2), "kind": "shared_barlines",
+                        "text": f"At {fmt(p0)}-{fmt(p1)} the screen shows two tab staves with their barlines lined "
+                                f"up, and only the upper one has measure numbers. They may be two parts played "
+                                f"together, printed here one after the other as if they were one part, so measures "
+                                f"may be out of order or missing. Check these measures."})
     return out

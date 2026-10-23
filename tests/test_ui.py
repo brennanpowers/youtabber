@@ -123,7 +123,7 @@ def test_every_doubtful_kind_made_has_a_label():
     text = (src / "pipeline.py").read_text() + (src / "check.py").read_text()
     made = set(re.findall(r'"kind": "(\w+)"|Notice\([^"]*"(\w+)",', text))
     kinds = {a or b for a, b in made} - {"unresolved_fold"}   # the one notice made without doubt
-    assert len(kinds) == 31 and kinds <= set(LABELS)
+    assert len(kinds) == 32 and kinds <= set(LABELS)
 
 
 def test_a_kind_without_a_label_shows_its_first_spots_text_and_duplicate_times_print_once():

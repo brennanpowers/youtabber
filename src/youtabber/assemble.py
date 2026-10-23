@@ -183,6 +183,7 @@ class Assembly:
     # "whole" when o's first cell shows the cut piece again
     stitches: dict = field(default_factory=dict)
     other_music: list = field(default_factory=list)   # [t0, t1] where numbers placed other music on earlier measures
+    switches: list = field(default_factory=list)   # (t0, t1) of views whose reused numbers were read as another part
     sign_folds: dict = field(default_factory=dict)   # view index -> first slot its cells folded onto by a repeat sign
     sliding: dict = field(default_factory=dict)   # segment -> its band moves on by measured slides
     stream_orders: dict = field(default_factory=dict)   # stream -> its own slots in print order
@@ -1001,6 +1002,7 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
         moved = [o for o in obs if o.seg == sg and o.move is not None and o.move.kind in ("slide", "cut")]
         A.sliding[sg] = len(slides.get(sg, [])) >= 5 and len(slides.get(sg, [])) >= 0.7 * len(moved)
     beats = {s: measure_time([o for o in obs if o.seg == s and o.mosaic is None]) for s in {o.seg for o in obs}}
+    held = held_lines(obs)
     # While views keep being placed by their numbers on earlier measures: the first such view, whether each measure
     # showed the earlier music, the stretch once most did not, and whether the first view came after a break
     watch = None
@@ -1032,7 +1034,7 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
                 c.number = None
         if "numbers" in use and all(c.number is not None for c in cells):
             slots_before = len(A.slots)
-            place_numbered(o, slot_of, A, prev, prev_slots, gap, seg_of)
+            place_numbered(o, slot_of, A, prev, prev_slots, gap, seg_of, held)
             seen = earlier_music(o, slot_of, A, prev_slots, slots_before, gap)
             if not seen or (watch is not None and watch[0].seg != o.seg):
                 watch = None
@@ -1204,7 +1206,7 @@ def carry_numbers(slot_of, A) -> None:
             A.slots[s].number = n0 + (i - i0)
 
 
-def place_numbered(o, slot_of, A, prev, prev_slots, gap, seg_of) -> None:
+def place_numbered(o, slot_of, A, prev, prev_slots, gap, seg_of, held: dict) -> None:
     """Map each cell to the slot with its measure number, making slots for numbers not seen before.
 
     A number seen on an earlier view (not the one just before, whose overlap is expected, unless o is a glide
@@ -1217,7 +1219,9 @@ def place_numbered(o, slot_of, A, prev, prev_slots, gap, seg_of) -> None:
     digit), and the run is printed as new music under numbers already used.
     """
     by_number = {s.number: s.id for s in A.slots if s.number is not None}
-    other_part = switched_part(o, A, by_number, prev, prev_slots, gap, seg_of)
+    other_part = switched_part(o, A, by_number, prev, prev_slots, gap, seg_of, held)
+    if other_part:
+        A.switches.append((o.t0, o.t1))
     # A glide piece shares no measure with the piece before, so none of its numbers is an expected overlap
     near = [] if glided_on(o) else prev_slots
     replayed = False
@@ -1277,15 +1281,58 @@ def read_elsewhere(o, j, number: int) -> bool:
                for i, c in enumerate(o.cells))
 
 
-def switched_part(o, A, by_number, prev, prev_slots, gap, seg_of) -> bool:
-    """Whether most measures a screen shows again, by number, hold other music than before on the same layout,
-    judged on at least two of them."""
+# A staff line count is believed when this many screens in a row show it; a misread staff (lines merged with ties
+# along them) lasts a screen or two
+LINES_HELD_VIEWS = 4
+# Staffs this many lines apart are other instruments (a 4-string bass against a 6-string guitar); one line apart is
+# more often a staff line lost at a small scale
+LINES_APART = 2
+
+
+def held_lines(obs: list[Obs]) -> dict[int, bool]:
+    """For each view, whether it lies in a run of at least LINES_HELD_VIEWS views in a row whose whole measures mostly
+    have one number of staff lines."""
+    out = {}
+    run: list = []
+    for o in obs + [None]:
+        counts = Counter(strings(c) for c in o.cells if whole(c)) if o is not None else None
+        lines = counts.most_common(1)[0][0] if counts else None
+        if run and (o is None or lines != run[0][1] or lines is None):
+            for p, _ in run:
+                out[p.index] = len(run) >= LINES_HELD_VIEWS and run[0][1] is not None
+            run = []
+        if o is not None:
+            run.append((o, lines))
+    return out
+
+
+def whole(c) -> bool:
+    """Whether a cell is a measure between two barlines that the panel's edges don't cut."""
+    return c.kind == "full" and c.complete
+
+
+def strings(c) -> int:
+    """The number of lines of a cell's tab staff."""
+    return int(round(2 * (c.mid_y - c.y0 - c.ref_y) / c.gap)) + 1
+
+
+def switched_part(o, A, by_number, prev, prev_slots, gap, seg_of, held: dict) -> bool:
+    """Whether a screen shows another part under numbers seen before: a whole measure drawn at the same line spacing
+    on a staff with another number of lines (a bass track after a guitar), both staffs held over several screens as
+    `held` ({view index: bool}) says, or most measures shown again holding other music, judged on at least two of
+    them by their look on the same layout or by their width at the same spacing."""
     shown = [A.slots[s].number for s in prev_slots if s is not None and A.slots[s].number is not None]
     alike = []
     for c in o.cells:
         sid = by_number.get(c.number)
         if sid is None:
             continue
+        # A whole measure isn't cut by the panel's edges, so its staff shows all its lines, as does a piece of one
+        # cut at the side
+        if held.get(o.index) and whole(c) and any(
+                held.get(vi) and (x.complete or x.kind != "full") and abs(strings(x) - strings(c)) >= LINES_APART
+                and abs(x.gap - c.gap) <= SAME_SPACING * gap for vi, x in A.sightings.get(sid, [])):
+            return True
         if sid in prev_slots:
             # The screen before showed this number too: compare the two sightings where both are whole measures
             # drawn at about one width, as `resemble` needs; a cut or squeezed one can't be told from other music
@@ -1297,11 +1344,18 @@ def switched_part(o, A, by_number, prev, prev_slots, gap, seg_of) -> bool:
                     alike.append(seen_before(c, earlier, gap))
             continue
         # A number past the screen before carries the music on; an earlier glimpse of it may look different
-        if shown and c.number > max(shown):
-            continue
-        earlier = same_layout(A, sid, o, seg_of)
+        earlier = [] if shown and c.number > max(shown) else same_layout(A, sid, o, seg_of)
         if earlier:
             alike.append(seen_before(c, earlier, gap))
+        elif whole(c) and c.index > 0:
+            # Whole measures at one line spacing are drawn at one width when they hold the same music, even in
+            # another segment (after a card); one drawn wider or narrower than every earlier sighting holds other
+            # music. So a measure redrawn at another width on a re-flowed page is printed as new, with a notice
+            w = c.ink.shape[1]
+            others = [x.ink.shape[1] for _, x in A.sightings.get(sid, []) if whole(x) and x.index > 0
+                      and abs(x.gap - c.gap) <= SAME_SPACING * gap]
+            if others:
+                alike.append(any(abs(x - w) <= max(3 * WIDTH_PX, 3 * WIDTH_SHARE * w) for x in others))
     # A single measure that differs may just be drawn again differently, which is no evidence of another part
     return len(alike) >= 2 and 2 * sum(alike) < len(alike)
 

@@ -13,8 +13,8 @@ from youtabber import counter, glide, ocr, track
 from youtabber.assemble import GLIDE_CONTINUE, Assembly, Obs, assemble, cell_at, number_views, same_cell
 from youtabber.check import (dwell, empty_stretches, fmt, glide_fade, glide_gaps, glide_number_gaps, glide_piece_cuts,
                              glide_repeats, glide_rows, glide_steps, layout_changes, number_checks,
-                             numbers_against_cells, odd_widths, pieces, possible_duplicates, redraw_gaps, screen_breaks,
-                             slow_measures, too_few, unread_stretches)
+                             numbers_against_cells, odd_widths, part_switch, pieces, possible_duplicates, redraw_gaps,
+                             screen_breaks, shared_barlines, slow_measures, too_few, unread_stretches)
 from youtabber.match import resemble_scaled
 from youtabber.observe import (ABOVE_GAPS, BELOW_GAPS, OBS_FPS, PRINT_ABOVE_GAPS, ink_map, ink_threshold, set_paper,
                                to_gray, views_in)
@@ -409,6 +409,10 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
                               "The measure numbers here repeat ones already printed, but the music looks different: "
                               "this may be another version or section of the song, printed over the earlier "
                               "measures. Check these measures.", True))
+    for t0, t1 in main.switches:
+        w = part_switch(t0, t1, t0, "the measure numbers there repeat ones already printed, but the music or the "
+                                    "staff's number of lines differs, so its measures are printed as new ones")
+        notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
     ranges = []
     for t0, t1, j0, j1 in main.unresolved_folds:
         first_seen = obs[main.slots[j0].obs]
@@ -428,8 +432,7 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
     for k, A in zip(streams, by_stream):
         mine = [o for o in stream_obs[k] if o.part not in idle]
         for w in (possible_duplicates(A, mine, gap) + dwell(mine, A) + odd_widths(mine) + slow_measures(mine)
-                  + numbers_against_cells(mine)
-                  + screen_breaks(A, mine)):
+                  + numbers_against_cells(mine) + screen_breaks(A, mine) + shared_barlines(mine)):
             notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
     for w in layout_changes(segments, obs) + glide_piece_cuts(obs) + redraw_gaps(obs):
         notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
@@ -491,7 +494,7 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
     notices += last_screen_notice(obs, len(segments) - 1, held, cleared)
     # Parts shown at once count their measures apart, so each stream's numbers are checked on their own
     for k in streams:
-        for w in stream_number_checks(k, primary, r.parts, stream_obs[k], info.duration):
+        for w in stream_number_checks(k, primary, r.parts, stream_obs[k]):
             notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
     # A page scrolling up is tab on screen that nothing reads. It is reported in pieces, so each points at a
     # findable part of the video
@@ -550,10 +553,9 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
     return r
 
 
-def stream_number_checks(k: int, primary: list[Measure], parts: list[Part], views: list[Obs],
-                         duration: float) -> list[dict]:
+def stream_number_checks(k: int, primary: list[Measure], parts: list[Part], views: list[Obs]) -> list[dict]:
     """The measure-number notices of stream k's printed measures, from its parts' scan sightings and its views."""
-    ws = number_checks([(m.play_t, m.label) for m in primary if m.stream == k], True, duration)
+    ws = number_checks([(m.play_t, m.label) for m in primary if m.stream == k], True)
     if k == 0:
         return ws
     # A part beside the main one can enter late or leave the screen; numbers it never showed aren't missed
@@ -668,6 +670,7 @@ def joined(assemblies: list[Assembly], obs: list[Obs], place: dict[int, float], 
         out.sightings.update({s + off: v for s, v in A.sightings.items()})
         out.edge_joins += A.edge_joins
         out.other_music += A.other_music
+        out.switches += A.switches
         out.stitches.update(A.stitches)
         out.jump_repeats += [(t0, t1, j + off) for t0, t1, j in A.jump_repeats]
         out.unsure_slots.update({s + off: span for s, span in A.unsure_slots.items()})

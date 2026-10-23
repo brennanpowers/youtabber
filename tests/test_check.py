@@ -5,7 +5,8 @@ import numpy as np
 from youtabber import track
 from youtabber.check import (dwell, empty_stretches, glide_fade, glide_gaps, glide_number_gaps, glide_piece_cuts,
                              glide_repeats, glide_rows, glide_steps, judged_width, number_checks, odd_widths, pieces,
-                             redraw_gaps, settled, slow_measures, too_few, unread_stretches)
+                             redraw_gaps, same_columns, settled, shared_barlines, slow_measures, too_few,
+                             unread_stretches)
 from youtabber.assemble import Obs
 from youtabber.glide import Mosaic
 from youtabber.parse import Cell
@@ -132,32 +133,32 @@ def test_a_long_unread_stretch_comes_in_pieces():
 
 def test_number_checks():
     labels = [(1.0, 1), (2.0, 2), (3.0, 5), (4.0, 5)]
-    assert [w["kind"] for w in number_checks(labels, True, 10.0)] == ["numbers_skipped", "number_again"]
-    assert [w["kind"] for w in number_checks(labels, False, 10.0)] == ["numbers_skipped"]
+    assert [w["kind"] for w in number_checks(labels, True)] == ["numbers_skipped", "number_again"]
+    assert [w["kind"] for w in number_checks(labels, False)] == ["numbers_skipped"]
 
 
 def test_unread_numbers_in_between_are_not_a_skip():
     labels = [(1.0, 1), (2.0, None), (3.0, None), (4.0, None), (5.0, 5)]
-    assert number_checks(labels, True, 10.0) == []
+    assert number_checks(labels, True) == []
 
 
 def test_a_first_number_far_past_the_count_points_at_missing_opening_measures():
     labels = [(14.0, 7), (16.0, 8), (18.0, 9)]
-    (w,) = number_checks(labels, True, 60.0)
+    (w,) = number_checks(labels, True)
     assert (w["kind"], w["t0"], w["t1"]) == ("numbers_start", 9.0, 14.0)
     assert "Measures 1-6 weren't printed" in w["text"]
     # A pickup numbered 0, or a first measure numbered 1 to 3, is no sign of missing measures
-    assert number_checks([(14.0, 3), (16.0, 4)], True, 60.0) == []
+    assert number_checks([(14.0, 3), (16.0, 4)], True) == []
 
 
 def test_unread_last_numbers_are_not_counted_over():
     labels = [(float(t), t + 1) for t in range(10)] + [(float(t), None) for t in range(10, 15)]
-    assert [w["kind"] for w in number_checks(labels, True, 20.0)] == []
+    assert [w["kind"] for w in number_checks(labels, True)] == []
 
 
 def test_more_measures_than_numbers():
     labels = [(0.0, 1)] + [(float(t), None) for t in range(1, 5)] + [(5.0, 2)]
-    kinds = [w["kind"] for w in number_checks(labels, True, 10.0)]
+    kinds = [w["kind"] for w in number_checks(labels, True)]
     assert "count_over" in kinds
 
 
@@ -337,3 +338,43 @@ def test_a_segment_seen_too_little_to_time_its_measures_names_no_slow_measure():
     # The steady screens time their own segment only; the other segment has too few crossings to time
     merged = played(3, [200, 400, 200], [40.0, 42.0, 46.0], seg=1)
     assert slow_measures(steady_views() + [merged]) == []
+
+
+def test_count_over_points_at_where_the_count_runs_ahead():
+    # Measures 1-10 at 1 s each, then three unnumbered measures at 40-42 s, then 11-20 at 50-59 s, then three
+    # more at 70-72 s
+    labels = [(float(n), n) for n in range(1, 11)] + [(40.0 + k, None) for k in range(3)]
+    labels += [(39.0 + n, n) for n in range(11, 21)] + [(70.0 + k, None) for k in range(3)] + [(80.0, 21)]
+    ws = [w for w in number_checks(labels, True) if w["kind"] == "count_over"]
+    assert [(w["t0"], w["t1"]) for w in ws] == [(10.0, 40.0), (40.0, 50.0), (59.0, 80.0)]
+
+
+def staves_view(k: int, lower_read: bool, paired: bool = True):
+    """A view of two tab staves, the lower one's barlines 2 px off the upper's; unpaired, it shows one staff."""
+    bars = [(100, 102), (400, 402), (700, 702)]
+    cells = [SimpleNamespace(system=s, read=(k + i if s == 0 or lower_read else None)) for s in (0, 1)
+             for i in range(2)]
+    systems = [SimpleNamespace(bars=bars), SimpleNamespace(bars=[(a + 2, b + 2) for a, b in bars])]
+    return SimpleNamespace(mosaic=None, seg=0, part=0, systems=systems if paired else systems[:1], cells=cells,
+                           t0=10.0 * k, t1=10.0 * k + 9)
+
+
+def test_two_staves_with_lined_up_barlines_and_numbers_over_one_are_pointed_out():
+    ws = shared_barlines([staves_view(k, False) for k in range(4)])
+    assert [(w["t0"], w["t1"]) for w in ws] == [(0.0, 30.0), (30.0, 39.0)]
+    # One part's systems in turn carry numbers of their own
+    assert shared_barlines([staves_view(k, True) for k in range(4)]) == []
+
+
+def test_shared_barlines_need_half_the_views_paired_and_three_numbered():
+    # Four paired views among nine are fewer than half
+    assert shared_barlines([staves_view(k, False, paired=k < 4) for k in range(9)]) == []
+    # Numbers over the upper staff in only two views are too few to go by
+    assert shared_barlines([staves_view(k, False) for k in range(2)]) == []
+
+
+def test_same_columns_matches_barlines_a_few_pixels_apart():
+    upper = [(10, 12), (100, 102), (200, 202)]
+    assert same_columns(upper, [(11, 13), (99, 101), (202, 204)])
+    assert not same_columns(upper, [(11, 13), (202, 204)])
+    assert not same_columns([], [])

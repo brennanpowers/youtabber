@@ -29,6 +29,7 @@ LABELS = {
     "edge_join": ("page edge joined by the playhead, a measure or part of one may be missing",
                   "page edges joined by the playhead, a measure or part of one may be missing"),
     "part_switch": ("possible part switch or jump", "possible part switches or jumps"),
+    "shared_barlines": ("two staves that may be two parts", "places with two staves that may be two parts"),
     "intro": ("opening in another layout left out", "openings in another layout left out"),
     "version_change": ("possible other version printed over earlier measures",
                        "possible other versions printed over earlier measures"),
