@@ -111,3 +111,30 @@ def test_color_is_judged_the_same_on_a_wide_image_in_pieces():
     assert np.array_equal(observe.colored(wide), observe.chroma(wide) > observe.COLOR_SAT)
     assert np.array_equal(observe.gray_pixels(wide), observe.chroma(wide) < observe.GRAY_SAT)
     observe.set_paper(PAPER)
+
+
+def test_colored_pixels_are_kept_when_they_are_the_paper_or_nearly_all_the_ink():
+    area = np.ones((10, 100), bool)
+    ink = np.zeros_like(area)
+    ink[4:6] = True
+    # A cursor: a colored band over a fifth of the page and of its ink
+    cursor = np.zeros_like(area)
+    cursor[:, :20] = True
+    assert not observe.tinted_paper(cursor, area, ink)
+    # Music drawn in color: the colored pixels are the ink and its surroundings
+    drawn = np.zeros_like(area)
+    drawn[3:7] = True
+    assert observe.tinted_paper(drawn, area, ink)
+    # Colored paper
+    assert observe.tinted_paper(np.ones_like(area), area, ink)
+
+
+def test_colored_ink_counts_as_the_ink_s_own_color_past_its_share():
+    area = np.ones((10, 100), bool)
+    ink = np.zeros_like(area)
+    ink[4:6] = True
+    # 80 and 90 of the 100 inked columns colored, a fifth of the area or less
+    for share, kept in ((0.8, False), (0.9, True)):
+        tint = np.zeros_like(area)
+        tint[4:6, :int(share * 100)] = True
+        assert observe.tinted_paper(tint, area, ink) == kept

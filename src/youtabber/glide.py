@@ -91,6 +91,7 @@ class Mosaic:
     until: float | None = None      # when the glide's frames end, past the last clear frame
     until_offset: float | None = None   # how far the band had moved by then, as measured frame to frame
     doubtful: list = field(default_factory=list)   # slit columns where the step left the speed unconfirmed
+    inked_playhead: bool = False    # the playhead is an uncolored line fixed to the screen, drawn on the first frame
 
     def time_at(self, canvas_x: float) -> float:
         """When the canvas column reached ref_x on screen. Columns still right of it when the band last moved get
@@ -366,10 +367,12 @@ def build(path: Path, crop: tuple[int, int, int, int], rows: tuple[int, int], st
     k0 = 0 if redrawn else next((k for k in range(min(END_FRAMES, n)) if clear[k]), 0)
     k1 = n - 1 if moved_at is not None else next((k for k, _ in reversed(tail) if clear[k]), n - 1)
     first, last = head[k0], dict(tail)[k1]
+    inked = False
     if color_votes.max() > 0.5 * voted:
         ref_x = float(np.argmax(color_votes))
     else:
         ref_x = still_playhead(samples, staff_x or (0, w), gap)
+        inked = ref_x is not None
     if ref_x is None:
         # No playhead: measures are said to be played at the panel's centre, and the whole first screen is read
         ref_x, start = w / 2, 0
@@ -384,7 +387,7 @@ def build(path: Path, crop: tuple[int, int, int, int], rows: tuple[int, int], st
     unsure = [slit - start + offsets[k] - offsets[k0] for k in doubtful if k0 < k <= k1]
     return Mosaic(image, y0, off, np.array(times[k0:k1 + 1]), ref_x, int(ref_x) - start, slit - start,
                   image.shape[1] - (last.shape[1] - slit), moved_at=moved_at, until=float(times[-1]),
-                  until_offset=float(offsets[-1] - offsets[k0]), doubtful=unsure)
+                  until_offset=float(offsets[-1] - offsets[k0]), doubtful=unsure, inked_playhead=inked)
 
 
 def vertical_marks(staff: np.ndarray, thr: float, gap: float, fixed: np.ndarray | None) -> np.ndarray:

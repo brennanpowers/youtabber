@@ -69,13 +69,17 @@ MOSAIC_PIECE = 40000
 MOSAIC_OVERLAP = 8000
 # A glide's last cell with less ink than this share of its width times the line gap is blank staff, not a measure
 BLANK_TAIL_INK = 0.02
+# Where a glide starts, cells holding no more ink than an empty bar are left out when they are the staff's header
+# ending within LEAD_IN_GAPS line gaps of the playhead's column, or, with an uncolored playhead line (which passes for
+# a barline on the first frame), a cell starting there narrower than LEAD_IN_SHARE of a typical measure
+LEAD_IN_GAPS, LEAD_IN_SHARE = 0.5, 0.5
 # Frame-fixed ink: inked in this share of a segment's views, which must number at least FIXED_MIN_VIEWS
 FIXED_SHARE, FIXED_MIN_VIEWS = 0.85, 4
 # A page turn between two views takes less than this
 TURN_SECONDS = 1.0
-# A first segment is an intro in another layout when it lasts at most INTRO_SECONDS, ends INTRO_BREAK_SECONDS or more
-# before the next, which overlaps its panel by less than INTRO_OVERLAP of their union and is spaced INTRO_GAP_SHARE
-# or more apart, and the segments after it hold INTRO_REST_SECONDS of tab
+# Opening segments lasting INTRO_SECONDS at most are an intro when they end INTRO_BREAK_SECONDS before tab in another
+# layout (panels overlapping under INTRO_OVERLAP of their union, line gaps INTRO_GAP_SHARE or more apart) that holds
+# INTRO_REST_SECONDS of tab. Opening pieces drawn in one layout count as one opening
 INTRO_SECONDS, INTRO_BREAK_SECONDS, INTRO_OVERLAP, INTRO_GAP_SHARE, INTRO_REST_SECONDS = 15.0, 0.5, 0.7, 0.04, 60.0
 # The text detector looks for measure numbers from this many line gaps above a system's top staff line to this many
 # below it, and gives each to a barline at most NUMBER_REACH_GAPS line gaps from its middle
@@ -226,9 +230,10 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
         clips = (segments[0].t0, segments[-1].t1)
     else:
         segments = r.segments = drawn_full_size(segments)
-        if intro(segments):
-            r.intro = (segments[0].t0, segments[0].t1)
-            segments = r.segments = segments[1:]
+        opening = intro(segments)
+        if opening:
+            r.intro = (segments[0].t0, segments[opening - 1].t1)
+            segments = r.segments = segments[opening:]
     tell("find", 1.0)
     tell("read", 0.0)
     # The read stage's share is the video time its frames have reached, as a share of the whole video
@@ -382,9 +387,8 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
     for o in obs:
         if o.mosaic is not None and o.counter:
             counted_numbers(o)
-    # A measure seen only on its notation staff, its tab out of the panel, can be placed by its number alone
     for o in obs:
-        o.cells = [c for c in o.cells if not c.notation_only or c.number is not None]
+        o.cells = placed_notation(o.cells)
 
     def words_of(o: Obs) -> list[str]:
         return ocr.find_words(o.plate) if o.plate is not None else []
@@ -491,7 +495,7 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
     read = [(o.t0, o.t1) for o in obs if o.systems or o.mosaic is not None]
     for w in unread_stretches(r.tab_spans, read):
         notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
-    notices += last_screen_notice(obs, len(segments) - 1, held, cleared)
+    notices += last_screen_notice(obs, len(segments) - 1, held, cleared) + passed_notices(segments)
     # Parts shown at once count their measures apart, so each stream's numbers are checked on their own
     for k in streams:
         for w in stream_number_checks(k, primary, r.parts, stream_obs[k]):
@@ -951,6 +955,14 @@ def drop_fades(obs: list[Obs]) -> dict[int, str]:
     return why
 
 
+def passed_notices(segments: list[Segment]) -> list[Notice]:
+    """A notice for each brief page the scan left out before a segment because it was drawn at another spacing."""
+    return [Notice(round(p0, 2), round(p1, 2), "dropped_opening",
+                   f"A page shown briefly at {fmt(p0)}-{fmt(p1)} before a page turn was drawn at another "
+                   f"size than the tab after it and isn't read; its measures may be missing.", True)
+            for p0, p1 in (s.passed for s in segments if s.passed is not None)]
+
+
 def last_screen_notice(obs: list[Obs], last_seg: int, held: set[int], why: dict[int, str]) -> list[Notice]:
     """A notice when the video ends on a brief screen with two or more whole measures (its id in `held`) that
     drop_fades kept or cleared as misread (`why`): it may hide measures or print a passing picture. Of parts shown
@@ -1040,18 +1052,35 @@ def drawn_full_size(segments: list[Segment]) -> list[Segment]:
     return [s for s in segments if s.t1 - s.t0 >= SMALL_SECONDS or s.gap >= SMALL_GAP_SHARE * longest.gap]
 
 
-def intro(segments: list[Segment]) -> bool:
-    """True when the first segment is a short opening in another layout, such as a channel's how-to-read-tab demo:
-    at most INTRO_SECONDS long, followed after a break by at least INTRO_REST_SECONDS of tab drawn in another panel
-    at another line spacing."""
-    if len(segments) < 2:
-        return False
-    a, b = segments[0], segments[1]
+def intro(segments: list[Segment]) -> int:
+    """How many opening segments are a short opening in another layout, such as a channel's how-to-read-tab demo
+    (0 when there is none): at most INTRO_SECONDS long in all, followed after a break by at least INTRO_REST_SECONDS
+    of tab drawn in another panel at another line spacing."""
+    a = segments[0] if segments else None
+    for k in range(1, len(segments)):
+        last, b = segments[k - 1], segments[k]
+        if last.t1 - a.t0 > INTRO_SECONDS:
+            return 0
+        if (b.t0 - last.t1 >= INTRO_BREAK_SECONDS and sum(s.t1 - s.t0 for s in segments[k:]) >= INTRO_REST_SECONDS
+                and all(not one_layout(s, b) for s in segments[:k])):
+            return k
+        # The next segment carries the opening on only when it is drawn in the opening's layout
+        if not one_layout(a, b):
+            return 0
+    return 0
+
+
+def overlap_share(a: Segment, b: Segment) -> float:
+    """How much two segments' panels overlap, as a share of their union."""
     ix = max(0, min(a.x1, b.x1) - max(a.x0, b.x0)) * max(0, min(a.y1, b.y1) - max(a.y0, b.y0))
     union = (a.x1 - a.x0) * (a.y1 - a.y0) + (b.x1 - b.x0) * (b.y1 - b.y0) - ix
-    return (a.t1 - a.t0 <= INTRO_SECONDS and b.t0 - a.t1 >= INTRO_BREAK_SECONDS
-            and sum(s.t1 - s.t0 for s in segments[1:]) >= INTRO_REST_SECONDS
-            and ix < INTRO_OVERLAP * union and abs(a.gap - b.gap) >= INTRO_GAP_SHARE * b.gap)
+    return ix / union if union > 0 else 0.0
+
+
+def one_layout(a: Segment, b: Segment) -> bool:
+    """True when two segments' panels overlap by INTRO_OVERLAP or more, or their line spacings are within
+    INTRO_GAP_SHARE of the later one's: not another layout."""
+    return overlap_share(a, b) >= INTRO_OVERLAP or abs(a.gap - b.gap) < INTRO_GAP_SHARE * b.gap
 
 
 def scattered(segments: list[Segment], duration: float) -> bool:
@@ -1123,6 +1152,14 @@ def short_bar(c: Cell, typical: float) -> bool:
     measures into such pieces."""
     return (c.kind == "full" and c.complete and not c.glided and not c.notation_only
             and c.x1 - c.x0 >= max(SHORT_SHARE * typical, SHORT_MIN_GAPS * c.gap))
+
+
+def placed_notation(cells: list[Cell]) -> list[Cell]:
+    """The cells without notation-only ones that can't be placed. A measure seen only on its notation staff, its tab
+    out of the panel, is placed by its number alone. When a number read on such a staff disagrees with the count,
+    note stems there passed for barlines, so none of that system's notation-only cells are measures."""
+    stems = {c.system for c in cells if c.notation_only and c.read is not None and c.read != c.number}
+    return [c for c in cells if not c.notation_only or (c.number is not None and c.system not in stems)]
 
 
 def kept_cells(cells: list[Cell], typical: float) -> list[Cell]:
@@ -1344,6 +1381,8 @@ def glide_obs(path: Path, crop, seg: Segment, si: int, found, thr: float, fthr: 
     # Blank staff that scrolls on after the last barline is read as a tail cell holding only line residue
     cells = [c for ps in systems for c in ps.cells
              if not (c.kind == "tail" and c.ink.sum() < BLANK_TAIL_INK * (c.x1 - c.x0) * c.gap)]
+    if t0 <= seg.t0:
+        cells = without_lead_in(cells, m.lead, seg.gap, m.inked_playhead)
     for c in cells:
         c.glided = True
     o = Obs(index, t0, seg.t1 if m.moved_at is None else m.moved_at, cells, [], si, (seg.x0, seg.y0), m.image)
@@ -1361,6 +1400,24 @@ def glide_obs(path: Path, crop, seg: Segment, si: int, found, thr: float, fthr: 
     o.systems = systems
     o.print_rect = (0, 0, w, h)
     return o
+
+
+def without_lead_in(cells: list[Cell], lead: int, gap: float, inked_playhead: bool) -> list[Cell]:
+    """A glide's cells without those before its first measure: the header left of the first barline, and, when the
+    playhead is an uncolored line the first frame shows, the empty stretch from its column (mosaic column `lead`) to
+    the first barline."""
+    slack = LEAD_IN_GAPS * gap
+    widths = [c.x1 - c.x0 for c in cells if c.kind == "full"]
+    typical = float(np.median(widths)) if widths else 0.0
+    out = []
+    for c in cells:
+        blank = staff_ink(c, int(BAR_SKIP_GAPS * c.gap))[0] < EMPTY_BAR_INK
+        if c.kind == "lead" and c.x1 <= lead + slack and blank:
+            continue
+        if inked_playhead and abs(c.x0 - lead) <= slack and c.x1 - c.x0 < LEAD_IN_SHARE * typical and blank:
+            continue
+        out.append(c)
+    return out
 
 
 def counted_numbers(o: Obs) -> None:

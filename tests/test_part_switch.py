@@ -1,6 +1,9 @@
+from dataclasses import replace
+
 import numpy as np
 
-from youtabber.assemble import Assembly, Obs, Slot, held_lines, place_numbered, strings, switched_part
+from youtabber.assemble import (Assembly, Obs, Slot, below_top, held_lines, place_numbered, seen_before, strings,
+                               switched_part)
 from youtabber.parse import Cell
 
 
@@ -57,6 +60,18 @@ def test_staffs_two_lines_apart_are_another_part_and_one_line_apart_are_not():
     assert switched_part(four, A, by_number, guitar, [0, 1, 2], 10.0, {0: 0, 1: 1}, held)
     # The earlier staff was shown on too few screens in a row to believe its line count
     assert not switched_part(four, A, by_number, guitar, [0, 1, 2], 10.0, {0: 0, 1: 1}, {0: False, 1: True})
+
+
+def test_measures_seen_only_on_the_notation_staff_count_no_staff_lines():
+    # A five-line notation staff seen with its tab out of view, then a seven-line tab staff at the same spacing
+    notation = replace(cell(1, 5), notation_only=True)
+    A = Assembly(slots=[Slot(0, notation, 0, 1)], sightings={0: [(0, notation)]})
+    tab = view(1, [cell(1, 7)], 0)
+    assert not switched_part(tab, A, {1: 0}, view(0, [notation], 0), [0], 10.0, {0: 0, 1: 0}, {0: True, 1: True})
+    # Notation-only measures outnumber the tab one on the first two screens; the tab's six lines hold on all four
+    obs = [view(k, [cell(1, 6), replace(cell(2, 5), notation_only=True), replace(cell(3, 5), notation_only=True)], 0)
+           for k in range(2)] + [view(k, [cell(1, 6)], 0) for k in (2, 3)]
+    assert held_lines(obs) == {k: True for k in range(4)}
 
 
 def test_strings_counts_a_staffs_lines_from_its_spacing_and_middle():
@@ -139,3 +154,48 @@ def test_a_screen_read_as_another_part_is_recorded_as_a_switch():
     assert A.switches == [(10.0, 15.0)]
     # Its measures are printed as new ones
     assert sorted(slot_of.values()) == [3, 4, 5]
+
+
+def test_a_caption_laid_over_the_rows_above_the_tab_staff_is_cut_off():
+    plain = cell(1, 6)
+    plain.tint = np.zeros_like(plain.ink)
+    cut = below_top(plain, 10.0)
+    # The cut starts a quarter gap below the top line at row 20
+    assert cut.ink.shape[0] == plain.ink.shape[0] - 22 and cut.ref_y == -2
+    captioned = cell(1, 6)
+    captioned.ink = captioned.ink.copy()
+    captioned.ink[2:21, 10:90] = True
+    captioned.tint = np.zeros_like(captioned.ink)
+    assert not seen_before(captioned, [plain], 10.0)
+    assert seen_before(below_top(captioned, 10.0), [cut], 10.0)
+
+
+def test_sightings_of_the_notation_staff_alone_cast_no_vote_for_a_switch():
+    def plain(n: int) -> Cell:
+        c = cell(n, 6, index=n)
+        c.tint = np.zeros_like(c.ink)
+        return c
+
+    def notation(n: int) -> Cell:
+        c = plain(n)
+        c.ink = np.zeros_like(c.ink)
+        c.ink[25:70, 10:30] = True
+        c.faint, c.notation_only = c.ink, True
+        return c
+
+    def switch(earlier: list[Cell], o: list[Cell], before: bool) -> bool:
+        first = view(0, earlier, 0)
+        A = Assembly(slots=[Slot(k, c, 0, k + 1) for k, c in enumerate(earlier)],
+                     sightings={k: [(0, c)] for k, c in enumerate(earlier)})
+        by_number = {n: n - 1 for n in (1, 2, 3)}
+        prev, prev_slots = (first, [0, 1, 2]) if before else (None, [])
+        return switched_part(view(1, o, 0), A, by_number, prev, prev_slots, 10.0, {0: 0, 1: 0}, {})
+
+    # Notation alone on this screen after tab on the screen before, or the other way round
+    assert not switch([plain(n) for n in (1, 2, 3)], [notation(n) for n in (1, 2, 3)], True)
+    assert not switch([notation(n) for n in (1, 2, 3)], [plain(n) for n in (1, 2, 3)], True)
+    # An earlier glimpse in the same layout seen on notation alone
+    assert not switch([notation(n) for n in (1, 2, 3)], [plain(n) for n in (1, 2, 3)], False)
+    # Tab drawn with other music on both screens is a switch
+    assert switch([plain(n) for n in (1, 2, 3)], [replace(notation(n), notation_only=False) for n in (1, 2, 3)],
+                  True)

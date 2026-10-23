@@ -4,6 +4,7 @@ import pytest
 
 from youtabber import scan as scan_module
 from youtabber.observe import PRINT_ABOVE_GAPS
+from youtabber.pipeline import passed_notices
 
 TOP, GAP = 400, 14
 
@@ -113,3 +114,52 @@ def test_a_segment_too_short_to_keep_does_not_hide_the_tab_beside_it(monkeypatch
     segments, found, _ = fake_frames(monkeypatch, shown)
     assert [(s.polarity, s.t0, s.t1) for s in segments] == [("light", 0.5, 5.0)]
     assert all(any(s.tab.polarity == "light" for s in found[t]) for t in (0.5, 1.0))
+
+
+@pytest.mark.parametrize("first, lines, turn, second", [
+    ((400,), 6, 3, (460,)),             # 1.5 s of page 1, a turn, page 2's system 60 px lower
+    ((400,), 6, 3, (420,)),             # the same with page 2's system within 2 line gaps
+    ((400,), 6, 4, (460,)),             # 2 s of page 1
+    ((400,), 5, 3, (400,)),             # page 1 read with 5 lines, then 6
+    ((300, 500), 6, 2, (250, 400, 550)),   # 1 s of page 1, then page 2's three systems at other heights
+])
+def test_a_brief_first_page_before_a_turn_is_part_of_the_segment(monkeypatch, first, lines, turn, second):
+    # Frames are half a second apart; frame `turn` shows no staff
+    def shown(k):
+        if k == turn:
+            return []
+        if k < turn:
+            return [staff(t, lines, 14.0, "dark") for t in first]
+        return [staff(t, 6, 14.0, "dark") for t in second]
+    segments, _, _ = fake_frames(monkeypatch, shown)
+    assert [(s.t0, s.t1) for s in segments] == [(0.0, 5.0)]
+
+
+def test_a_brief_card_at_another_line_spacing_before_a_turn_is_not_part_of_the_tab(monkeypatch):
+    # 1 s of a four-line card at line gap 12.5, a frame without staffs, then the tab at line gap 14, 12% wider
+    def shown(k):
+        if k == 2:
+            return []
+        return [staff(150, 4, 12.5, "light")] if k < 2 else [staff(400, 6, 14.0, "light")]
+    segments, _, _ = fake_frames(monkeypatch, shown)
+    assert [(s.t0, s.t1) for s in segments] == [(1.5, 5.0)]
+
+
+@pytest.mark.parametrize("lines, gap, spans, notices", [
+    (6, 13.0, [(1.5, 5.0)], [(0.0, 1.0)]),   # the tab's six lines, spaced 7% closer: a page that may hold tab
+    (4, 13.0, [(1.5, 5.0)], []),             # a four-line card before six-line tab
+    (6, 13.6, [(0.0, 5.0)], []),             # spaced 3% closer, carried on into the tab
+    (6, 9.0, [(1.5, 5.0)], []),              # spaced a third closer: another page, not one held back from the tab
+])
+def test_a_brief_page_left_out_before_a_turn_has_a_notice_when_it_has_the_tabs_lines(monkeypatch, lines, gap,
+                                                                                     spans, notices):
+    # 1 s of a page, a frame without staffs, then six-line tab at line gap 14
+    def shown(k):
+        if k == 2:
+            return []
+        return [staff(400, lines, gap, "dark")] if k < 2 else [staff(400, 6, 14.0, "dark")]
+    segments, _, _ = fake_frames(monkeypatch, shown)
+    assert [(s.t0, s.t1) for s in segments] == spans
+    found = passed_notices(segments)
+    assert [(w.t0, w.t1) for w in found] == notices
+    assert all(w.kind == "dropped_opening" and w.doubt for w in found)

@@ -20,6 +20,9 @@ GAP_DRIFT = 0.35
 # Frames without tab shorter than this don't end a segment (page turns, fades)
 BRIDGE_SECONDS = 1.6
 MIN_SEGMENT_SECONDS = 2.0
+# A stretch too short to be a segment carries on over frames without tab only into staffs spaced within this share of
+# its own; a passing card is drawn at another spacing than the tab after it
+PASSING_GAP_SHARE = 0.05
 # A strip of chord diagrams is a "staff" whose lines all go missing together, between one diagram and the next, over
 # stretches at least this many line gaps wide; dashed lines and digits knocked out of the lines leave shorter gaps
 DIAGRAM_BREAK_GAPS = 2.0
@@ -76,6 +79,9 @@ class Segment:
     y1: int = 0
     x0: int = 0
     x1: int = 0
+    # A stretch too short to keep just before this segment, left out because its staff has as many lines but is
+    # spaced over PASSING_GAP_SHARE apart from this one's: a brief page that may hold tab
+    passed: tuple[float, float] | None = None
 
 
 def paper_between_lines(gray: np.ndarray, st: Staff) -> bool:
@@ -235,6 +241,11 @@ def vertical_scrolls(found: dict[float, list[System]]) -> list[tuple[float, floa
     return [(a, b) for a, b in spans if b - a >= SCROLL_SECONDS]
 
 
+def lines_of(syss: list[System]) -> int:
+    """The number of lines of the widest-spaced tab staff among a frame's systems."""
+    return len(max(syss, key=lambda s: s.tab.gap).tab.lines)
+
+
 def scan(path: Path, width: int, height: int, region: tuple[int, int, int, int] | None = None,
          progress: Callable[[float], None] | None = None
          ) -> tuple[list[Segment], dict[float, list[System]], list[tuple[float, float]]]:
@@ -292,15 +303,22 @@ def scan(path: Path, width: int, height: int, region: tuple[int, int, int, int] 
                     pol, gap = cur.polarity, max(s.tab.gap for s in same)
                     dropped.add(t)
                     found[t] = [s for s in syss if s.tab.polarity == pol]
-            if (cur is not None and t - last_seen <= BRIDGE_SECONDS and pol == cur.polarity
-                    and abs(gap - cur.gap) <= GAP_DRIFT * cur.gap):
+            passing = (cur is not None and t - last_seen > 1 / SCAN_FPS + 1e-6
+                       and cur.t1 - cur.t0 + 1 / SCAN_FPS < MIN_SEGMENT_SECONDS
+                       and abs(gap - np.median(cur.gaps)) > PASSING_GAP_SHARE * np.median(cur.gaps))
+            carries = (cur is not None and t - last_seen <= BRIDGE_SECONDS and pol == cur.polarity
+                       and abs(gap - cur.gap) <= GAP_DRIFT * cur.gap)
+            if carries and not passing:
                 cur.t1 = t
                 cur.times.append(t)
                 cur.gaps.append(gap)
             else:
+                last = cur
                 if cur is not None:
                     segments.append(cur)
                 cur = Segment(t, t, gap, pol, [t], [gap])
+                if carries and lines_of(found[t]) == lines_of(found[last.times[-1]]):
+                    cur.passed = (last.t0, last.t1 + 1 / SCAN_FPS)
             last_seen = t
         if cur is not None:
             segments.append(cur)

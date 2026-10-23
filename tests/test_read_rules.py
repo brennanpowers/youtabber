@@ -8,8 +8,10 @@ from youtabber import pipeline
 from youtabber.assemble import Assembly, Obs, Slot
 from youtabber.check import empty, screen_breaks
 from youtabber.parse import Cell, parse_view
-from youtabber.pipeline import Measure, detected_numbers, drawn_full_size, intro, scattered
+from youtabber.pipeline import (Measure, detected_numbers, drawn_full_size, intro, one_layout, overlap_share,
+                                placed_notation, scattered, without_lead_in)
 from youtabber.scan import Segment
+from test_empty_bar import cell
 
 
 def segment(t0: float, t1: float, gap: float) -> Segment:
@@ -220,3 +222,63 @@ def test_a_measure_printed_where_its_unresolved_fold_is_noted_needs_no_other_not
 
 def test_a_measure_carried_on_from_the_view_before_needs_no_other_notice():
     assert unsure_printed(1, links=(0,)) == []
+
+
+def test_an_opening_cut_in_two_by_a_brief_screen_is_one_intro():
+    a, b = opening()
+    first, second = replace(a, t1=5.0), replace(a, t0=5.5)
+    assert intro([first, second, b]) == 2
+    # A second piece in the song's layout is the song, so the opening is the first piece alone
+    assert intro([first, replace(second, gap=10.0, y0=200, y1=300), b]) == 1
+    # A piece in a third layout right after the opening card doesn't carry the opening on, so there is no intro
+    card = Segment(0.0, 5.0, 14.0, "dark", x0=0, x1=100, y0=0, y1=100)
+    third = Segment(5.2, 8.0, 20.0, "dark", x0=0, x1=100, y0=100, y1=200)
+    song = Segment(9.0, 100.0, 10.0, "dark", x0=0, x1=100, y0=200, y1=300)
+    assert intro([card, third, song]) == 0
+
+
+def test_panels_overlapping_most_of_their_union_or_spaced_alike_are_one_layout():
+    a = Segment(0.0, 5.0, 10.0, "dark", x0=0, x1=100, y0=0, y1=100)
+    # Moved right by 100/9 px, the panels overlap by 80% of their union
+    near = replace(a, x0=100 / 9, x1=100 + 100 / 9)
+    assert abs(overlap_share(a, near) - 0.8) < 1e-9 and one_layout(a, near)
+    # Moved right by 100/3 px they overlap by half; line gaps 2% apart are still one layout, 17% apart are not
+    half = replace(a, x0=100 / 3, x1=100 + 100 / 3)
+    assert abs(overlap_share(a, half) - 0.5) < 1e-9
+    assert one_layout(a, replace(half, gap=10.2))
+    assert not one_layout(a, replace(half, gap=12.0))
+
+
+def lead_in(lead: int, inked: bool, first: Cell) -> list[Cell]:
+    """without_lead_in over `first` then two 100 px measures with fret digits, at line gap 10."""
+    rest = [replace(cell(100, marks=True), x0=x, x1=x + 100) for x in (300, 400)]
+    return without_lead_in([first] + rest, lead, 10.0, inked)
+
+
+def test_an_empty_header_ending_at_the_playhead_is_no_measure():
+    header = cell(60, marks=False, kind="lead")
+    # The header ends at x 160, within half a line gap of the playhead at x 157
+    assert header not in lead_in(157, False, header)
+    assert header in lead_in(150, False, header)
+    digits = cell(60, marks=True, kind="lead")
+    assert digits in lead_in(157, False, digits)
+
+
+def test_a_narrow_empty_cell_from_an_uncolored_playhead_to_the_first_barline_is_no_measure():
+    # Starting at the playhead column x 100: 40 px is 0.4 of the typical 100 px measure, 60 px is 0.6
+    narrow, wide = cell(40, marks=False), cell(60, marks=False)
+    assert narrow not in lead_in(100, True, narrow)
+    assert wide in lead_in(100, True, wide)
+    # A colored playhead never passes for a barline, so the narrow cell is a measure
+    assert narrow in lead_in(100, False, narrow)
+
+
+def notation(system: int, number: int, read: int | None) -> Cell:
+    c = cell(60, marks=True)
+    c.system, c.number, c.read, c.notation_only = system, number, read, True
+    return c
+
+
+def test_a_notation_staff_whose_read_number_disagrees_with_the_count_holds_no_measures():
+    cells = [notation(0, 5, 9), notation(0, 6, None), notation(1, 7, 7), notation(1, 8, None)]
+    assert placed_notation(cells) == cells[2:]

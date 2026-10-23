@@ -62,6 +62,8 @@ LABELS = {
     "last_screen": ("brief last screen, its measures may be missing or wrong",
                     "brief last screens, their measures may be missing or wrong"),
     "numbers_disagree": ("measure number that doesn't fit the barlines", "measure numbers that don't fit the barlines"),
+    "dropped_opening": ("brief page drawn at another size left out, its measures may be missing",
+                        "brief pages drawn at another size left out, their measures may be missing"),
     "vertical_scroll": ("page scrolling up, its measures are missing", "pages scrolling up, their measures are missing"),
     "short_tab": ("stretch was the only tab read, check it's the right music",
                   "stretch was the only tab read, check it's the right music"),

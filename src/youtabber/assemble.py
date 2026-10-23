@@ -43,6 +43,9 @@ BORROW_RESEMBLE = 0.05
 BORROW_CONFLICT = 6
 # A numbered measure met again on a later screen is the same music when this alike (share of unmatched ink)
 REPLAY_RESEMBLE = 0.3
+# Two sightings of one screen that differ only above the tab staff (a caption or banner over the page) are compared
+# from this many line gaps below the tab staff's top line down
+OVERLAY_SKIP_GAPS = 0.25
 # Glided measures this alike after scaling (share of unmatched ink) count as the same measure in a run
 GLIDE_RESEMBLE = 0.15
 GLIDE_CONTINUE = 0.4
@@ -1295,7 +1298,7 @@ def held_lines(obs: list[Obs]) -> dict[int, bool]:
     out = {}
     run: list = []
     for o in obs + [None]:
-        counts = Counter(strings(c) for c in o.cells if whole(c)) if o is not None else None
+        counts = Counter(strings(c) for c in o.cells if whole(c) and not c.notation_only) if o is not None else None
         lines = counts.most_common(1)[0][0] if counts else None
         if run and (o is None or lines != run[0][1] or lines is None):
             for p, _ in run:
@@ -1325,12 +1328,14 @@ def switched_part(o, A, by_number, prev, prev_slots, gap, seg_of, held: dict) ->
     alike = []
     for c in o.cells:
         sid = by_number.get(c.number)
-        if sid is None:
+        # A sighting of the notation staff alone, its tab out of view, can't show which part is playing
+        if sid is None or c.notation_only:
             continue
         # A whole measure isn't cut by the panel's edges, so its staff shows all its lines, as does a piece of one
         # cut at the side
         if held.get(o.index) and whole(c) and any(
-                held.get(vi) and (x.complete or x.kind != "full") and abs(strings(x) - strings(c)) >= LINES_APART
+                held.get(vi) and not x.notation_only and (x.complete or x.kind != "full")
+                and abs(strings(x) - strings(c)) >= LINES_APART
                 and abs(x.gap - c.gap) <= SAME_SPACING * gap for vi, x in A.sightings.get(sid, [])):
             return True
         if sid in prev_slots:
@@ -1339,12 +1344,15 @@ def switched_part(o, A, by_number, prev, prev_slots, gap, seg_of, held: dict) ->
             if prev.seg == o.seg and c.kind == "full":
                 w = c.ink.shape[1]
                 earlier = [x for x, s in zip(prev.cells, prev_slots) if s == sid and x.kind == "full"
+                           and not x.notation_only
                            and abs(x.ink.shape[1] - w) <= max(3 * WIDTH_PX, 3 * WIDTH_SHARE * w)]
                 if earlier:
-                    alike.append(seen_before(c, earlier, gap))
+                    alike.append(seen_before(c, earlier, gap) or seen_before(below_top(c, gap),
+                                                                             [below_top(x, gap) for x in earlier], gap))
             continue
         # A number past the screen before carries the music on; an earlier glimpse of it may look different
-        earlier = [] if shown and c.number > max(shown) else same_layout(A, sid, o, seg_of)
+        earlier = ([] if shown and c.number > max(shown)
+                   else [x for x in same_layout(A, sid, o, seg_of) if not x.notation_only])
         if earlier:
             alike.append(seen_before(c, earlier, gap))
         elif whole(c) and c.index > 0:
@@ -1358,6 +1366,13 @@ def switched_part(o, A, by_number, prev, prev_slots, gap, seg_of, held: dict) ->
                 alike.append(any(abs(x - w) <= max(3 * WIDTH_PX, 3 * WIDTH_SHARE * w) for x in others))
     # A single measure that differs may just be drawn again differently, which is no evidence of another part
     return len(alike) >= 2 and 2 * sum(alike) < len(alike)
+
+
+def below_top(c, gap: float):
+    """A copy of cell c cut to its rows from just below the tab staff's top line. Another part's music differs on
+    the tab staff, while captions and banners laid over the page cover the rows above it."""
+    k = min(c.ink.shape[0], max(0, c.ref_y + int(OVERLAY_SKIP_GAPS * gap)))
+    return replace(c, ink=c.ink[k:], faint=c.faint[k:], tint=c.tint[k:], ref_y=c.ref_y - k)
 
 
 def same_layout(A, sid, o, seg_of) -> list:

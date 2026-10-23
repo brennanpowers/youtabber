@@ -15,6 +15,10 @@ MAX_GAP_PX = 60
 # A row group taller than this share of the typical distance between row groups is two lines run together by notes
 # filling the space between them; a line thickened by notes stays thinner than that
 MERGED_SHARE = 0.9
+# A row group taller than THICK_GROUP of the typical distance between row groups, whose fullest row covers PEAK_COVER
+# of its width, holds a drawn line and ties or notes along it; the line's center is taken from the group's rows that
+# cover at least LINE_PEAK of its fullest row. Strings in footage are thick rows that cover far less
+THICK_GROUP, PEAK_COVER, LINE_PEAK = 0.5, 0.6, 0.75
 # A line covering less than this share of its staff's typical line is a ledger line or beam row
 WEAK_LINE = 0.5
 # A weak line at a staff's edge is still a staff line, hidden under rows of digits, when it covers this share of the
@@ -91,10 +95,14 @@ def line_rows(gray: np.ndarray, polarity: str, min_cover: int) -> list[tuple[flo
     centers = [(a + b) / 2 for a, b in groups]
     steps = [q - p for p, q in zip(centers, centers[1:])]
     tallest = MERGED_SHARE * float(np.median(steps)) if steps else float(len(counts))
+    thick = THICK_GROUP * float(np.median(steps)) if steps else float(len(counts))
     for a, b in groups:
         for a, b in split_rows(counts, a, b, tallest):
             cols = np.flatnonzero(resp[a:b].any(axis=0))
             weights = counts[a:b].astype(float)
+            if b - a > thick and weights.max() >= PEAK_COVER * (np.ptp(cols) + 1):
+                # Ties or note rows running along a line joined its row group; the line itself is the group's peak
+                weights[weights < LINE_PEAK * weights.max()] = 0
             y = float((np.arange(a, b) * weights).sum() / weights.sum())
             x0, x1 = np.percentile(cols, [2, 98])
             out.append((y, int(x0), int(x1) + 1, b - a, int(counts[a:b].max())))

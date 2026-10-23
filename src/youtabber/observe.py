@@ -34,6 +34,12 @@ FAINT_MIN, FAINT_SHARE = 18, 0.1
 GRAY_SAT = 28
 # Color spread above which a dark pixel is a cursor or highlight, not ink
 COLOR_SAT = 70
+# Colored pixels (and their surroundings) covering more than this share of the area a still view compares are
+# tinted paper; the compare then keeps them
+TINT_PAPER = 0.6
+# Colored pixels covering more than this share of the ink are the ink's own color (music drawn in color); the
+# compare keeps them too
+TINT_INK = 0.85
 
 
 @dataclass
@@ -140,6 +146,13 @@ def unmatched(a: np.ndarray, b: np.ndarray, radius: int = 1) -> np.ndarray:
     na = cv2.dilate(a.astype(np.uint8), k).astype(bool)
     nb = cv2.dilate(b.astype(np.uint8), k).astype(bool)
     return ((a & ~nb) | (b & ~na)).astype(np.uint8)
+
+
+def tinted_paper(tint: np.ndarray, area: np.ndarray, ink: np.ndarray) -> bool:
+    """True when colored pixels are the page's own colors: they cover so much of the compared area that they are
+    the paper, or nearly all of its ink, so they are the ink. No cursor or highlight covers either."""
+    inked = ink & area
+    return bool((tint & area).sum() > TINT_PAPER * area.sum() or (tint & inked).sum() > TINT_INK * inked.sum())
 
 
 def faint_change(a: np.ndarray, b: np.ndarray, gap: float) -> bool:
@@ -429,7 +442,9 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         """(changed, frame) for a frame against reference r."""
         ink = ink_map(g, thr, gap)
         mask = area(r["rect"], r["seed"], ink.shape)
-        mask &= ~(r["tint"] | tinted(f))
+        tint = r["tint"] | tinted(f)
+        if not tinted_paper(tint, mask, r["ink"]):
+            mask &= ~tint
         # Two pixels of slack: a cursor passing over a note changes its soft edge
         changed = significant_change(r["ink"] & mask, ink & mask, gap, radius=2)
         return changed, f

@@ -2,7 +2,8 @@ import cv2
 import numpy as np
 
 from youtabber.scan import systems_in
-from youtabber.staff import find_staffs, split_rows
+from youtabber import staff
+from youtabber.staff import find_staffs, line_rows, split_rows
 
 
 def staff_image(dark: bool = True, notation: bool = False) -> np.ndarray:
@@ -284,3 +285,50 @@ def test_text_tab_typed_as_dashes_is_no_staff():
     assert find_staffs(text_tab()) == []
     (st,) = find_staffs(text_tab(), keep_dashed=True)
     assert st.dashed and len(st.lines) == 6
+
+
+def test_ties_along_two_lines_do_not_shift_them():
+    img = np.full((360, 800), 255, np.uint8)
+    for i in range(6):
+        cv2.line(img, (50, 200 + i * 16), (750, 200 + i * 16), 60, 1)
+    # Ties rising from the third line and hanging from the sixth, all along the staff
+    for x in range(60, 720, 40):
+        cv2.ellipse(img, (x + 20, 232), (16, 7), 0, 180, 360, 60, 1)
+        cv2.ellipse(img, (x + 20, 280), (16, 7), 0, 0, 180, 60, 1)
+    (st,) = find_staffs(img)
+    assert len(st.lines) == 6
+    assert max(abs(y - (200 + i * 16)) for i, y in enumerate(st.lines)) < 1
+
+
+def tied_staff(step: int, dashed: bool = False) -> np.ndarray:
+    """Six lines `step` px apart from row 150, with ties rising from the third line all along it. With `dashed`, the
+    third line is drawn in dashes covering half its length."""
+    img = np.full((400, 800), 255, np.uint8)
+    for i in range(6):
+        cv2.line(img, (50, 150 + i * step), (750, 150 + i * step), 60, 1)
+    if dashed:
+        for x in range(70, 750, 40):
+            cv2.line(img, (x, 150 + 2 * step), (x + 19, 150 + 2 * step), 255, 1)
+    for x in range(60, 720, 40):
+        cv2.ellipse(img, (x + 20, 150 + 2 * step), (16, 7), 0, 180, 360, 60, 1)
+    return img
+
+
+def third_line(img: np.ndarray, monkeypatch) -> tuple[float, float]:
+    """The center line_rows gives the third line, and the weighted mean of its row group, never re-centred."""
+    y = line_rows(img, "dark", 100)[2][0]
+    with monkeypatch.context() as m:
+        m.setattr(staff, "THICK_GROUP", float("inf"))
+        return y, line_rows(img, "dark", 100)[2][0]
+
+
+def test_rows_that_cover_half_the_width_or_a_thin_group_are_not_re_centred(monkeypatch):
+    # Lines 16 px apart: the tied line's group is re-centred on the line at row 182
+    y, mean = third_line(tied_staff(16), monkeypatch)
+    assert abs(y - 182) < 0.5 and abs(mean - 182) > 2
+    # Strings in footage: the fullest row of the group covers about half of it
+    y, mean = third_line(tied_staff(16, dashed=True), monkeypatch)
+    assert y == mean
+    # Lines 24 px apart: the tied line's group is under half of that thick
+    y, mean = third_line(tied_staff(24), monkeypatch)
+    assert y == mean
