@@ -71,6 +71,7 @@ class Cell:
     # Shaped like a header but with marks past the clef: a pickup bar, or a header with a time signature on the tab
     maybe_header: bool = False
     top_y: int = 0                          # row of the system's top staff line (notation or tab) in the cell box
+    colored_bar: bool = False               # a barline at either end is a strongly colored stroke
 
 
 @dataclass
@@ -82,6 +83,7 @@ class ParsedSystem:
     cells: list[Cell] = field(default_factory=list)
     repeat_end: bool = False   # an end-repeat sign (dots before a barline) somewhere in the system
     repeat_bars: list = field(default_factory=list)   # left edges of the barlines that end a repeat
+    colored_bars: set = field(default_factory=set)    # left edges of the barlines drawn as colored strokes
     band: tuple[int, int] = (0, 0)   # rows to print, crop coordinates
 
 
@@ -160,6 +162,28 @@ def barlines(dark: np.ndarray, tab_top: float, tab_bottom: float, gap: float, x0
     return [(p, q) for p, q in bars
             if not (p - d >= 0 and q + d < dark.shape[1] and dark[a:b + 1, p - d].mean() > BAR_SIDE_INK
                     and dark[a:b + 1, q + d].mean() > BAR_SIDE_INK)]
+
+
+# A barline whose dark pixels across the tab staff are more than this share strongly colored may be the side of a
+# colored annotation box drawn over the music, which looks the same whether or not a real barline lies under it...
+BAR_COLORED_SHARE = 0.5
+# ...when it is BOX_SIDE_GAPS line gaps wide: thinner ones are a line cursor resting on a barline, wider ones the edge
+# of a highlight
+BOX_SIDE_GAPS = (0.3, 0.6)
+
+
+def colored_bars(dark: np.ndarray, colored_plate: np.ndarray, st, bars: list[tuple[int, int]]) -> set[int]:
+    """Left edges of the barlines that are colored strokes as wide as an annotation box's side; printed barlines are
+    gray."""
+    a, b = int(round(st.top)), int(round(st.bottom))
+    out = set()
+    for p, q in bars:
+        if not BOX_SIDE_GAPS[0] * st.gap <= q - p + 1 <= BOX_SIDE_GAPS[1] * st.gap:
+            continue
+        ink = dark[a:b + 1, p:q + 1]
+        if ink.any() and (colored_plate[a:b + 1, p:q + 1] & ink).sum() > BAR_COLORED_SHARE * ink.sum():
+            out.add(p)
+    return out
 
 
 # A staff running to the panel's right edge has its barlines looked for up to this many line gaps past that edge
@@ -446,7 +470,8 @@ def joined_staffs(out: list, lone: list, struct: np.ndarray) -> tuple[list, list
             bars.append(b)
         if len(bars) >= JOINED_MIN_BARS and len(bars) >= JOINED_SHARE * max(len(l.bars), 1):
             out[k] = ParsedSystem(u.system, bars, u.y0, l.y1, repeat_end=u.repeat_end or l.repeat_end,
-                                  band=(u.band[0], l.band[1]), repeat_bars=u.repeat_bars + l.repeat_bars)
+                                  band=(u.band[0], l.band[1]), repeat_bars=u.repeat_bars + l.repeat_bars,
+                                  colored_bars=u.colored_bars | l.colored_bars)
             del out[k + 1]
             lone = lone[:k + 1] + lone[k + 2:]
             continue
@@ -524,7 +549,9 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
                 bars = [bar for bar in bars if bar[1] < closing[0][0]] + closing[:1]
         bars = drawn_bars(bar_sub, st, bars)
         repeats = end_repeats(dark, st, bars)
-        out.append(ParsedSystem(s, bars, y0, y1, repeat_end=bool(repeats), repeat_bars=repeats))
+        # Glide mosaics are left out: a colored playhead caught over a barline there says nothing of the page
+        tinted = set() if hidden_bars else colored_bars(faint_struct, colored_plate, st, bars)
+        out.append(ParsedSystem(s, bars, y0, y1, repeat_end=bool(repeats), repeat_bars=repeats, colored_bars=tinted))
     # Print bands: each system's marks, up to halfway to the systems above and below
     for si, ps in enumerate(out):
         s, st = ps.system, ps.system.tab
@@ -580,7 +607,8 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
                         gap=st.gap, ref_y=int(round(st.top)) - ps.y0, mid_y=(st.top + st.bottom) / 2,
                         tint=box_tint,
                         complete=complete and not cut_off, band=ps.band, print_x0=print_x0,
-                        notation_only=lone[si], top_y=int(round(ps.system.top)) - ps.y0)
+                        notation_only=lone[si], top_y=int(round(ps.system.top)) - ps.y0,
+                        colored_bar=a in ps.colored_bars or b in ps.colored_bars)
             if header and ci == 0:
                 mark_header(cell)
             ps.cells.append(cell)

@@ -23,6 +23,8 @@ LABELS = {
                      "measures played as long as two, a barline may be missing"),
     "header": ("first cell left out as a clef and key, a measure may be missing",
                "first cells left out as a clef and key, measures may be missing"),
+    "colored_bar": ("colored line read as a barline, a measure may be split",
+                    "colored lines read as barlines, measures may be split"),
     "header_kept": ("first cell that may be a clef and key printed as a measure",
                     "first cells that may be a clef and key printed as measures"),
     "unresolved_join": ("screen that may not join up", "screens that may not join up"),

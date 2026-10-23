@@ -469,6 +469,10 @@ def count_over(labels: list[tuple[float, int | None]], read: list[tuple[int, flo
     ahead = COUNT_SLACK
     since = labels[0][0]
     for i, t, n in read:
+        # A pickup numbered 0 has no measures before it to count
+        if n < 1:
+            since = t
+            continue
         over = i + 1 - n
         if over > ahead:
             for p0, p1 in pieces(min(since, t), max(since, t)) or [(t, t)]:

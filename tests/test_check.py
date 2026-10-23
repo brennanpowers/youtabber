@@ -162,6 +162,16 @@ def test_more_measures_than_numbers():
     assert "count_over" in kinds
 
 
+def test_a_pickup_numbered_0_is_not_counted_over():
+    labels = [(1.0, 0), (2.0, 1), (3.0, 2), (4.0, 3)]
+    assert [w for w in number_checks(labels, True) if w["kind"] == "count_over"] == []
+
+
+def test_a_measure_numbered_0_after_three_unnumbered_measures_is_not_counted_over():
+    labels = [(1.0, None), (2.0, None), (3.0, 0)]
+    assert [w for w in number_checks(labels, True) if w["kind"] == "count_over"] == []
+
+
 def test_numbers_that_skip_in_a_glide_warn():
     cells = [cell(x, x + 100) for x in range(0, 500, 100)]
     # Measures 7 and 8 print as one cell, so the numbers read go 6, 7, 9; across an unread number, 9 to 11 is no skip

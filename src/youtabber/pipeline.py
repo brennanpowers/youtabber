@@ -18,7 +18,7 @@ from youtabber.check import (dwell, empty_stretches, fmt, glide_fade, glide_gaps
 from youtabber.match import resemble_scaled
 from youtabber.observe import (ABOVE_GAPS, BELOW_GAPS, OBS_FPS, PRINT_ABOVE_GAPS, ink_map, ink_threshold, set_paper,
                                to_gray, views_in)
-from youtabber.parse import Cell, line_darkness, parse_view, staff_ink
+from youtabber.parse import Cell, bare_header, line_darkness, parse_view, staff_ink
 from youtabber.parts import Part, find_parts, merge_order, stream_of
 from youtabber.scan import SCAN_FPS, Segment, scan
 from youtabber.staff import find_staffs
@@ -36,6 +36,9 @@ EMPTY_BAR_INK = 0.1
 EMPTY_NOTATION_INK = 1.0
 # Line gaps at a cell's left taken up by its barline, a thick or double one included
 BAR_SKIP_GAPS = 0.7
+# A view's first cell counted as measure 0 with a bare tab staff past the clef is a clef and key header when at most
+# this many line gaps wide; a rest pickup bar is wider
+HEADER_WIDTH_GAPS = 14.0
 # An empty bar is drawn at least this many line gaps wide; narrower blank cells sit between a barline and a
 # column of stems or stacked digits that was read as one...
 EMPTY_MIN_GAPS = 3.5
@@ -389,6 +392,11 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
             counted_numbers(o)
     for o in obs:
         o.cells = placed_notation(o.cells)
+    for o in obs:
+        if o.cells and counted_header(o):
+            o.cells[0].header = True
+            o.cells = o.cells[1:]
+            o.start = 1
 
     def words_of(o: Obs) -> list[str]:
         return ocr.find_words(o.plate) if o.plate is not None else []
@@ -402,7 +410,7 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
         r.candidates.append(Candidate("folded", "once", measures_of(folded, obs, folded.order)))
 
     notices = (join_notices(main, obs) + edge_notices(main, obs, r.candidates[0].measures)
-               + header_notices(obs) + header_kept_notices(obs))
+               + header_notices(obs) + header_kept_notices(obs) + colored_bar_notices(obs))
     if r.intro is not None:
         notices.append(Notice(round(r.intro[0], 2), round(r.intro[1], 2), "intro",
                               f"The tab at {fmt(r.intro[0])}-{fmt(r.intro[1])} is drawn in another layout than the "
@@ -1170,9 +1178,16 @@ def kept_cells(cells: list[Cell], typical: float) -> list[Cell]:
             and (c.x1 - c.x0 >= EDGE_SHARE * typical or short_bar(c, typical) or empty_bar(c) or rest_run(cells, i))]
 
 
+def counted_header(o: Obs) -> bool:
+    """True when the view's first cell was counted as measure 0, before measure 1, yet holds no tab notes past the
+    clef and is narrow: the system's clef and key signature, cut off by a barline drawn after them."""
+    c = o.cells[0]
+    return c.number == 0 and not c.glided and c.x1 - c.x0 <= HEADER_WIDTH_GAPS * c.gap and bare_header(c)
+
+
 def header_notices(obs: list[Obs]) -> list[Notice]:
     """One notice per stretch of screens whose first cell was left out as a clef and key header, since a short
-    first measure closed by a repeat barline would look the same."""
+    first measure with no tab notes would look the same."""
     out: list[Notice] = []
     for o in obs:
         if not any(c.header for c in o.all_cells):
@@ -1181,8 +1196,8 @@ def header_notices(obs: list[Obs]) -> list[Notice]:
             out[-1].t1 = round(o.t1, 2)
             continue
         out.append(Notice(round(o.t0, 2), round(o.t1, 2), "header",
-                          f"A narrow first cell at {fmt(o.t0)}, closed by a repeat or heavy barline, was taken as the "
-                          f"clef and key signature and isn't printed. If it holds notes, that measure is missing.",
+                          f"A first cell at {fmt(o.t0)} was taken as the clef and key signature standing alone and "
+                          f"isn't printed. If it holds notes, that measure is missing.",
                           True))
     return out
 
@@ -1202,6 +1217,22 @@ def header_kept_notices(obs: list[Obs]) -> list[Notice]:
                           f"clef and key signature but has marks past the clef, so it is printed as a measure. If it "
                           f"holds only the clef, key and time signature, that measure is extra.",
                           True))
+    return out
+
+
+def colored_bar_notices(obs: list[Obs]) -> list[Notice]:
+    """One notice per stretch of screens with a printed measure ending at a colored stroke taken as a barline: the
+    side of a box drawn round some notes splits a measure, while one drawn on a barline hides it."""
+    out: list[Notice] = []
+    for o in obs:
+        if not any(c.colored_bar for c in o.cells):
+            continue
+        if out and o.t0 - out[-1].t1 <= TURN_SECONDS:
+            out[-1].t1 = round(o.t1, 2)
+            continue
+        out.append(Notice(round(o.t0, 2), round(o.t1, 2), "colored_bar",
+                          f"A colored line drawn over the tab at {fmt(o.t0)} was read as a barline. If it is the side "
+                          f"of a box drawn round some notes, a measure there is printed split in two.", True))
     return out
 
 
