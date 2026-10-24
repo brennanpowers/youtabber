@@ -103,12 +103,19 @@ only when the video shows it's a replay, such as matching measure numbers, a rep
 marking. When it can't tell, it prints the section every time and writes a second PDF that prints
 it once.
 
+It would rather say so than print wrong tab. Anything it isn't sure of is listed as a spot to check on the
+PDF's last page, and when it can't trust a reading at all (tab shown only for a moment, too little of it
+read, or several parts it can't tell apart) it makes no PDF and says why.
+
 ## Known gaps
 
 - A video that shows one page of tab the whole time may need `--region`.
 - If downloads start failing, YouTube probably changed something. `uv tool upgrade youtabber` pulls
   the latest [yt-dlp](https://github.com/yt-dlp/yt-dlp).
-- Text tab (`e|--3--`) and tab drawn see-through over the video aren't read.
+- Text tab (`e|--3--`), tab drawn see-through over the video, and tab drawn without barlines aren't read.
+- Light gray barlines on light paper can be missed, so two bars print as one. These usually show up as
+  spots to check.
+- Split screens, or two bands of tab playing different parts, are often refused rather than read.
 - A compilation of several songs prints as one PDF, without song labels.
 
 ## Please be nice
