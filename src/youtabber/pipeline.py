@@ -416,7 +416,8 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
         r.candidates.append(Candidate("folded", "once", measures_of(folded, obs, folded.order)))
 
     notices = (join_notices(main, obs) + edge_notices(main, obs, r.candidates[0].measures)
-               + header_notices(obs) + header_kept_notices(obs) + colored_bar_notices(obs))
+               + header_notices(obs) + header_kept_notices(obs) + colored_bar_notices(obs)
+               + faint_bar_notices(obs))
     if r.intro is not None:
         notices.append(Notice(round(r.intro[0], 2), round(r.intro[1], 2), "intro",
                               f"The tab at {fmt(r.intro[0])}-{fmt(r.intro[1])} is drawn in another layout than the "
@@ -1239,6 +1240,22 @@ def colored_bar_notices(obs: list[Obs]) -> list[Notice]:
         out.append(Notice(round(o.t0, 2), round(o.t1, 2), "colored_bar",
                           f"A colored line drawn over the tab at {fmt(o.t0)} was read as a barline. If it is the side "
                           f"of a box drawn round some notes, a measure there is printed split in two.", True))
+    return out
+
+
+def faint_bar_notices(obs: list[Obs]) -> list[Notice]:
+    """One notice per stretch of screens with a faint line inside a measure that may be a barline left out: if it is
+    one, two measures there are printed as one."""
+    out: list[Notice] = []
+    for o in obs:
+        if not any(c.faint_bar for c in o.cells):
+            continue
+        if out and o.t0 - out[-1].t1 <= TURN_SECONDS:
+            out[-1].t1 = round(o.t1, 2)
+            continue
+        out.append(Notice(round(o.t0, 2), round(o.t1, 2), "faint_bar",
+                          f"A faint line on the tab at {fmt(o.t0)} was not read as a barline, but may be one. If it "
+                          f"is, two measures there are printed as one.", True))
     return out
 
 

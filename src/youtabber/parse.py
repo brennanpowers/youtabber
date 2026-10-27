@@ -75,6 +75,7 @@ class Cell:
     maybe_header: bool = False
     top_y: int = 0                          # row of the system's top staff line (notation or tab) in the cell box
     colored_bar: bool = False               # a barline at either end is a strongly colored stroke
+    faint_bar: bool = False                 # a faint line inside may be a barline that was left out
 
 
 @dataclass
@@ -87,6 +88,7 @@ class ParsedSystem:
     repeat_end: bool = False   # an end-repeat sign (dots before a barline) somewhere in the system
     repeat_bars: list = field(default_factory=list)   # left edges of the barlines that end a repeat
     colored_bars: set = field(default_factory=set)    # left edges of the barlines drawn as colored strokes
+    unsure_bars: set = field(default_factory=set)     # columns of faint lines left out that may be barlines
     band: tuple[int, int] = (0, 0)   # rows to print, crop coordinates
 
 
@@ -400,6 +402,129 @@ def drawn_bars(gray: np.ndarray, st, bars: list[tuple[int, int]]) -> list[tuple[
     return [bar for bar, level in zip(bars, levels) if level <= max(lighter_than_lines, lighter_than_bars)]
 
 
+# A barline drawn light, thin or across two pixel columns can miss BAR_COVER on the faint-ink mask. Columns the rule
+# passed over are looked at again on gray levels: a row of the staff counts when the darker of two neighbouring
+# columns is darker than the paper on both sides by FAINT_HIT of the staff lines' contrast...
+FAINT_HIT = 0.25
+# ...and a column is a candidate when at least FAINT_COVER of the rows between the staff lines count
+FAINT_COVER = 0.5
+# Paper either side of a candidate is looked for this many line gaps away (2 pixels at least)
+FAINT_SIDE_GAPS = 0.15
+
+
+def faint_candidates(gray: np.ndarray, st, bars: list[tuple[int, int]], notation: tuple[float, float] | None,
+                     fthr: float, colored_plate: np.ndarray,
+                     dropped: list[tuple[int, int]] = ()) -> list[tuple[int, dict]]:
+    """(column, measurements) of each column of a tab staff that stands out from the paper on both sides on most
+    rows between its lines but is no barline found yet, nor a line dropped as lighter than the page's barlines. Each
+    measurement is a share of rows or a darkness relative to the staff lines, so a light page is judged against its
+    own ink. faint_rule says which measurements make a barline."""
+    gap = st.gap
+    a, b = int(round(st.top)), int(round(st.bottom))
+    x0, x1 = max(int(st.x0), 3), min(int(st.x1), gray.shape[1] - 4)
+    if x1 - x0 < 3 or b <= a:
+        return []
+    line, paper = line_darkness(gray, st)
+    contrast = max(paper - line, 1.0)
+    d = max(2, int(round(FAINT_SIDE_GAPS * gap)))
+    # Rows on a staff line are dark in every column, so only the rows between the lines are judged
+    keep = np.ones(b - a + 1, bool)
+    for y in st.lines:
+        r = int(round(y)) - a
+        keep[max(0, r - 1):r + 2] = False
+    if keep.sum() < 3:
+        return []
+
+    def strength(y0: int, y1: int, xs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Per row and column: the darker of columns x, x+1, and how much darker that is than the paper beside."""
+        rows = gray[max(0, y0):max(0, y1)].astype(np.float32)
+        two = np.minimum(rows[:, xs], rows[:, np.minimum(xs + 1, gray.shape[1] - 1)])
+        sides = np.minimum(rows[:, np.maximum(xs - d, 0)], rows[:, np.minimum(xs + 1 + d, gray.shape[1] - 1)])
+        return two, (sides - two) / contrast
+
+    xs = np.arange(x0, x1)
+    two, c = strength(a, b + 1, xs)
+    hit = (c >= FAINT_HIT)[keep]
+    cover = hit.mean(axis=0)
+    chosen: list[int] = []
+    for i in np.argsort(-cover, kind="stable"):
+        if cover[i] < FAINT_COVER:
+            break
+        x = x0 + int(i)
+        # One candidate per half gap, none within 0.7 gaps of a found or dropped barline, and none within MIN_CELL gaps
+        # of the staff's ends
+        if (any(abs(x - y) <= 0.5 * gap for y in chosen)
+                or any(p - 0.7 * gap <= x <= q + 0.7 * gap for p, q in [*bars, *dropped])
+                or x - st.x0 < MIN_CELL * gap or st.x1 - x < MIN_CELL * gap):
+            continue
+        chosen.append(x)
+    faint_mask = gray[a:b + 1] < fthr
+    out = []
+    for x in chosen:
+        i = x - x0
+        col = hit[:, i]
+        runs = np.diff(np.flatnonzero(np.concatenate(([True], ~col, [True])))) - 1
+        level = float(np.median(two[keep][:, i]))
+
+        def share(y0: float, y1: float) -> float:
+            _, s = strength(int(round(y0)), int(round(y1)), np.array([x]))
+            return float((s >= FAINT_HIT).mean()) if s.size else 0.0
+
+        f = {
+             # Longest unbroken stretch of counted rows: a line is unbroken, a column of digits is not
+             "run": float(runs.max()) / len(col),
+             # Share of the staff's rows on the faint-ink mask, in the fuller of its two columns
+             "fcover": float(max(faint_mask[:, x].mean(), faint_mask[:, x + 1].mean())),
+             # Darkness against the paper, in units of the staff lines' darkness
+             "dark": (paper - level) / contrast,
+             # Share of faint ink on the columns just beside it: a cursor or shading is wider than a line
+             "side": float(max(faint_mask[:, x - d].mean(), faint_mask[:, min(x + 1 + d, gray.shape[1] - 1)].mean())),
+             # Rhythm stems run on below the staff, a playhead line above it
+             "below": share(b + 0.5 * gap, b + 2.0 * gap),
+             "above": share(a - 2.0 * gap, a - 0.5 * gap),
+             # A barline crosses the notation staff too; -1 when the system has none
+             "notation": share(notation[0], notation[1]) if notation is not None else -1.0,
+             "colored": float(colored_plate[a:b + 1, x:x + 2].any(axis=1).mean()),
+             # A barline reaches both outer lines; a stem drawn inside the staff stops short of one
+             "ends": min(share(st.lines[0] + 2, st.lines[1] - 1), share(st.lines[-2] + 2, st.lines[-1] - 1))}
+        out.append((x, f))
+    return sorted(out, key=lambda xf: xf[0])
+
+
+# A faint line is a barline when its counted rows run unbroken over FAINT_RUN of the staff and fill FAINT_ENDS of both
+# the top and the bottom line space. One reaching only FAINT_UNSURE_RUN and FAINT_UNSURE_ENDS is left out with a notice
+FAINT_RUN, FAINT_ENDS = 0.6, 0.7
+FAINT_UNSURE_RUN, FAINT_UNSURE_ENDS = 0.5, 0.6
+# Any line is turned down when the columns beside it hold FAINT_SIDE or more faint ink, when it runs on below or above
+# the staff for FAINT_BELOW or FAINT_ABOVE of that stretch, or when its color covers FAINT_COLORED of the staff
+FAINT_SIDE, FAINT_BELOW, FAINT_ABOVE, FAINT_COLORED = 0.3, 0.5, 0.5, 0.5
+# ...or when it crosses less than FAINT_NOTATION of the notation staff above the tab
+FAINT_NOTATION = 0.9
+# ...or when it is FAINT_DARK times as dark as the staff lines or darker
+FAINT_DARK = 1.6
+
+
+def faint_rule(f: dict) -> str:
+    """The verdict on a faint candidate: "bar" for a barline, "unsure" for a line that may be one, "" otherwise.
+
+    A line dark enough for BAR_COVER was turned down by the cover rule's other tests, so it is left alone, and so is a
+    stroke much darker than the staff lines that still misses BAR_COVER: it is broken, a stem or digits, not faint."""
+    if not (f["fcover"] < BAR_COVER and f["dark"] < FAINT_DARK and f["side"] < FAINT_SIDE
+            and f["below"] < FAINT_BELOW and f["above"] < FAINT_ABOVE and f["colored"] < FAINT_COLORED
+            and (f["notation"] < 0 or f["notation"] >= FAINT_NOTATION)):
+        return ""
+    if f["run"] >= FAINT_RUN and f["ends"] >= FAINT_ENDS:
+        return "bar"
+    return "unsure" if f["run"] >= FAINT_UNSURE_RUN and f["ends"] >= FAINT_UNSURE_ENDS else ""
+
+
+def faint_bars(gray: np.ndarray, st, bars: list[tuple[int, int]], notation: tuple[float, float] | None, fthr: float,
+               colored_plate: np.ndarray, dropped: list[tuple[int, int]]) -> tuple[list[tuple[int, int]], set[int]]:
+    """Faint barlines the cover rule missed, and the columns of faint lines that may be barlines."""
+    judged = [(x, faint_rule(f)) for x, f in faint_candidates(gray, st, bars, notation, fthr, colored_plate, dropped)]
+    return [(x, x + 1) for x, v in judged if v == "bar"], {x for x, v in judged if v == "unsure"}
+
+
 def opening_line(struct: np.ndarray, st) -> bool:
     """True when a solid line crosses the whole tab staff within one line gap of the staff's left end.
 
@@ -517,7 +642,8 @@ def joined_staffs(out: list, lone: list, struct: np.ndarray) -> tuple[list, list
         if len(bars) >= JOINED_MIN_BARS and len(bars) >= JOINED_SHARE * max(len(l.bars), 1):
             out[k] = ParsedSystem(u.system, bars, u.y0, l.y1, repeat_end=u.repeat_end or l.repeat_end,
                                   band=(u.band[0], l.band[1]), repeat_bars=u.repeat_bars + l.repeat_bars,
-                                  colored_bars=u.colored_bars | l.colored_bars)
+                                  colored_bars=u.colored_bars | l.colored_bars,
+                                  unsure_bars=u.unsure_bars | l.unsure_bars)
             del out[k + 1]
             lone = lone[:k + 1] + lone[k + 2:]
             continue
@@ -593,11 +719,19 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
                        and paper_after(g, st, bar, fthr)]
             if closing:
                 bars = [bar for bar in bars if bar[1] < closing[0][0]] + closing[:1]
-        bars = drawn_bars(bar_sub, st, bars)
+        kept = drawn_bars(bar_sub, st, bars)
+        dropped = [bar for bar in bars if bar not in kept]
+        bars = kept
+        unsure: set[int] = set()
+        # Glide mosaics read their barlines with their own looser rule
+        if not hidden_bars:
+            light, unsure = faint_bars(bar_sub, st, bars, notation, fthr, colored_plate, dropped)
+            bars = sorted(bars + light)
         repeats = end_repeats(dark, st, bars)
         # Glide mosaics are left out: a colored playhead caught over a barline there says nothing of the page
         tinted = set() if hidden_bars else colored_bars(faint_struct, colored_plate, st, bars)
-        out.append(ParsedSystem(s, bars, y0, y1, repeat_end=bool(repeats), repeat_bars=repeats, colored_bars=tinted))
+        out.append(ParsedSystem(s, bars, y0, y1, repeat_end=bool(repeats), repeat_bars=repeats, colored_bars=tinted,
+                                unsure_bars=unsure))
     # Print bands: each system's marks, up to halfway to the systems above and below
     for si, ps in enumerate(out):
         s, st = ps.system, ps.system.tab
@@ -662,7 +796,8 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
                         tint=box_tint,
                         complete=complete and not cut_off, band=ps.band, print_x0=print_x0,
                         notation_only=lone[si], top_y=int(round(ps.system.top)) - ps.y0,
-                        colored_bar=a in ps.colored_bars or b in ps.colored_bars)
+                        colored_bar=a in ps.colored_bars or b in ps.colored_bars,
+                        faint_bar=any(a - 1 <= x <= b + 1 for x in ps.unsure_bars))
             if header and ci == 0:
                 mark_header(cell)
             ps.cells.append(cell)
