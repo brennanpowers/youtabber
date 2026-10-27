@@ -375,10 +375,14 @@ def scroll_shifts(p: Obs, o: Obs, gap: float) -> list[tuple[int, float]]:
     if not (p.single and o.single) or p.band is None or o.band is None or p.band.shape != o.band.shape:
         return []
     cands = {int(a - b) for a in p.bars for b in o.bars if a - b >= 2 * gap}
+    marks_p, marks_o = p.tall & ~p.fixed, o.tall & ~o.fixed
     # When no barline shows in both views (the overlap is one measure cut at both ends), shifts come from
     # comparing the two views' column profiles of marks: the closest profiles over the overlap
-    pa = (p.tall & ~p.fixed).astype(np.float32).sum(axis=0)
-    pb = (o.tall & ~o.fixed).astype(np.float32).sum(axis=0)
+    pa = marks_p.astype(np.float32).sum(axis=0)
+    pb = marks_o.astype(np.float32).sum(axis=0)
+    # Marks left of each column, so a stretch's count is one subtraction
+    left_p = np.concatenate(([0], np.cumsum(marks_p.sum(axis=0))))
+    left_o = np.concatenate(([0], np.cumsum(marks_o.sum(axis=0))))
     scores = []
     for dx in range(int(2 * gap), len(pa) - int(2 * gap), 2):
         lo, hi = max(p.rect[0], o.rect[0] + dx), min(p.rect[2], o.rect[2] + dx)
@@ -392,19 +396,27 @@ def scroll_shifts(p: Obs, o: Obs, gap: float) -> list[tuple[int, float]]:
         cands.add(dx)
     cands = sorted(cands)
     scored = []
+    # Neighbouring candidates try some of the same shifts
+    tried: dict[int, float | None] = {}
+
+    def mismatch(dx: int) -> float | None:
+        # Columns both panels show once o is moved right by dx
+        lo, hi = max(p.rect[0], o.rect[0] + dx), min(p.rect[2], o.rect[2] + dx)
+        if hi - lo < MIN_OVERLAP_GAPS * gap:
+            return None
+        total = int(left_p[hi] - left_p[lo] + left_o[hi - dx] - left_o[lo - dx])
+        if total < 20 * gap:
+            return None
+        return float(unmatched(marks_p[:, lo:hi], marks_o[:, lo - dx:hi - dx], 2).sum()) / total
+
     for dx0 in cands:
         best = None
         for dx in range(dx0 - 3, dx0 + 4):
-            # Columns both panels show once o is moved right by dx
-            lo, hi = max(p.rect[0], o.rect[0] + dx), min(p.rect[2], o.rect[2] + dx)
-            if hi - lo < MIN_OVERLAP_GAPS * gap:
+            if dx not in tried:
+                tried[dx] = mismatch(dx)
+            score = tried[dx]
+            if score is None:
                 continue
-            a = (p.tall & ~p.fixed)[:, lo:hi]
-            b = (o.tall & ~o.fixed)[:, lo - dx:hi - dx]
-            total = int(a.sum() + b.sum())
-            if total < 20 * gap:
-                continue
-            score = float(unmatched(a, b, 2).sum()) / total
             if best is None or score < best[1]:
                 best = (dx, score)
         if best is not None and best[1] <= SCROLL_MISMATCH:
@@ -491,8 +503,30 @@ def scroll_links(p: Obs, o: Obs, dx: int) -> dict[int, int]:
     return links
 
 
+# same_cell's answers by the pair's object ids, cleared at the start of each read, since joins and folds compare the
+# same pairs many times. A cell must not change once compared; each entry keeps both cells, so their ids can't be
+# reused while it is stored
+_same_cells: dict = {}
+
+
 def same_cell(a, b, gap: float) -> bool:
     """Two sightings of one measure: compared whole when cut the same way, else on the part both show."""
+    key = (id(a), id(b), gap)
+    hit = _same_cells.get(key)
+    if hit is not None and hit[0] is a and hit[1] is b:
+        return hit[2]
+    same = compare_cells(a, b, gap)
+    _same_cells[key] = (a, b, same)
+    return same
+
+
+def forget_compared() -> None:
+    """Drop same_cell's stored answers, so the cells of an earlier read can be freed."""
+    _same_cells.clear()
+
+
+def compare_cells(a, b, gap: float) -> bool:
+    """same_cell's comparison, without the stored answers."""
     if a.index == 0 and b.index == 0 and a.kind != "tail" and b.kind != "tail":
         # Both start a system: the clef, bracket and first barline there are drawn differently from one
         # screen to the next, so compare the music after them, from the right barline back

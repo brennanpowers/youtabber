@@ -4,11 +4,13 @@ from types import SimpleNamespace
 import numpy as np
 from test_numbering import band_view, music
 
+from youtabber import assemble as assemble_module
 from youtabber.assemble import (RESTART_GAP_SECONDS, Assembly, Decision, Obs, Slot, after_header, assemble, cell_at,
-                                choose_shift, drawn_near, find_run, jumped_back, keeps_widths, measure_time, place_rest,
-                                playhead_at, playhead_join, playhead_restarts, playhead_track, register, repeat_played,
-                                replay_evidence, rest_of, same_cell, scroll_shares, scroll_shifts, split_measure,
-                                still_links, track_join, usual_slides)
+                                choose_shift, compare_cells, drawn_near, find_run, forget_compared, jumped_back,
+                                keeps_widths, measure_time, place_rest, playhead_at, playhead_join, playhead_restarts,
+                                playhead_track, register, repeat_played, replay_evidence, rest_of, same_cell,
+                                scroll_shares, scroll_shifts, split_measure, still_links, track_join, usual_slides)
+from youtabber.observe import unmatched
 from youtabber.parse import Cell
 from youtabber.pipeline import Measure, Notice, edge_notices, join_notices, readings, repeat_notices
 from youtabber.track import Move
@@ -179,6 +181,20 @@ def test_a_slide_is_not_joined_when_another_shift_the_plates_register_at_fits_th
     assert cands == [(198, 0.0), (398, 0.0), (598, 0.0)]
     assert track_join(p, o, 10.0, cands) is None
     assert track_join(p, o, 10.0, [(400, 0.0)]) == ({0: 2, 1: 3}, "slide 398")
+
+
+def test_scroll_shifts_scores_each_shift_by_the_marks_the_two_views_leave_unmatched():
+    # Two stray marks in o, so every shift the riff lines up at leaves something unmatched
+    p, o = slid(400, False, riff=True)
+    tall = o.tall.copy()
+    tall[20:24, 50:60] = True
+    tall[40:44, 300:308] = True
+    o.tall = tall
+    shifts = scroll_shifts(p, o, 10.0)
+    assert shifts == [(200, 5 / 438), (400, 5 / 294), (598, 5 / 149)]
+    for dx, score in shifts:
+        a, b = p.tall[:, dx:800], o.tall[:, :800 - dx]
+        assert score == float(unmatched(a, b, 2).sum()) / int(a.sum() + b.sum())
 
 
 def test_a_slide_under_a_box_cursor_that_stayed_in_one_column_joins_unconfirmed():
@@ -829,6 +845,31 @@ def headed(lead: int):
 def test_a_cut_measure_matches_a_system_start_past_its_header():
     part, whole = headed(50)
     assert after_header(part, whole, 10.0) and same_cell(part, whole, 10.0)
+
+
+def test_same_cell_answers_a_pair_again_from_the_store_until_it_is_forgotten(monkeypatch):
+    forget_compared()
+    calls = []
+
+    def counted(a, b, gap):
+        calls.append((a, b))
+        return compare_cells(a, b, gap)
+    monkeypatch.setattr(assemble_module, "compare_cells", counted)
+    a, b = band_view(0, 1).cells[0], band_view(1, 1).cells[0]
+    assert same_cell(a, b, 10.0) and same_cell(a, b, 10.0)
+    assert len(calls) == 1 and compare_cells(a, b, 10.0)
+    # Another cell with the same contents is compared afresh
+    copy = replace(b)
+    assert same_cell(a, copy, 10.0)
+    assert len(calls) == 2
+    forget_compared()
+    assert assemble_module._same_cells == {}
+    assert same_cell(a, b, 10.0)
+    assert len(calls) == 3
+    # Measures 1 and 2 hold other music, and the stored answer stays False
+    other = band_view(1, 2).cells[0]
+    assert not same_cell(a, other, 10.0) and not same_cell(a, other, 10.0)
+    assert len(calls) == 4
 
 
 def test_a_cut_measure_matches_a_system_start_only_past_a_header_of_a_few_line_gaps():

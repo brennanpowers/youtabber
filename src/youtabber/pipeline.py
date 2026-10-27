@@ -10,7 +10,8 @@ import cv2
 import numpy as np
 
 from youtabber import counter, glide, ocr, track
-from youtabber.assemble import GLIDE_CONTINUE, Assembly, Obs, assemble, cell_at, number_views, same_cell
+from youtabber.assemble import (GLIDE_CONTINUE, Assembly, Obs, assemble, cell_at, forget_compared, number_views,
+                                same_cell)
 from youtabber.check import (dwell, empty_stretches, fmt, glide_fade, glide_gaps, glide_number_gaps, glide_piece_cuts,
                              glide_repeats, glide_rows, glide_steps, layout_changes, number_checks,
                              numbers_against_cells, odd_widths, part_switch, pieces, possible_duplicates, redraw_gaps,
@@ -191,6 +192,7 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
 
     `progress` hears how far each stage has got; each stage sends 0.0 first and 1.0 when it ends. A reading that
     fails stops sending at the stage it failed in."""
+    forget_compared()
     def tell(stage: str, share: float) -> None:
         if progress is not None:
             progress(stage, share)
