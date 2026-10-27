@@ -505,7 +505,8 @@ def meta(reading: pipeline.Reading, src: source.Source, passes: str, pdfs: list[
         "slots": [{"id": s.id, "number": s.number, "first_view": s.obs, "stream": s.stream} for s in A.slots]
         if A else [],
         "parts": [{"id": p.id, "segment": p.seg, "stream": p.stream, "kind": p.kind,
-                   "rows": [int(p.rows[0]), int(p.rows[1])]} for p in reading.parts],
+                   "rows": [int(p.rows[0]), int(p.rows[1])],
+                   "cols": None if p.cols is None else [int(p.cols[0]), int(p.cols[1])]} for p in reading.parts],
         "streams": [{"stream": k, "order": A.stream_orders[k]} for k in sorted(A.stream_orders)] if A else [],
         "path": path,
         "measures": measures,

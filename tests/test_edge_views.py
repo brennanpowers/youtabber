@@ -316,7 +316,7 @@ def test_a_brief_screen_that_parses_no_measures_is_not_read(monkeypatch):
     # The middle screen and the last one show measures; the brief first screen shows none
     measures = {0.0: [], 0.5: [5, 6, 7], 9.0: [8, 9]}
 
-    def plate_obs(v, seg, si, thr, fthr, index):
+    def plate_obs(v, seg, si, thr, fthr, index, col0=None):
         o = screen(index, measures[v.t0], brief=v.brief)
         o.t0, o.t1, o.systems = v.t0, v.t1, []
         return o

@@ -5,9 +5,9 @@ from test_check import FakeMosaic
 
 from youtabber.assemble import Assembly, Decision, Obs, Slot, assemble
 from youtabber.parse import Cell
-from youtabber.parts import Part
-from youtabber.pipeline import (Measure, first_shown, join_notices, joined, number_streams, on_screen, part_notices,
-                                part_pairs, stream_number_checks)
+from youtabber.parts import Part, stream_of
+from youtabber.pipeline import (Measure, carry_on, first_shown, join_notices, joined, number_streams, on_screen,
+                                part_notices, part_pairs, split_duplicates, stream_number_checks)
 
 
 def still(index: int, part: int, seg: int = 0) -> Obs:
@@ -80,6 +80,19 @@ def test_a_measure_scrolled_on_first_showed_in_the_view_before_when_the_shift_pu
     # The view before ends its last measure on its panel's right edge, but the crop runs 200 px further
     obs = [screen(0, 0.0, 5.0, [(100, 400), (400, 700), (700, 1000)]), screen(1, 5.5, 10.0, THREE)]
     assert first_shown(placed({0: [0, 1, 2], 1: [1, 2, 3]}, obs), obs, CROP)[3] == 0.0
+
+
+def test_a_measure_at_a_left_panel_s_edge_first_showed_there_when_the_full_width_part_goes_on_from_it():
+    # A left panel 960 px wide (part 1) shows the start of slot 3 past its last barline; the full width (part 0) follows
+    for stream, when in ((0, 0.0), (3, 5.5)):
+        obs = [screen(0, 0.0, 5.0, THREE, part=1), screen(1, 5.5, 10.0, THREE)]
+        obs[0].stream = stream
+        assert first_shown(placed({0: [0, 1, 2], 1: [1, 2, 3]}, obs), obs, {0: 1920, 1: 960})[3] == when
+
+
+def test_a_measure_peeking_from_a_screen_cut_into_two_views_first_showed_at_the_first_one():
+    obs = [screen(0, 0.0, 2.5, THREE), screen(1, 2.5, 5.0, THREE), screen(2, 5.5, 10.0, THREE)]
+    assert first_shown(placed({0: [0, 1, 2], 1: [0, 1, 2], 2: [1, 2, 3]}, obs), obs, CROP)[3] == 0.0
 
 
 def test_a_measure_scrolled_on_that_the_shift_puts_at_the_crop_edge_first_showed_in_its_own_view():
@@ -226,3 +239,86 @@ def test_an_unresolved_join_notice_covers_the_view_its_decision_was_made_for():
     for view, end in ((1, 15.0), (2, 30.0)):
         A = Assembly(decisions=[Decision(10.0, "join", "page turn", [], "track", False, view=view)])
         assert [(n.kind, n.t0, n.t1) for n in join_notices(A, obs)] == [("unresolved_join", 9.0, end)]
+
+
+def panel_view(index: int, t0: float, t1: float, part: int, inks: list[np.ndarray], seg: int = 0) -> Obs:
+    """A still view of part `part` with one full cell per ink pattern given."""
+    cells = [Cell(index, 0, i, 300 * i, 300 * i + 300, "full", ink, np.zeros_like(ink), 0, gap=10.0,
+                  tint=np.zeros_like(ink))
+             for i, ink in enumerate(inks)]
+    o = Obs(index, t0, t1, cells, [], seg, (0, 0))
+    o.all_cells = list(cells)
+    o.part = part
+    return o
+
+
+def marks(seed: int) -> np.ndarray:
+    """A cell's ink: fret-sized blobs on a grid, each drawn or not as the seed sets."""
+    ink = np.zeros((60, 300), bool)
+    for k, on in enumerate(np.random.default_rng(seed).random(40) < 0.5):
+        if on:
+            y, x = 4 + 14 * (k // 10), 6 + 29 * (k % 10)
+            ink[y:y + 10, x:x + 14] = True
+    return ink
+
+
+def split_parts(whole: bool) -> list[Part]:
+    """A segment's split screen: the full width (when `whole`), then a left and a right panel."""
+    left = Part(1, 0, (0, 100), "band", cols=(0, 960), carries=not whole)
+    right = Part(2, 0, (0, 100), "band", cols=(960, 1920))
+    parts = [Part(0, 0, (0, 100), "band", seen=10.0), left, right]
+    left.continues = parts[0] if whole else None
+    return parts
+
+
+def numbered(obs: list[Obs], numbers: list[list[int]]) -> None:
+    """Give each view's cells number crops that stand for the numbers read from them."""
+    for o, ns in zip(obs, numbers):
+        for c, n in zip(o.cells, ns):
+            c.number_crop = n
+
+
+def test_the_panel_whose_numbers_the_full_width_goes_on_from_carries_the_stream():
+    for whole in (True, False):
+        parts = split_parts(whole)
+        if not whole:
+            parts[0].seg = 1
+        obs = [panel_view(0, 0.0, 5.0, 1, [marks(1), marks(2)]), panel_view(1, 0.0, 5.0, 2, [marks(3), marks(4)]),
+               panel_view(2, 6.0, 9.0, 0, [marks(5), marks(6), marks(7)], seg=parts[0].seg)]
+        # The number over a measure cut at the edge reads short
+        numbered(obs, [[12, 13], [53, 54], [4, 55, 56]])
+        carry_on(parts, obs, lambda crop: crop)
+        assert parts[2].stream == 0 and parts[1].stream != 0
+        assert [o.stream for o in obs[:2]] == [parts[1].stream, 0]
+
+
+def test_the_left_panel_carries_the_stream_when_the_numbers_single_no_panel_out():
+    # No numbers, numbers going on from neither panel, from both, too few readings to count from, and a panel
+    # whose numbers read nothing
+    for numbers in ([[], [], []], [[12, 13], [53, 54], [30, 31]], [[12, 13], [12, 13], [13, 14]],
+                    [[12, 13], [53, 54], [55, None]], [[None, None], [53, 54], [55, 56]]):
+        parts = split_parts(False)
+        parts[0].seg = 1
+        for p in parts[1:]:
+            p.stream = stream_of(p, parts[1:])
+        obs = [panel_view(0, 0.0, 5.0, 1, [marks(1), marks(2)]), panel_view(1, 0.0, 5.0, 2, [marks(3), marks(4)]),
+               panel_view(2, 6.0, 9.0, 0, [marks(5), marks(6)], seg=1)]
+        numbered(obs, numbers)
+        carry_on(parts, obs, lambda crop: crop)
+        assert (parts[1].stream, parts[2].stream) == (0, 3)
+
+
+def test_a_split_screen_s_parts_notice_covers_every_panel_view():
+    parts = split_parts(True)
+    obs = [panel_view(0, 0.0, 4.0, 0, []), panel_view(1, 4.0, 9.0, 1, []), panel_view(2, 4.0, 7.0, 2, []),
+           panel_view(3, 9.0, 15.0, 1, []), panel_view(4, 7.0, 20.0, 2, [])]
+    primary = [SimpleNamespace(view=v) for v in (0, 1, 2)]
+    assert [(n.kind, n.t0, n.t1) for n in part_notices(parts, obs, primary)] == [("parts", 4.0, 20.0)]
+
+
+def test_the_same_measure_read_in_both_panels_at_once_gets_a_duplicate_notice():
+    for other, notices in ((marks(1), 1), (marks(9), 0)):
+        obs = [panel_view(0, 0.0, 5.0, 1, [marks(1)]), panel_view(1, 0.0, 5.0, 2, [other])]
+        A = placed({0: [0], 1: [1]}, obs)
+        found = split_duplicates(A, obs, split_parts(True), 10.0)
+        assert [n.kind for n in found] == ["possible_duplicate"] * notices

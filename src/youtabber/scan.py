@@ -57,12 +57,26 @@ SHORT_MIN_GAPS = 10.0
 # Each scanned frame keeps how much it changed from the frame before, averaged over cells this many pixels square,
 # so the panel bound can tell still paper from footage
 MOTION_CELL = 8
+# A split screen shows two panels side by side with a divider between them: a column at most DIVIDER_GAPS line gaps
+# wide, within DIVIDER_MIDDLE of the staff's width, unlike paper on DIVIDER_COVER of the rows from 2 gaps above the
+# system to 2 below it, that also stands out from the columns beside it on DIVIDER_FOOTAGE of the frame's rows above
+# or below those. A barline stops at its staff, so it fails that last test
+DIVIDER_GAPS, DIVIDER_COVER, DIVIDER_FOOTAGE = 3.0, 0.95, 0.5
+DIVIDER_MIDDLE = (0.2, 0.8)
+# A row stands out when the divider differs by more than DIVIDER_CONTRAST gray levels from every pixel beside it, in
+# the columns DIVIDER_SIDE_PX (nearest, farthest) pixels from its edges. A divider is taken only with at least
+# DIVIDER_SIDE_PX[1] + 1 columns of the frame left of it and DIVIDER_SIDE_PX[1] right of it, so the side columns lie
+# inside the frame
+DIVIDER_CONTRAST = 25
+DIVIDER_SIDE_PX = (4, 6)
 
 
 @dataclass
 class System:
     tab: Staff
     notation: Staff | None
+    panel: bool = field(default=False, repr=False)   # cut from a wider system at a split screen's divider
+    cut_from: "System | None" = field(default=None, repr=False)   # the wider system a panel was cut from
 
     @property
     def top(self) -> float:
@@ -181,6 +195,71 @@ def line_columns(gray: np.ndarray, st: Staff) -> np.ndarray:
     return hits >= 0.5 * len(st.lines)
 
 
+def divider_at(gray: np.ndarray, st: Staff, top: float, rows: tuple[float, float] | None = None) -> int | None:
+    """The x of a split screen's divider through a staff whose system starts at row `top`, or None. The divider
+    must run on through the frame above or below the system, and also above or below `rows` (top, bottom) when
+    given: the rows of the whole stack of staffs over the staff's columns."""
+    h, w = gray.shape
+    gap = st.gap
+    a, b = int(max(0, top - 2 * gap)), int(min(h, st.bottom + 2 * gap))
+    above, below = (a, b) if rows is None else (int(max(0, rows[0] - 2 * gap)), int(min(h, rows[1] + 2 * gap)))
+    band = gray[a:b, st.x0:st.x1].astype(np.int16)
+    if band.size == 0:
+        return None
+    far = np.abs(band - np.median(band)) > 60
+    cover = far.mean(axis=0)
+    n = len(cover)
+    cols = np.flatnonzero(cover >= DIVIDER_COVER)
+    cols = cols[(cols >= DIVIDER_MIDDLE[0] * n) & (cols < DIVIDER_MIDDLE[1] * n)]
+    if not len(cols):
+        return None
+    for r in np.split(cols, np.flatnonzero(np.diff(cols) > 1) + 1):
+        if r[-1] - r[0] + 1 > DIVIDER_GAPS * gap:
+            continue
+        x0, x1 = int(r[0]) + st.x0, int(r[-1]) + st.x0
+        if x0 < DIVIDER_SIDE_PX[1] + 1 or x1 + DIVIDER_SIDE_PX[1] + 1 > w:
+            continue
+
+        def runs_on(lo: int, hi: int) -> bool:
+            for out in (gray[:lo], gray[hi:]):
+                if out.shape[0] < b - a:
+                    continue
+                line = out[:, x0:x1 + 1].astype(np.float32).mean(axis=1)
+                d0, d1 = DIVIDER_SIDE_PX
+                side = np.concatenate([out[:, x0 - d1:x0 - d0 + 1], out[:, x1 + d0:x1 + d1 + 1]],
+                                      axis=1).astype(np.float32)
+                if (np.abs(side - line[:, None]).min(axis=1) > DIVIDER_CONTRAST).mean() >= DIVIDER_FOOTAGE:
+                    return True
+            return False
+
+        if runs_on(a, b) and runs_on(above, below):
+            return (x0 + x1) // 2
+    return None
+
+
+def split_panels(gray: np.ndarray, systems: list["System"]) -> list["System"]:
+    """Each system that runs across a split screen's divider, cut into its left and right panels."""
+    out = []
+    for s in systems:
+        # Staffs stacked over the same columns can share barlines drawn through all of them, so the divider must
+        # run on past the whole stack
+        stack = [o for o in systems if o.tab.x0 < s.tab.x1 and s.tab.x0 < o.tab.x1]
+        rows = (min(o.top for o in stack), max(o.tab.bottom for o in stack))
+        # The strings of a strip of chord diagrams cross its lines like dividers
+        x = None if broken_up(gray, s.tab) else divider_at(gray, s.tab, s.top, rows)
+        if x is None:
+            out.append(s)
+            continue
+        gap = s.tab.gap
+        for lo, hi in ((s.tab.x0, int(x - gap / 2)), (int(x + gap / 2), s.tab.x1)):
+            tab = Staff(s.tab.lines, max(lo, s.tab.x0), min(hi, s.tab.x1), s.tab.gap, s.tab.polarity, s.tab.dashed)
+            n = s.notation
+            if n is not None:
+                n = Staff(n.lines, max(lo, n.x0), min(hi, n.x1), n.gap, n.polarity, n.dashed)
+            out.append(System(tab, n, True, s))
+    return out
+
+
 def systems_in(gray: np.ndarray, whole_lines: bool = False) -> list[System]:
     """Tab staffs in a frame, each with the notation staff drawn above it if there is one.
 
@@ -269,7 +348,8 @@ def scan(path: Path, width: int, height: int, region: tuple[int, int, int, int] 
         if progress is not None:
             progress(t)
         g = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
-        found[t] = [s for s in systems_in(g) if region is None or inside(s, region)]
+        whole = systems_in(g)
+        found[t] = [s for s in split_panels(g, whole) if region is None or inside(s, region)]
         # How much each part of the frame changed since the frame before, and where each staff's lines are drawn
         h, w = g.shape
         motion = None if before is None else cv2.resize(cv2.absdiff(g, before), (w // MOTION_CELL, h // MOTION_CELL),
@@ -278,9 +358,16 @@ def scan(path: Path, width: int, height: int, region: tuple[int, int, int, int] 
         for s in found[t]:
             s.motion = motion
             s.lines_at = line_columns(g, s.tab)
+            # A panel's lines run on into the panel beside it; only its own columns count for its bound
+            if s.panel:
+                s.lines_at[:s.tab.x0] = False
+                s.lines_at[s.tab.x1:] = False
         # Paper is sampled between the lines of every staff in the frame, including staffs a segment later drops
-        # as footage (guitar strings), so a segment's paper color can come partly from the footage
-        for s in found[t]:
+        # as footage (guitar strings), so a segment's paper color can come partly from the footage. The staffs are
+        # sampled whole, before any divider cut, so a staff cut into panels counts as often as one that isn't. A
+        # staff whose middle is outside the region is sampled when one of its panels is kept
+        kept = {id(s.cut_from) for s in found[t] if s.cut_from is not None}
+        for s in (s for s in whole if region is None or inside(s, region) or id(s) in kept):
             st = s.tab
             for a, b in zip(st.lines, st.lines[1:]):
                 row = f[int(round((a + b) / 2)), st.x0:st.x1]

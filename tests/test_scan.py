@@ -163,3 +163,54 @@ def test_a_brief_page_left_out_before_a_turn_has_a_notice_when_it_has_the_tabs_l
     found = passed_notices(segments)
     assert [(w.t0, w.t1) for w in found] == notices
     assert all(w.kind == "dropped_opening" and w.doubt for w in found)
+
+
+def split_frame(divider_through_footage: bool):
+    """A gray frame: footage noise above and below a paper band holding one tab staff across the width, with a dark
+    column at x 960 through the band, and through the footage when `divider_through_footage`."""
+    rng = np.random.default_rng(0)
+    g = rng.integers(60, 256, (1080, 1920)).astype(np.uint8)
+    g[TOP - 3 * GAP:TOP + 8 * GAP] = 255
+    for i in range(6):
+        g[TOP + i * GAP, 100:1820] = 0
+    if divider_through_footage:
+        g[:, 959:962] = 0
+    else:
+        g[TOP:TOP + 5 * GAP + 1, 959:962] = 0
+    st = scan_module.Staff([TOP + i * GAP for i in range(6)], 100, 1820, GAP, "dark")
+    return g, scan_module.System(st, None)
+
+
+def test_a_column_running_through_the_staff_and_the_footage_is_a_divider():
+    g, s = split_frame(True)
+    assert abs(scan_module.divider_at(g, s.tab, s.top) - 960) <= 1
+
+
+def test_a_barline_that_stops_at_its_staff_is_no_divider():
+    g, s = split_frame(False)
+    assert scan_module.divider_at(g, s.tab, s.top) is None
+
+
+def test_a_system_across_a_divider_is_cut_into_two_panels():
+    g, s = split_frame(True)
+    left, right = scan_module.split_panels(g, [s])
+    assert (left.tab.x0, right.tab.x1) == (100, 1820)
+    assert left.tab.x1 < 960 < right.tab.x0
+    assert left.panel and right.panel
+
+
+def test_a_barline_drawn_through_two_stacked_staffs_is_no_divider():
+    # Footage above a paper band at the bottom of the frame holding two tab staffs, with a dark column at x 960
+    # (a barline under the edge of a highlight box) running from above the upper staff through the lower one
+    rng = np.random.default_rng(0)
+    g = rng.integers(60, 256, (1080, 1920)).astype(np.uint8)
+    lower = 1080 - 7 * GAP
+    upper = lower - 10 * GAP
+    g[upper - 3 * GAP:] = 255
+    for top in (upper, lower):
+        for i in range(6):
+            g[top + i * GAP, 100:1820] = 0
+    g[upper - 2 * GAP:lower + 5 * GAP + 1, 959:962] = 0
+    systems = [scan_module.System(scan_module.Staff([top + i * GAP for i in range(6)], 100, 1820, GAP, "dark"), None)
+               for top in (upper, lower)]
+    assert [s.panel for s in scan_module.split_panels(g, systems)] == [False, False]

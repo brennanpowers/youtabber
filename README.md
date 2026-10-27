@@ -114,8 +114,10 @@ read, or several parts it can't tell apart) it makes no PDF and says why.
   the latest [yt-dlp](https://github.com/yt-dlp/yt-dlp).
 - Text tab (`e|--3--`), tab drawn see-through over the video, and tab drawn without barlines aren't read.
 - Light gray barlines on light paper can be missed, so two bars print as one. These usually show up as
-  spots to check.
-- Split screens, or two bands of tab playing different parts, are often refused rather than read.
+  spots to check: a faint line that may be a barline.
+- Split screens are read panel by panel, but one whose full width doesn't hold still, such as tracks
+  moving between panels, is refused, or left out when it isn't the main part. Two bands of tab playing
+  different parts are refused when their screens can't be put in order.
 - A compilation of several songs prints as one PDF, without song labels.
 
 ## Please be nice

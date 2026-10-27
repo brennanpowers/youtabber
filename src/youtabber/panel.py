@@ -38,19 +38,20 @@ def layout_of(ss: list, gap: float) -> tuple[int, ...]:
     return tuple(sorted(round(2 * s.tab.top / gap) for s in ss if abs(s.tab.gap - gap) <= LAYOUT_GAP_SHARE * gap))
 
 
-def panel_bounds(found: dict, seg):
+def panel_bounds(found: dict, seg, cols: tuple[int, int] | None = None):
     """A function of time giving the box (x0, y0, x1, y1, crop coordinates) that the part's panel stays inside at
     that time, or None where there is no clear bound; None instead of a function when there is none at any time.
     Each layout, the frames whose staffs sit in the same rows, gets its own box, so a title page with its staff
     lower or wider than the pages after it keeps its own columns and rows. `found` holds the part's systems at each
-    scan time. The function's `layouts` lists each layout's first and last time, frame count and box."""
+    scan time, and `cols` gives the source columns of the crop when it is narrower than the segment. The function's
+    `layouts` lists each layout's first and last time, frame count and box."""
     times = [t for t in sorted(found) if seg.t0 <= t <= seg.t1 and found[t]]
     if not times or any(getattr(s, "lines_at", None) is None for t in times for s in found[t]):
         return None
     groups: dict[tuple, list[float]] = {}
     for t in times:
         groups.setdefault(layout_of(found[t], seg.gap), []).append(t)
-    boxes = {k: layout_bound([found[t] for t in ts], seg) for k, ts in groups.items()
+    boxes = {k: layout_bound([found[t] for t in ts], seg, cols) for k, ts in groups.items()
              if k and len(ts) >= MIN_LAYOUT_FRAMES}
     if not any(boxes.values()):
         return None
@@ -71,10 +72,10 @@ def panel_bounds(found: dict, seg):
     return bound_at
 
 
-def layout_bound(systems: list[list], seg) -> tuple[int, int, int, int] | None:
+def layout_bound(systems: list[list], seg, cols: tuple[int, int] | None = None) -> tuple[int, int, int, int] | None:
     """(x0, y0, x1, y1) in crop coordinates for one layout's frames, each a list of systems, or None when they give
     no clear bound. Columns run from the first to the last where the staff lines are drawn, inside the still columns
-    around them; rows are the still rows around the staffs."""
+    around them; rows are the still rows around the staffs. `cols` is as in `panel_bounds`."""
     w = len(systems[0][0].lines_at)
     share = np.mean([np.any([s.lines_at for s in ss], axis=0) for ss in systems], axis=0)
     moved = [(ss[0].motion, ss) for ss in systems if getattr(ss[0], "motion", None) is not None]
@@ -131,4 +132,8 @@ def layout_bound(systems: list[list], seg) -> tuple[int, int, int, int] | None:
             y0 = max(y0, int((up[-1] + 1) * cell))
         if len(down):
             y1 = min(y1, int((r1 + down[0]) * cell))
-    return (max(0, x0 - seg.x0), max(0, y0 - seg.y0), min(seg.x1, x1) - seg.x0, max(0, y1 - seg.y0))
+    p0, p1 = (seg.x0, seg.x1) if cols is None else cols
+    # A bound reaching less than a staff's width into the panel's columns would print an empty panel
+    if min(p1, x1) - max(p0, x0) < MIN_STAFF_GAPS * gap:
+        return None
+    return (max(0, x0 - p0), max(0, y0 - seg.y0), min(p1, x1) - p0, max(0, y1 - seg.y0))
