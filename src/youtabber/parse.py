@@ -232,11 +232,28 @@ def staff_extent(struct: np.ndarray, lines: list[float], x0: int, x1: int, gap: 
     return walk(x0, -1), walk(x1 - 1, 1) + 1
 
 
-def number_crop(g: np.ndarray, marks: np.ndarray, top: float, top_gap: float, bar_x: int) -> np.ndarray | None:
+# A digit of a measure number is at most this many line gaps of its staff tall; some scores print numbers larger than
+# the staff's spaces
+NUMBER_DIGIT_GAPS = 2.0
+# A mark at most this many line gaps wide that runs down past the top staff line is the top end of a barline or a
+# stem, not a digit
+STUB_GAPS = 0.3
+# A barline's width is read this many line gaps below the top staff line, clear of the line itself
+BAR_PROBE_GAPS = 0.3
+# A digit of a measure number covers at least this many pixels; a smaller mark is a speck
+MIN_DIGIT_AREA = 6
+# A mark not taken for a digit, level with a number and this many digit heights or less from its side, may hold the
+# number's first or last digit merged with a stem or a line
+MERGED_DIGIT_GAP = 0.6
+
+
+def number_crop(g: np.ndarray, marks: np.ndarray, top: float, top_gap: float, bar_x: int,
+                panel_top: int = 0) -> np.ndarray | None:
     """Gray crop of the small mark group above the top staff line nearest the barline at bar_x, if any.
 
     Measure numbers sit just above the staff at the start of the measure (or just left of it at a
-    system start). `marks` is every visible mark, faint ones included.
+    system start). `marks` is every visible mark, faint ones included. Above row `panel_top` the plate is painted
+    paper, so a group starting at the panel's top row is a number cut by the panel's top edge.
     """
     h, w = g.shape
     y0, y1 = int(max(0, top - 2.6 * top_gap)), int(max(0, top + 0.4 * top_gap))
@@ -244,9 +261,19 @@ def number_crop(g: np.ndarray, marks: np.ndarray, top: float, top_gap: float, ba
     if y1 - y0 < 4 or x1 - x0 < 4:
         return None
     sub = marks[y0:y1, x0:x1].astype(np.uint8)
+    # Clear the barline's columns from just above the top line down, so a digit touching the barline is read without it
+    probe = min(sub.shape[0] - 1, int(top + BAR_PROBE_GAPS * top_gap) - y0)
+    c0 = c1 = min(max(bar_x - x0, 0), sub.shape[1] - 1)
+    while c0 > 0 and sub[probe, c0 - 1]:
+        c0 -= 1
+    while c1 + 1 < sub.shape[1] and sub[probe, c1 + 1]:
+        c1 += 1
+    sub[max(0, int(top) - 1 - y0):, max(0, c0 - 1):c1 + 2] = 0
     n, _, stats, _ = cv2.connectedComponentsWithStats(sub, connectivity=8)
     boxes = [stats[i] for i in range(1, n)
-             if max(5, 0.2 * top_gap) <= stats[i][3] <= 1.6 * top_gap and stats[i][2] <= 1.4 * top_gap and stats[i][4] >= 6]
+             if max(5, 0.2 * top_gap) <= stats[i][3] <= NUMBER_DIGIT_GAPS * top_gap and stats[i][2] <= 1.4 * top_gap
+             and stats[i][4] >= MIN_DIGIT_AREA
+             and not (stats[i][1] + stats[i][3] >= y1 - y0 and stats[i][2] <= STUB_GAPS * top_gap)]
     if not boxes:
         return None
     # Digits of one number sit side by side with small gaps; take the group nearest the barline
@@ -268,12 +295,13 @@ def number_crop(g: np.ndarray, marks: np.ndarray, top: float, top_gap: float, ba
         right = gr[-1][0] + gr[-1][2]
         return 0 if left - 0.6 * top_gap <= rel <= right + 0.6 * top_gap else min(abs(left - rel), abs(right - rel))
 
-    # A measure number has at most three digits; a longer group is a word such as "let ring" printed nearby
-    groups = [gr for gr in groups if len(gr) <= 3]
+    # A measure number has at most three digits; a longer group is a word such as "let ring" printed nearby. A group
+    # starting at the panel's top row is cut off
+    groups = [gr for gr in groups if len(gr) <= 3 and min(b[1] for b in gr) + y0 > panel_top]
     if not groups:
         return None
     best = min(groups, key=dist)
-    if dist(best) > 1.0 * top_gap:
+    if dist(best) > 1.0 * top_gap or merged_beside(stats[1:], boxes, best):
         return None
     gx0 = min(b[0] for b in best) + x0
     gx1 = max(b[0] + b[2] for b in best) + x0
@@ -281,6 +309,21 @@ def number_crop(g: np.ndarray, marks: np.ndarray, top: float, top_gap: float, ba
     gy1 = max(b[1] + b[3] for b in best) + y0
     pad = 2
     return g[max(0, gy0 - pad):gy1 + pad, max(0, gx0 - pad):gx1 + pad].copy()
+
+
+def merged_beside(stats: np.ndarray, boxes: list, group: list) -> bool:
+    """True when a mark not taken for a digit stands level with the group, within MERGED_DIGIT_GAP digit heights of its
+    side: reading the group alone could drop a digit, such as the 2 of 12 joined to a stem."""
+    left, right = group[0][0], group[-1][0] + group[-1][2]
+    top, bottom = min(b[1] for b in group), max(b[1] + b[3] for b in group)
+    reach = MERGED_DIGIT_GAP * max(b[3] for b in group)
+    digits = {tuple(b) for b in boxes}
+    for x, y, bw, bh, area in stats:
+        if (x, y, bw, bh, area) in digits or area < MIN_DIGIT_AREA or not (y < bottom and y + bh > top):
+            continue
+        if 0 <= x - right <= reach or 0 <= left - (x + bw) <= reach:
+            return True
+    return False
 
 
 # An end-repeat sign's dots are DOT_SIZE line gaps across and stand one above the other: at most DOT_ALIGN line gaps
@@ -612,7 +655,7 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
                 continue
             top = (ps.system.notation or st).top
             top_gap = (ps.system.notation or st).gap
-            crop = number_crop(sub, marks, top, top_gap, a)
+            crop = number_crop(sub, marks, top, top_gap, a, ry0)
             complete = kind == "full" or (kind == "lead" and starts_inside) or (kind == "tail" and ends_inside)
             cell = Cell(vi, si, len(ps.cells), a, b, kind, box_ink, box_faint, ps.y0, crop,
                         gap=st.gap, ref_y=int(round(st.top)) - ps.y0, mid_y=(st.top + st.bottom) / 2,

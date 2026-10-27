@@ -116,6 +116,139 @@ def test_a_measure_number_with_a_word_beside_it_is_still_read():
     assert crop is not None and crop.shape[1] == 6 + 2 * 2
 
 
+def test_a_barline_beside_a_number_is_not_taken_for_a_digit():
+    from youtabber.parse import number_crop
+    # Staff top at row 100, gap 14, a barline at x 200 from the top line down, and one digit just above the line
+    # right of it
+    g = np.full((200, 400), 255, np.uint8)
+    g[100:170, 200:202] = 0
+    g[86:98, 204:211] = 0
+    crop = number_crop(g, g < 128, top=100.0, top_gap=14.0, bar_x=200)
+    assert crop is not None and crop.shape == (12 + 2 * 2, 7 + 2 * 2) and crop.min() == 0
+
+
+def test_a_number_whose_last_digit_joins_a_stem_is_not_cropped():
+    from youtabber.parse import number_crop
+    # A "1" just right of the barline at x 200, and its second digit merged with a note stem rising past the staff
+    g = np.full((200, 400), 255, np.uint8)
+    g[86:98, 204:206] = 0
+    g[86:98, 209:215] = 0
+    g[60:98, 214:216] = 0
+    assert number_crop(g, g < 128, top=100.0, top_gap=14.0, bar_x=200) is None
+
+
+def test_a_number_cut_by_the_panel_top_is_not_cropped():
+    from youtabber.parse import number_crop
+    # The panel starts at row 88, so only the lower part of a number above the barline at x 200 shows
+    g = np.full((200, 400), 255, np.uint8)
+    g[88:98, 204:211] = 0
+    assert number_crop(g, g < 128, top=100.0, top_gap=14.0, bar_x=200, panel_top=88) is None
+    assert number_crop(g, g < 128, top=100.0, top_gap=14.0, bar_x=200) is not None
+
+
+def test_a_digit_touching_the_barline_is_cropped_without_it():
+    from youtabber.parse import number_crop
+    # A barline at x 200 from the top line at row 100 down, and a digit right of it that runs down into the line and
+    # touches the barline there
+    g = np.full((200, 400), 255, np.uint8)
+    g[100:170, 200:202] = 0
+    g[88:101, 202:209] = 0
+    crop = number_crop(g, g < 128, top=100.0, top_gap=14.0, bar_x=200)
+    assert crop is not None and crop.shape == (13 + 2 * 2, 7 + 2 * 2)
+
+
+def test_a_thin_mark_running_down_past_the_top_line_is_no_digit():
+    from youtabber.parse import number_crop
+    # Gap 20: the crop window ends at row 108, and STUB_GAPS 0.3 allows marks up to 6 columns wide
+    def crop(x1: int, y1: int):
+        g = np.full((200, 400), 255, np.uint8)
+        g[100:170, 200:202] = 0
+        g[90:y1, 206:x1] = 0
+        return number_crop(g, g < 128, top=100.0, top_gap=20.0, bar_x=200)
+
+    assert crop(212, 140) is None
+    assert crop(213, 140) is not None
+    # The same 6 columns ending one row above the window's bottom
+    assert crop(212, 108) is None
+    assert crop(212, 107) is not None
+
+
+def test_digits_up_to_two_line_gaps_tall_are_cropped():
+    from youtabber.parse import number_crop
+    # Gap 14: NUMBER_DIGIT_GAPS 2.0 allows digits up to 28 rows tall
+    def crop(y0: int):
+        g = np.full((200, 400), 255, np.uint8)
+        g[y0:98, 204:211] = 0
+        return number_crop(g, g < 128, top=100.0, top_gap=14.0, bar_x=200)
+
+    tall = crop(70)
+    assert tall is not None and tall.shape == (28 + 2 * 2, 7 + 2 * 2)
+    assert crop(69) is None
+
+
+def test_a_mark_close_beside_a_number_and_level_with_it_stops_the_crop():
+    from youtabber.parse import number_crop
+    # A digit 10 rows tall at columns 204-209: MERGED_DIGIT_GAP 0.6 reaches 6 columns past either side
+    def crop(rows: tuple[int, int], cols: tuple[int, int]):
+        g = np.full((200, 400), 255, np.uint8)
+        g[86:96, 204:210] = 0
+        g[rows[0]:rows[1], cols[0]:cols[1]] = 0
+        return number_crop(g, g < 128, top=100.0, top_gap=14.0, bar_x=200)
+
+    # A stem too tall for a digit, right then left of the number
+    assert crop((60, 96), (216, 218)) is None
+    assert crop((60, 96), (217, 219)) is not None
+    assert crop((60, 96), (196, 198)) is None
+    assert crop((60, 96), (195, 197)) is not None
+    # A mark too wide for a digit, ending just above the number or reaching one row into it
+    assert crop((70, 86), (211, 240)) is not None
+    assert crop((70, 87), (211, 240)) is None
+    # A speck of 5 pixels is ignored, one of 6 is not
+    assert crop((90, 91), (213, 218)) is not None
+    assert crop((90, 91), (213, 219)) is None
+
+
+def test_a_mark_starting_on_a_numbers_bottom_row_is_level_with_it():
+    from youtabber.parse import number_crop
+    # A digit on rows 86-95, and a mark too wide for a digit just right of it, starting on row 95 or row 96
+    def crop(y0: int):
+        g = np.full((200, 400), 255, np.uint8)
+        g[86:96, 204:210] = 0
+        g[y0:100, 211:240] = 0
+        return number_crop(g, g < 128, top=100.0, top_gap=14.0, bar_x=200)
+
+    assert crop(95) is None
+    assert crop(96) is not None
+
+
+def test_a_digit_touching_a_thick_barline_is_cropped_without_it():
+    from youtabber.parse import number_crop
+    # A barline 6 columns wide (200-205) found at its middle, and a digit touching its right side down into the line
+    g = np.full((200, 400), 255, np.uint8)
+    g[100:170, 200:206] = 0
+    g[88:101, 206:213] = 0
+    crop = number_crop(g, g < 128, top=100.0, top_gap=14.0, bar_x=203)
+    assert crop is not None and crop.shape == (13 + 2 * 2, 7 + 2 * 2)
+
+
+def test_a_number_starting_one_row_below_the_panel_top_is_cropped():
+    from youtabber.parse import number_crop
+    g = np.full((200, 400), 255, np.uint8)
+    g[89:98, 204:211] = 0
+    assert number_crop(g, g < 128, top=100.0, top_gap=14.0, bar_x=200, panel_top=88) is not None
+
+
+def test_parse_view_leaves_out_a_number_cut_by_the_panel_top():
+    # The number 12 above the barline at 400 starts at row 43
+    def crop(panel_top: int):
+        cells = [c for ps in parse_view(0, numbered((0, 0, 0)), (0, panel_top, 800, 200), "dark", 140.0, 229.0, 14.0)
+                 for c in ps.cells]
+        return next(c for c in cells if abs(c.x0 - 400) <= 2).number_crop
+
+    assert crop(42) is not None
+    assert crop(43) is None
+
+
 def closing_staff(after: str) -> np.ndarray:
     """Barlines at 100 and 400 and a closing barline (thin at 700, thick 708-714), then paper or dark footage."""
     img = np.full((200, 800, 3), 255, np.uint8)
