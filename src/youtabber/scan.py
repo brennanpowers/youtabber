@@ -54,6 +54,9 @@ SCROLL_SECONDS = 10.0
 SHORT_ALIGN_GAPS = 3.0
 # ...and is at least this many line gaps long, room for two measures
 SHORT_MIN_GAPS = 10.0
+# Each scanned frame keeps how much it changed from the frame before, averaged over cells this many pixels square,
+# so the panel bound can tell still paper from footage
+MOTION_CELL = 8
 
 
 @dataclass
@@ -170,6 +173,14 @@ def stroke_near(gray: np.ndarray, st: Staff, x: int) -> bool:
     return bool(ink.size and ink.mean(axis=0).max() >= STROKE_COVER)
 
 
+def line_columns(gray: np.ndarray, st: Staff) -> np.ndarray:
+    """Columns where at least half of the staff's lines are drawn in this frame."""
+    a = max(0, int(st.top) - 4)
+    resp = thin_response(gray[a:int(st.bottom) + 5], st.polarity)
+    hits = sum(resp[max(0, int(round(y)) - a - 1):int(round(y)) - a + 2].any(axis=0) for y in st.lines)
+    return hits >= 0.5 * len(st.lines)
+
+
 def systems_in(gray: np.ndarray, whole_lines: bool = False) -> list[System]:
     """Tab staffs in a frame, each with the notation staff drawn above it if there is one.
 
@@ -253,11 +264,20 @@ def scan(path: Path, width: int, height: int, region: tuple[int, int, int, int] 
     continuously (read by nothing, so they are reported). `progress(t)` is called with each scanned frame's time."""
     found: dict[float, list[System]] = {}
     papers: list[tuple[float, np.ndarray]] = []
+    before = None
     for t, f in frames(path, SCAN_FPS):
         if progress is not None:
             progress(t)
         g = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
         found[t] = [s for s in systems_in(g) if region is None or inside(s, region)]
+        # How much each part of the frame changed since the frame before, and where each staff's lines are drawn
+        h, w = g.shape
+        motion = None if before is None else cv2.resize(cv2.absdiff(g, before), (w // MOTION_CELL, h // MOTION_CELL),
+                                                        interpolation=cv2.INTER_AREA)
+        before = g
+        for s in found[t]:
+            s.motion = motion
+            s.lines_at = line_columns(g, s.tab)
         # Paper is sampled between the lines of every staff in the frame, including staffs a segment later drops
         # as footage (guitar strings), so a segment's paper color can come partly from the footage
         for s in found[t]:

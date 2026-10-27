@@ -20,6 +20,7 @@ from youtabber.match import resemble_scaled
 from youtabber.observe import (ABOVE_GAPS, BELOW_GAPS, OBS_FPS, PRINT_ABOVE_GAPS, ink_map, ink_threshold, set_paper,
                                to_gray, views_in)
 from youtabber.parse import Cell, bare_header, line_darkness, parse_view, staff_ink
+from youtabber.panel import panel_bounds
 from youtabber.parts import Part, find_parts, merge_order, stream_of
 from youtabber.scan import SCAN_FPS, Segment, scan
 from youtabber.staff import find_staffs
@@ -290,11 +291,14 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
                 if reached is not None:
                     reached(seg.t1)
                 continue
+            bound_at = panel_bounds(part_found, seg)
+            if bound_at is not None:
+                part_seed = bounded_seed(part_seed, bound_at)
             # Before a later segment, a screen cut short by a fade or a card is a transition whose music shows again
             # after it, so only the last segment keeps such a screen
             views, thr, fthr = views_in(path, crop, seg.polarity, seg.gap, seg.paper, part_seed, seg.t0, seg.t1,
                                         "playhead" in EVIDENCE, progress=reached, lead=lead_before(segments, si),
-                                        last_screen=si == len(segments) - 1)
+                                        last_screen=si == len(segments) - 1, bound_at=bound_at)
             held = sum(v.t1 - v.t0 for v in views)
             shown = part.seen if part.kind == "band" else seg.t1 - seg.t0
             if shown >= GLIDE_MIN_SECONDS and held < HELD_SHARE * shown:
@@ -1248,6 +1252,19 @@ def seed_function(found, seg):
         return (int(min(x.tab.x0 for x in sy)) - seg.x0, int(min(x.top for x in sy)) - seg.y0,
                 int(max(x.tab.x1 for x in sy)) - seg.x0, int(max(x.tab.bottom for x in sy)) - seg.y0)
     return seed_at
+
+
+def bounded_seed(seed_at, bound_at):
+    """The seed function with its boxes kept inside the panel bound's columns, so a staff whose lines the scan
+    followed into footage seeds its panel on the paper."""
+    def seed_in(t):
+        b = seed_at(t)
+        bound = bound_at(t)
+        if b is None or bound is None:
+            return b
+        x0, x1 = max(b[0], bound[0]), min(b[2], bound[2])
+        return (x0, b[1], x1, b[3]) if x1 > x0 else b
+    return seed_in
 
 
 def bands_function(found, seg):

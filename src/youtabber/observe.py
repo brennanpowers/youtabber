@@ -273,16 +273,31 @@ def panel_rect(frame: np.ndarray, paper: np.ndarray, seed: tuple[int, int, int, 
     return x0, y0, x1, y1
 
 
+def within(rect: tuple[int, int, int, int], bound: tuple[int, int, int, int] | None,
+           keep: tuple[int, int] | None = None) -> tuple[int, int, int, int]:
+    """The rect cut to the bound (both x0, y0, x1, y1). `keep` gives rows (top, bottom) the cut never reaches."""
+    if bound is None:
+        return rect
+    x0, y0, x1, y1 = rect
+    bx0, by0, bx1, by1 = bound
+    if keep is not None:
+        by0, by1 = min(by0, keep[0]), max(by1, keep[1])
+    x0, x1 = max(x0, bx0), min(x1, bx1)
+    y0, y1 = max(y0, by0), min(y1, by1)
+    return x0, y0, max(x0 + 1, x1), max(y0 + 1, y1)
+
+
 def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: float, paper: np.ndarray,
              seed_at, t_start: float, t_end: float, use_playhead: bool = True,
              progress: Callable[[float], None] | None = None, lead: float = 0.0,
              thresholds: tuple[float, float] | None = None,
-             last_screen: bool = False) -> tuple[list[View], float, float]:
+             last_screen: bool = False, bound_at=None) -> tuple[list[View], float, float]:
     """Still views between t_start and t_end, and the ink threshold used. A brief screen in the `lead` seconds
     before t_start, which the scan's steps missed, comes first; it is read with the staffs' box at t_start and the
     threshold of the views after it. `thresholds` gives the ink thresholds instead of reading them from the first
     frame. With `last_screen`, a screen held briefly after the last view is kept even when a fade or a cut after it
-    ends it before t_end.
+    ends it before t_end. `bound_at(t)`, when given, is the box (crop coordinates) of the paper the tab is drawn on
+    at time t, or None: panel rects stay inside it, except the rows of the staffs themselves.
 
     `seed_at(t)` gives the staffs' box at time t in crop coordinates, from the scan. `progress(t)` is called with
     each frame's time.
@@ -348,7 +363,9 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         mid_seed = chunk[len(chunk) // 2][3]
         # On a dark theme, footage in a dark room looks like paper, so the print area keeps the panel's reach
         above, below = (ABOVE_GAPS, BELOW_GAPS) if polarity == "light" else (PRINT_ABOVE_GAPS, PRINT_BELOW_GAPS)
-        v.print_rect = panel_rect(plate, paper, mid_seed, gap, above, below, for_print=True)
+        mid_bound = bound_at(chunk[len(chunk) // 2][0]) if bound_at is not None else None
+        v.print_rect = within(panel_rect(plate, paper, mid_seed, gap, above, below, for_print=True), mid_bound,
+                              (int(mid_seed[1] - PRINT_MARGIN_GAPS * gap), int(mid_seed[3] + PRINT_MARGIN_GAPS * gap)))
         for t, f, _, _ in chunk:
             p = points.get(t) if f is None else playhead_at(f, plate, rect)
             if p is not None:
@@ -461,7 +478,8 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         g = to_gray(f, polarity)
         if thr is None:
             thr, fthr = ink_threshold(g[max(0, seed[1]):seed[3], max(0, seed[0]):seed[2]], paper, polarity)
-        rect = panel_rect(f, paper, seed, gap)
+        rect = within(panel_rect(f, paper, seed, gap), bound_at(t) if bound_at is not None else None,
+                      (seed[1], seed[3]))
         if ref is None:
             ref = start(t, f, g, rect, seed)
             cur, stride, points = [(t, f, rect, seed)], 1, {}
@@ -491,6 +509,6 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         views.append(v)
     if lead and thr is not None and seed_at(t_start) is not None:
         before, _, _ = views_in(path, crop, polarity, gap, paper, lambda _: seed_at(t_start), t_start - lead, t_start,
-                                use_playhead, thresholds=(thr, fthr))
+                                use_playhead, thresholds=(thr, fthr), bound_at=bound_at)
         views[:0] = before
     return views, (thr or 128.0), (fthr or 230.0)

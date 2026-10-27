@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 
 from youtabber.observe import PRINT_ABOVE_GAPS, PRINT_BELOW_GAPS, PRINT_MARGIN_GAPS, colored, gray_pixels, ink_map, to_gray
-from youtabber.scan import System, systems_in
+from youtabber.scan import System, line_columns, systems_in
 from youtabber.staff import without_border
 
 # A barline covers at least this share of the rows between the tab staff's top and bottom lines
@@ -22,6 +22,9 @@ BAR_SIDE_INK = 0.45
 MIN_CELL = 1.5
 # A staff that starts or ends this many line gaps inside the panel starts or ends there, not at the panel edge
 INSIDE_GAPS = 1.0
+# A lead or tail cell is a measure only where the staff lines are drawn across at least this share of the columns
+# they cover in the system's whole measures
+EDGE_LINES_SHARE = 0.5
 # A colored mark at most this many tab line gaps tall and wide may be a digit of a colored measure number
 DIGIT_GAPS = 1.6
 # Line groups spaced closer than this share of the view's widest-spaced tab staff are not tab staffs
@@ -568,6 +571,11 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
         cut_off = len(st.lines) < most_lines and st.bottom + CUT_STAFF_GAPS * st.gap >= g.shape[0]
         edges: list[tuple[int, int, str]] = []
         xs = [b for b in ps.bars]
+        # How fully the lines show inside the system's whole measures: faint lines on a small frame show in fewer
+        # columns, so an edge cell is held to that. A system with no whole measure keeps its edge cells
+        lines_x = line_columns(g, st)
+        whole = [lines_x[a:b].mean() for (a, _), (b, _) in zip(xs, xs[1:]) if b - a >= MIN_CELL * st.gap]
+        drawn = float(np.median(whole)) if whole else 0.0
         if xs and xs[0][0] - st.x0 > MIN_CELL * st.gap:
             edges.append((st.x0, xs[0][0], "lead"))
         for (a, _), (b, _) in zip(xs, xs[1:]):
@@ -598,6 +606,9 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
             box_faint[max(0, int(ps.system.top) - ps.y0):] = False
             # Content of a lead or tail cell that is only staff lines is no measure
             if kind != "full" and box_ink.sum() < 0.1 * st.gap * st.gap:
+                continue
+            # Nor is one where most of the staff lines stop: footage beside the paper that the staff was followed into
+            if kind != "full" and lines_x[a:b].mean() < EDGE_LINES_SHARE * drawn:
                 continue
             top = (ps.system.notation or st).top
             top_gap = (ps.system.notation or st).gap
