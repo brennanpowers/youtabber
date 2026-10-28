@@ -64,6 +64,12 @@ def test_a_held_page_with_no_playhead_seen_joins_in_place_unconfirmed():
     assert track_join(p, o, 10.0) == ({0: 0, 1: 1, 2: 2, 3: 3}, "still?")
 
 
+def test_steps_that_turn_back_to_where_they_started_join_in_place_though_a_long_drawn_shift_ranks_first():
+    p, o = held(p_end=300, o_start=320)
+    o.move = Move("slide", shifts=[-1000, 0], drawn=[True, False], steps=5, moves=[500.0, -500.0])
+    assert track_join(p, o, 10.0) == ({0: 0, 1: 1, 2: 2, 3: 3}, "still")
+
+
 def test_a_held_page_whose_playhead_starts_over_is_not_joined():
     p, o = held(p_end=700, o_start=20)
     assert track_join(p, o, 10.0) is None

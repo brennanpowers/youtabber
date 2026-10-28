@@ -764,7 +764,9 @@ def track_join(p: Obs, o: Obs, gap: float, cands=()) -> tuple[dict[int, int], st
     m = o.move
     if m is None or m.kind not in ("slide", "still") or p.band is None or o.band is None or p.band.shape != o.band.shape:
         return None
-    if m.kind == "slide" and abs(m.shifts[0]) >= gap:
+    # Whether the band slid comes from the shift nearest the plain sum of the steps: steps back and forth that sum
+    # to nothing can still unwrap into a long drawn shift, which ranks first
+    if m.kind == "slide" and abs(min(m.shifts, key=lambda d: abs(d + sum(m.moves)))) >= gap:
         return slide_join(p, o, gap, cands) if p.single and o.single else None
     r = register(p, o, 0, gap, 2)
     if r is None or r[1] > STILL_MISMATCH:

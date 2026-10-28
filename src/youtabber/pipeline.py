@@ -83,6 +83,10 @@ LEAD_IN_GAPS, LEAD_IN_SHARE = 0.5, 0.5
 FIXED_SHARE, FIXED_MIN_VIEWS = 0.85, 4
 # A page turn between two views takes less than this
 TURN_SECONDS = 1.0
+# View moves, and the registration of a view on the one before, look at rows at most this many line gaps above a
+# system's top staff line: a title banner above the music holds still while the page slides, and its text changes
+# between pages
+MOVE_ABOVE_GAPS = 3.5
 # Opening segments lasting INTRO_SECONDS at most are an intro when they end INTRO_BREAK_SECONDS before tab in another
 # layout (panels overlapping under INTRO_OVERLAP of their union, line gaps INTRO_GAP_SHARE or more apart) that holds
 # INTRO_REST_SECONDS of tab. Opening pieces drawn in one layout count as one opening
@@ -1466,11 +1470,17 @@ def first_thresholds(path: Path, crop, seg: Segment, seed_at) -> tuple[float, fl
     return 128.0, 230.0
 
 
+def move_top(ps) -> int:
+    """The highest row of a parsed system that view moves and view registering look at: MOVE_ABOVE_GAPS line gaps
+    above its staffs, so a banner higher up isn't counted."""
+    return int(ps.system.top - MOVE_ABOVE_GAPS * ps.system.tab.gap)
+
+
 def view_move(path: Path, crop, seg: Segment, p: Obs, o: Obs, thr: float, within: tuple[int, int]):
-    """How the band moved from still view p to still view o: measured on the systems' rows and the panels'
-    columns, from p's last frame to o's first. The rows are kept inside `within`, the part's crop rows, so another
-    part shown at the same time doesn't count."""
-    bands = [ps.band for ps in p.systems + o.systems]
+    """How the band moved from still view p to still view o: measured on the systems' rows (up to MOVE_ABOVE_GAPS
+    above their staffs) and the panels' columns, from p's last frame to o's first. The rows are kept inside
+    `within`, the part's crop rows, so another part shown at the same time doesn't count."""
+    bands = [(max(ps.band[0], move_top(ps)), ps.band[1]) for ps in p.systems + o.systems]
     rows = (min(b[0] for b in bands), max(b[1] for b in bands)) if bands else (min(p.rect[1], o.rect[1]),
                                                                               max(p.rect[3], o.rect[3]))
     rows = (max(rows[0], within[0]), min(rows[1], within[1]))
@@ -1517,6 +1527,8 @@ def plate_obs(v, seg: Segment, si: int, thr: float, fthr: float, index: int, col
     keep[y0:y1, x0:x1] = True
     o.band = band & keep
     o.tall = cv2.morphologyEx(o.band.astype(np.uint8), cv2.MORPH_OPEN, np.ones((5, 1), np.uint8)).astype(bool)
+    if systems:
+        o.tall[:max(0, min(move_top(ps) for ps in systems))] = False
     o.image = v.plate
     o.systems = systems
     o.print_rect = v.print_rect

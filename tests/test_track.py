@@ -1,6 +1,10 @@
+from types import SimpleNamespace
+
 import numpy as np
 
-from youtabber import track
+from youtabber import pipeline, track
+from youtabber.observe import View
+from youtabber.scan import Segment
 from youtabber.track import Move, pairs, transition
 
 CROP = (0, 0, 1000, 120)
@@ -51,10 +55,11 @@ def test_one_frame_jump(monkeypatch):
 
 
 def test_wrap_round(monkeypatch):
-    # The 600 px step is longer than half the window, so phase correlation reads it as a 400 px step back
+    # The 600 px step is longer than half the window, so phase correlation reads it as a 400 px step back; the
+    # reading with both steps one way is drawn and comes first, though the raw sum of the steps is -300
     fake_frames(monkeypatch, [0, 0, 100, 700, 700])
     m = run()
-    assert m.shifts == [-300, 700] and m.drawn == [False, True]
+    assert m.shifts == [700, -300] and m.drawn == [True, False]
 
 
 def flip(monkeypatch, bar0):
@@ -89,3 +94,35 @@ def test_pairs_by_key():
     v = [object() for _ in range(4)]
     keys = {id(x): k for x, k in zip(v, [0, 1, 0, 1])}
     assert pairs(v, lambda x: keys[id(x)]) == [(v[0], v[2]), (v[1], v[3])]
+
+
+def test_a_view_move_is_measured_on_rows_near_the_staffs(monkeypatch):
+    # A band reaching 7 line gaps above the staff (into a title banner) is measured from 3.5 gaps above it
+    seen = []
+    monkeypatch.setattr(track, "transition", lambda path, crop, rows, cols, *a: seen.append((rows, cols)))
+    tab = SimpleNamespace(gap=20.0)
+
+    def view(band_top, top=200.0):
+        return SimpleNamespace(systems=[SimpleNamespace(band=(band_top, 330), system=SimpleNamespace(top=top, tab=tab))],
+                               rect=(0, 40, 1000, 340), t0=1.0, t1=1.5)
+    seg = SimpleNamespace(polarity="dark", gap=20.0)
+    pipeline.view_move(None, CROP, seg, view(60), view(140), 140.0, (0, 400))
+    pipeline.view_move(None, CROP, seg, view(160), view(170), 140.0, (0, 400))
+    pipeline.view_move(None, CROP, seg, view(60), view(60), 140.0, (140, 400))
+    assert seen == [((130, 330), (0, 1000)), ((160, 330), (0, 1000)), ((140, 330), (0, 1000))]
+
+
+def test_registration_leaves_out_marks_high_above_the_staffs(monkeypatch):
+    # The staff's top line is at row 200 with a 20 px gap: marks at rows 100-120 are a banner, 140-160 a chord name
+    system = SimpleNamespace(top=200.0, tab=SimpleNamespace(gap=20.0, top=200.0, bottom=300.0))
+    monkeypatch.setattr(pipeline, "parse_view", lambda *a, **kw: [SimpleNamespace(
+        system=system, cells=[], repeat_end=False, repeat_bars=[])])
+    monkeypatch.setattr(pipeline, "line_darkness", lambda *a: (100.0, 250.0))
+    plate = np.full((360, 640, 3), 255, np.uint8)
+    plate[100:120, 100:110] = 0
+    plate[140:160, 300:310] = 0
+    seg = Segment(t0=0, t1=10, gap=20, polarity="dark", y0=0, y1=360, x0=0, x1=640)
+    rect = (0, 0, 640, 360)
+    o = pipeline.plate_obs(View(0.0, 5.0, plate, rect=rect, print_rect=rect), seg, 0, 128.0, 230.0, 0)
+    assert o.band[100:120, 100:110].all() and not o.tall[100:120, 100:110].any()
+    assert o.tall[140:160, 300:310].all()

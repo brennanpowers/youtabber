@@ -90,7 +90,9 @@ def transition(path: Path, crop: tuple[int, int, int, int], rows: tuple[int, int
         d = int(round(-sum(q)))
         big = [x for x in q if abs(x) >= gap]
         found[d] = found.get(d, False) or (len(big) >= 2 and len({x > 0 for x in q if abs(x) >= MOVE_PX}) == 1)
-    best = sorted(found, key=lambda d: abs(d + sum(moves)))
+    # A slide drawn in several steps the same way comes first: steps that turn back and forth are more likely
+    # steps misread the wrong way round
+    best = sorted(found, key=lambda d: (not found[d], abs(d + sum(moves))))
     return Move("slide", best, [found[d] for d in best], n, moves)
 
 
