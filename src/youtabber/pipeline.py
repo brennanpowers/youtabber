@@ -115,7 +115,8 @@ BRIEF_SECONDS, BRIEF_SHARE = 10.0, 0.035
 # Tab whose views find measures for less than READ_SHARE of their time is lines that only look like a staff
 READ_SHARE = 0.12
 # A segment shorter than SMALL_SECONDS whose lines are spaced closer than SMALL_GAP_SHARE of the longest segment's is a
-# small picture of a page (a thumbnail on a promo card or an end screen), not the tab being played
+# small picture of a page (a thumbnail on a promo card or an end screen), not the tab being played. So is a last segment
+# of any length spaced that close when no view of it shows a playhead and the song's views do
 SMALL_SECONDS, SMALL_GAP_SHARE = 10.0, 0.6
 # A segment where several parts print can't be put in order when more than TANGLED_SHARE of its joins between screens
 # are left unresolved, over at least TANGLED_JOINS joins, and so are more than TANGLED_SHARE of its folds
@@ -251,7 +252,10 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
     dropped: list[tuple[float, float, str]] = []
     # (from, to) of each stretch of a glide left unread after the tab panel was redrawn
     unread: list[tuple[float, float]] = []
+    # Whether any still view read so far saw a playhead
+    cursor = False
     for si, seg in enumerate(segments):
+        first = len(obs)
         crop = (seg.x0, seg.y0, seg.x1 - seg.x0, seg.y1 - seg.y0)
         set_paper(seg.paper)
         r.tab_spans.append((round(seg.t0, 2), round(seg.t1, 2)))
@@ -334,6 +338,14 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
                 continue
             thr_of[part.id] = thr
             read_views += [(v, part, thr, fthr) for v in views]
+        # Small pictures of tab on an end screen are left out with their parts. A gliding segment has already added
+        # its views to obs, so it is never one
+        if clips is None and len(obs) == first and end_card(segments, si, [v for v, *_ in read_views], cursor):
+            r.parts = [p for p in r.parts if p.seg != si]
+            r.tab_spans.pop()
+            dropped = [d for d in dropped if d[:2] != (seg.t0, seg.t1)]
+            segments = r.segments = segments[:si]
+            break
         # The parts' views in one list by time, the upper part first when two start together, then the left one
         still = []
         mine = []
@@ -346,6 +358,7 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
             o.part, o.stream = part.id, part.stream
             obs.append(o)
             mine.append(o)
+            cursor = cursor or bool(o.playhead)
             # The reported panel is the print area: the print rect's columns, its systems' bands' rows
             x0, y0, x1, y1 = v.print_rect
             if o.systems:
@@ -1176,6 +1189,16 @@ def drawn_full_size(segments: list[Segment]) -> list[Segment]:
     a promo card or an end screen, not the tab being played."""
     longest = max(segments, key=lambda s: s.t1 - s.t0)
     return [s for s in segments if s.t1 - s.t0 >= SMALL_SECONDS or s.gap >= SMALL_GAP_SHARE * longest.gap]
+
+
+def end_card(segments: list[Segment], si: int, views: list, cursor: bool) -> bool:
+    """True when segment `si` is the last one, its lines are spaced closer than SMALL_GAP_SHARE of the longest
+    segment's, and none of its still `views` saw a playhead while the song's did (`cursor`): small pictures of tab on
+    an end screen, not the song. In a video with no playhead, a segment without one says nothing."""
+    longest = max(segments, key=lambda s: s.t1 - s.t0)
+    seg = segments[si]
+    return (cursor and si == len(segments) - 1 and seg.gap < SMALL_GAP_SHARE * longest.gap
+            and not any(v.playhead for v in views))
 
 
 def intro(segments: list[Segment]) -> int:

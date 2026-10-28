@@ -1,16 +1,20 @@
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import cv2
 import numpy as np
 
-from youtabber import pipeline
+from youtabber import glide, pipeline
 from youtabber.assemble import Assembly, Obs, Slot
 from youtabber.check import empty, screen_breaks
+from youtabber.observe import View
 from youtabber.parse import Cell, parse_view
-from youtabber.pipeline import (Measure, detected_numbers, drawn_full_size, intro, one_layout, overlap_share,
-                                placed_notation, scattered, without_lead_in)
+from youtabber.pipeline import (Measure, detected_numbers, drawn_full_size, end_card, intro, one_layout,
+                                overlap_share, placed_notation, scattered, without_lead_in)
 from youtabber.scan import Segment
+from youtabber.video import VideoInfo
+from test_edge_views import screen
 from test_empty_bar import cell
 
 
@@ -37,6 +41,51 @@ def test_a_short_small_picture_of_the_page_is_left_out():
     assert drawn_full_size([thumbnail, song, insert]) == [song, insert]
     # A long stretch drawn small is still read
     assert drawn_full_size([segment(0, 20, 7.5), song]) == [segment(0, 20, 7.5), song]
+
+
+def still(t0: float, t1: float, playhead: bool = False) -> View:
+    plate = np.full((360, 640, 3), 255, np.uint8)
+    return View(t0, t1, plate, [(t0 + 0.5, 100.0, 50.0)] if playhead else [], rect=(0, 0, 640, 360),
+                print_rect=(0, 0, 640, 360))
+
+
+def test_a_last_segment_drawn_small_with_no_playhead_is_an_end_card():
+    song, card = segment(3.5, 362.0, 30.15), segment(364.0, 382.5, 14.44)
+    assert end_card([song, card], 1, [still(364.0, 370.0), still(370.0, 376.0)], True)
+    # A playhead seen on any of its views makes it music
+    assert not end_card([song, card], 1, [still(364.0, 370.0), still(370.0, 376.0, playhead=True)], True)
+    # Spaced at 0.6 of the song's lines or wider, it is tab drawn at another size
+    assert not end_card([song, segment(364.0, 382.5, 18.09)], 1, [still(364.0, 370.0)], True)
+    # Only the last segment can be one
+    assert not end_card([card, song], 0, [still(364.0, 370.0)], True)
+
+
+def test_a_last_segment_drawn_small_is_read_when_the_song_shows_no_playhead_either():
+    song, coda = segment(0.0, 60.0, 21.49), segment(60.5, 90.0, 9.49)
+    assert not end_card([song, coda], 1, [still(60.5, 90.0)], False)
+
+
+def test_an_end_card_is_left_out_of_the_reading(monkeypatch):
+    paper = np.array([255.0, 255.0, 255.0])
+    song = Segment(0.0, 60.0, 30.0, "dark", paper=paper, x1=640, y1=360)
+    card = Segment(62.0, 80.0, 14.0, "dark", paper=paper, x1=640, y1=360)
+    views = {0.0: [still(0.0, 30.0, playhead=True), still(30.0, 60.0)], 62.0: [still(62.0, 70.0), still(70.0, 80.0)]}
+
+    def plate_obs(v, seg, si, thr, fthr, index, col0=None):
+        o = screen(index, [1, 2, 3])
+        o.t0, o.t1, o.seg, o.systems, o.playhead = v.t0, v.t1, si, [], v.playhead
+        return o
+    monkeypatch.setattr(pipeline, "probe", lambda path: VideoInfo(640, 360, 80.0))
+    monkeypatch.setattr(pipeline, "scan", lambda path, w, h, region=None, progress=None: ([song, card], {}, []))
+    monkeypatch.setattr(glide, "glides", lambda *a: False)
+    monkeypatch.setattr(pipeline, "views_in", lambda path, crop, pol, gap, paper, seed, t0, *a, **kw:
+                        (views[t0], 128.0, 230.0))
+    monkeypatch.setattr(pipeline, "plate_obs", plate_obs)
+    monkeypatch.setattr(pipeline, "view_move", lambda *a: None)
+    monkeypatch.setattr(pipeline, "finish", lambda path, info, r, *a: r)
+    r = pipeline.read(Path("unused.mp4"))
+    assert r.segments == [song] and r.tab_spans == [(0.0, 60.0)]
+    assert [p.seg for p in r.parts] == [0] and [o.t0 for o in r.views] == [0.0, 30.0]
 
 
 def page(notes: bool) -> np.ndarray:
