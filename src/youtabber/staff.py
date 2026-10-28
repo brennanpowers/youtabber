@@ -37,6 +37,11 @@ BEYOND_TOL = 40
 # each dash is long, cover more than DASH_COVER of the line. Paper is within DASH_PAPER gray levels of the paper
 # between the staff's lines
 DASH_GAPS, DASH_COVER, DASH_PAPER = 1.0, 0.3, 40
+# Compression can blur the gaps between typed dashes until the line reads as drawn, so a line also counts as typed when
+# its ink dips at an even pitch. A dip is judged against the line's median ink, so bright digits and stems on a drawn
+# line don't make the line between them look like dips
+DIP_RUN, DIP_PITCH, DIP_STEP_PX = 5, (0.2, 0.5), 2.5
+DIP_NEAR_PX, DIP_FAR_PX, DIP_DEPTH, DIP_INK = 5, 21, 0.6, 60
 
 
 @dataclass
@@ -214,10 +219,34 @@ def runs(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
 
 
+def dip_cover(gray: np.ndarray, st: Staff, y: float) -> float:
+    """Share of the line at `y` covered by runs of evenly spaced dips in the line's ink, the gaps between typed
+    dashes."""
+    y = int(round(y))
+    g = gray[max(0, y - 1):y + 2, st.x0:st.x1].astype(np.float32)
+    p = (255 - g if st.polarity == "dark" else g).max(axis=0)
+    hi = np.minimum(cv2.dilate(p[None], np.ones((1, DIP_FAR_PX), np.uint8))[0], np.median(p))
+    lo = cv2.erode(p[None], np.ones((1, DIP_NEAR_PX), np.uint8))[0]
+    a, b = runs((p <= lo) & (p < DIP_DEPTH * hi) & (hi > DIP_INK))
+    c = (a + b) / 2
+    cover = np.zeros(len(p), bool)
+    i = 0
+    while i < len(c) - 1:
+        j = i
+        while (j + 1 < len(c) and DIP_PITCH[0] * st.gap <= c[j + 1] - c[j] <= DIP_PITCH[1] * st.gap
+               and abs((c[j + 1] - c[j]) - (c[i + 1] - c[i])) <= DIP_STEP_PX):
+            j += 1
+        if j - i >= DIP_RUN - 1:
+            cover[int(c[i]):int(c[j]) + 1] = True
+        i = max(j, i + 1)
+    return float(cover.mean())
+
+
 def dashed(gray: np.ndarray, st: Staff) -> bool:
     """True when most of a staff's lines are rows of typed dashes: short dashes, each with paper either side that is
-    narrower than the dash. A drawn line runs on between the digits on it, a dashed or dotted one leaves more paper
-    than ink, and the lines of a chord diagram are broken by its strings, which are ink."""
+    narrower than the dash, or dashes blurred together whose ink still dips at an even pitch (`dip_cover`).
+    A drawn line runs on between the digits on it, a dashed or dotted one leaves more paper than ink, and the lines
+    of a chord diagram are broken by its strings, which are ink."""
     a = max(0, int(st.top) - 3)
     resp = thin_response(gray[a:int(st.bottom) + 4, st.x0:st.x1], st.polarity)
     g = gray[:, st.x0:st.x1].astype(np.int16)
@@ -232,7 +261,7 @@ def dashed(gray: np.ndarray, st: Staff) -> bool:
         dash = d1 - d0
         ok = (dash < DASH_GAPS * st.gap) & np.array([before.get(s, 1e9) < w and after.get(e, 1e9) < w
                                                       for s, e, w in zip(d0, d1, dash)], bool)
-        typed += dash[ok].sum() > DASH_COVER * len(r)
+        typed += dash[ok].sum() > DASH_COVER * len(r) or dip_cover(gray, st, y) > DASH_COVER
     return typed > len(st.lines) / 2
 
 

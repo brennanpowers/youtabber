@@ -287,6 +287,45 @@ def test_text_tab_typed_as_dashes_is_no_staff():
     assert st.dashed and len(st.lines) == 6
 
 
+def blurred_text_tab() -> np.ndarray:
+    """Six rows of light dashes on black, 40 px apart, each dash 11 px long every 14 px, blurred along the rows so
+    the 3 px blanks between dashes stay only as dips in brightness."""
+    img = np.zeros((360, 800), np.uint8)
+    for i in range(6):
+        for x in range(50, 750, 14):
+            cv2.line(img, (x, 60 + i * 40), (x + 10, 60 + i * 40), 200, 1)
+    return cv2.GaussianBlur(img, (5, 1), 0)
+
+
+def test_typed_dashes_blurred_together_are_no_staff(monkeypatch):
+    img = blurred_text_tab()
+    (st,) = find_staffs(img, keep_dashed=True)
+    assert len(st.lines) == 6 and st.dashed
+    assert staff.dip_cover(img, st, st.lines[0]) > 0.99
+    assert find_staffs(img) == []
+    # Without the dip test the blurred dashes pass as drawn lines
+    monkeypatch.setattr(staff, "dip_cover", lambda *a: 0.0)
+    assert not staff.dashed(img, st)
+
+
+def test_a_drawn_line_has_no_dips():
+    img = 255 - staff_image()
+    (st,) = find_staffs(img)
+    assert [staff.dip_cover(img, st, y) for y in st.lines] == [0.0] * 6
+
+
+def test_bright_stems_across_a_drawn_line_make_no_dips():
+    # Stems brighter than the line, every 14 px: next to the stems, the line itself would pass for dips
+    img = np.zeros((360, 800), np.uint8)
+    for i in range(6):
+        cv2.line(img, (50, 60 + i * 40), (750, 60 + i * 40), 120, 1)
+    for x in range(60, 741, 14):
+        img[40:281, x:x + 3] = 255
+    (st,) = find_staffs(img, keep_dashed=True)
+    assert [staff.dip_cover(img, st, y) for y in st.lines] == [0.0] * 6
+    assert not st.dashed
+
+
 def test_ties_along_two_lines_do_not_shift_them():
     img = np.full((360, 800), 255, np.uint8)
     for i in range(6):
