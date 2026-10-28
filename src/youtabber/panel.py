@@ -1,5 +1,7 @@
 """Bound a part's panel to the paper its tab is drawn on, where a clear bound is found, so footage beside, above or
 below a tab band is kept out of the frame comparison, the playhead search and the measures."""
+from collections import Counter
+
 import numpy as np
 
 # A column or row whose picture changes by more than this many gray levels between scanned frames half a second
@@ -38,6 +40,11 @@ def layout_of(ss: list, gap: float) -> tuple[int, ...]:
     return tuple(sorted(round(2 * s.tab.top / gap) for s in ss if abs(s.tab.gap - gap) <= LAYOUT_GAP_SHARE * gap))
 
 
+def line_count(tab) -> int:
+    """How many lines a tab staff holds from its top line to its bottom one, at its line gap."""
+    return round((tab.bottom - tab.top) / tab.gap) + 1
+
+
 def panel_bounds(found: dict, seg, cols: tuple[int, int] | None = None):
     """A function of time giving the box (x0, y0, x1, y1, crop coordinates) that the part's panel stays inside at
     that time, or None where there is no clear bound; None instead of a function when there is none at any time.
@@ -51,7 +58,10 @@ def panel_bounds(found: dict, seg, cols: tuple[int, int] | None = None):
     groups: dict[tuple, list[float]] = {}
     for t in times:
         groups.setdefault(layout_of(found[t], seg.gap), []).append(t)
-    boxes = {k: layout_bound([found[t] for t in ts], seg, cols) for k, ts in groups.items()
+    counts = Counter(line_count(s.tab) for t in times for s in found[t]
+                     if abs(s.tab.gap - seg.gap) <= LAYOUT_GAP_SHARE * seg.gap)
+    lines = counts.most_common(1)[0][0] if counts else 0
+    boxes = {k: layout_bound([found[t] for t in ts], seg, cols, lines) for k, ts in groups.items()
              if k and len(ts) >= MIN_LAYOUT_FRAMES}
     if not any(boxes.values()):
         return None
@@ -72,10 +82,12 @@ def panel_bounds(found: dict, seg, cols: tuple[int, int] | None = None):
     return bound_at
 
 
-def layout_bound(systems: list[list], seg, cols: tuple[int, int] | None = None) -> tuple[int, int, int, int] | None:
+def layout_bound(systems: list[list], seg, cols: tuple[int, int] | None = None,
+                 lines: int = 0) -> tuple[int, int, int, int] | None:
     """(x0, y0, x1, y1) in crop coordinates for one layout's frames, each a list of systems, or None when they give
     no clear bound. Columns run from the first to the last where the staff lines are drawn, inside the still columns
-    around them; rows are the still rows around the staffs. `cols` is as in `panel_bounds`."""
+    around them; rows are the still rows around the staffs. `cols` is as in `panel_bounds`; `lines` is how many
+    lines the segment's staffs usually show."""
     w = len(systems[0][0].lines_at)
     share = np.mean([np.any([s.lines_at for s in ss], axis=0) for ss in systems], axis=0)
     moved = [(ss[0].motion, ss) for ss in systems if getattr(ss[0], "motion", None) is not None]
@@ -124,14 +136,19 @@ def layout_bound(systems: list[list], seg, cols: tuple[int, int] | None = None) 
     top = float(np.percentile([min(s.top for s in ss) for ss in systems], 100 * RARE_SHARE))
     bottom = float(np.percentile([max(s.tab.bottom for s in ss) for ss in systems], 100 * (1 - RARE_SHARE)))
     r0, r1 = int(top / cell), min(th, int(bottom / cell) + 1)
+    # Dense digits on an edge string can hide its line from the scan, and digits changing there would look like
+    # footage: a staff showing fewer lines than usual keeps open the rows its missing lines could take, on both sides
+    lost = float(np.percentile([max(lines - line_count(s.tab), 0) for ss in systems for s in ss
+                                if abs(s.tab.gap - gap) <= LAYOUT_GAP_SHARE * gap] or [0], 100 * (1 - RARE_SHARE)))
+    o0, o1 = max(0, int((top - lost * gap) / cell)), min(th, int((bottom + lost * gap) / cell) + 1)
     y0, y1 = seg.y0, seg.y1
     if not row_motion[r0:r1].any():
-        up = np.flatnonzero(row_motion[:r0])
-        down = np.flatnonzero(row_motion[r1:])
+        up = np.flatnonzero(row_motion[:o0])
+        down = np.flatnonzero(row_motion[o1:])
         if len(up):
             y0 = max(y0, int((up[-1] + 1) * cell))
         if len(down):
-            y1 = min(y1, int((r1 + down[0]) * cell))
+            y1 = min(y1, int((o1 + down[0]) * cell))
     p0, p1 = (seg.x0, seg.x1) if cols is None else cols
     # A bound reaching less than a staff's width into the panel's columns would print an empty panel
     if min(p1, x1) - max(p0, x0) < MIN_STAFF_GAPS * gap:

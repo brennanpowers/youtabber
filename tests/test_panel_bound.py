@@ -28,9 +28,9 @@ def motion(cols=(), rows=(), level=20.0) -> np.ndarray:
     return m
 
 
-def system(top: float, lines=((200, 600),), m=None, gap: float = GAP) -> System:
-    """A six-line tab staff at `top`, its lines drawn over the pixel column ranges `lines`."""
-    s = System(Staff([top + i * gap for i in range(6)], 100, 700, gap, "dark"), None)
+def system(top: float, lines=((200, 600),), m=None, gap: float = GAP, n: int = 6) -> System:
+    """A tab staff of `n` lines at `top`, its lines drawn over the pixel column ranges `lines`."""
+    s = System(Staff([top + i * gap for i in range(n)], 100, 700, gap, "dark"), None)
     s.lines_at = np.zeros(W, bool)
     for a, b in lines:
         s.lines_at[a:b] = True
@@ -174,6 +174,17 @@ def test_frames_with_no_staff_at_the_segment_s_spacing_get_no_box_of_their_own()
     found |= {t: [system(200, m=m, gap=14.0)] for t in half_seconds(5.0, 10)}
     bound_at = panel_bounds(found, segment())
     assert (bound_at(6.5), bound_at(7.0)) == ((175, 96, 615, 400), None)
+
+
+@pytest.mark.parametrize("short, y0", [(8, 96), (12, 216)])
+def test_a_staff_missing_its_top_lines_keeps_their_rows_open(short, y0):
+    # Ten frames show all six lines from 200; then the top two lines are lost under digits that change at 200-216.
+    # While six lines are the usual count, the lost lines' rows stay open and the bound stops at the
+    # footage above (96); when four lines are usual, the changing digits are footage
+    found = found_over(half_seconds(0.0, 10), 200)
+    m = motion(SIDES, ROWS + [(200, 216)])
+    found |= {t: [system(220, m=m, n=4)] for t in half_seconds(5.0, short)}
+    assert panel_bounds(found, segment())(7.0) == (175, y0, 615, 400)
 
 
 def test_frames_outside_the_segment_are_left_out():
