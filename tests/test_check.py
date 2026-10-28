@@ -4,9 +4,9 @@ import numpy as np
 
 from youtabber import track
 from youtabber.check import (dwell, empty_stretches, glide_fade, glide_gaps, glide_number_gaps, glide_piece_cuts,
-                             glide_repeats, glide_rows, glide_steps, judged_width, number_checks, odd_widths, pieces,
-                             redraw_gaps, same_columns, settled, shared_barlines, slow_measures, too_few,
-                             unread_stretches)
+                             glide_repeats, glide_rows, glide_steps, judged_width, number_checks, numbers_restart,
+                             odd_widths, pieces, redraw_gaps, same_columns, settled, shared_barlines, slow_measures,
+                             tab_in_pieces, too_few, unread_stretches)
 from youtabber.assemble import Obs
 from youtabber.glide import Mosaic
 from youtabber.parse import Cell
@@ -388,3 +388,80 @@ def test_same_columns_matches_barlines_a_few_pixels_apart():
     assert same_columns(upper, [(11, 13), (99, 101), (202, 204)])
     assert not same_columns(upper, [(11, 13), (202, 204)])
     assert not same_columns([], [])
+
+
+def seg(t0: float, t1: float, gap: float = 23.5, polarity: str = "dark") -> SimpleNamespace:
+    return SimpleNamespace(t0=t0, t1=t1, gap=gap, polarity=polarity)
+
+
+def test_tab_found_in_pieces_warns_each_long_gap_between_them():
+    # The 2 s break at 1:58 is too short to warn
+    segments = [seg(9.0, 19.0), seg(55.0, 64.5), seg(108.5, 118.0), seg(120.0, 125.0)]
+    ws = tab_in_pieces(segments, [10.0, 60.0])
+    assert [(w["t0"], w["t1"]) for w in ws] == [(19.0, 49.0), (49.0, 55.0), (64.5, 94.5), (94.5, 108.5)]
+    assert {w["kind"] for w in ws} == {"tab_in_pieces"}
+    assert "before 1:04 and after 1:48" in ws[3]["text"]
+
+
+def test_tab_in_pieces_needs_gaps_to_take_most_of_the_time():
+    # 30 s of gaps over 50 s is enough, 29 s isn't
+    assert len(tab_in_pieces([seg(0.0, 10.0), seg(40.0, 50.0)], [5.0])) == 1
+    assert tab_in_pieces([seg(0.0, 10.0), seg(39.0, 50.0)], [5.0]) == []
+
+
+def test_tab_in_pieces_needs_one_layout_and_printed_measures():
+    assert tab_in_pieces([seg(0.0, 10.0), seg(50.0, 60.0, gap=30.0)], [5.0]) == []
+    assert tab_in_pieces([seg(0.0, 10.0), seg(50.0, 60.0, polarity="light")], [5.0]) == []
+    assert tab_in_pieces([seg(0.0, 10.0), seg(50.0, 60.0)], [30.0]) == []
+
+
+def view(index: int, segment: int, t0: float, t1: float, start=None, measures: int = 4, mosaic=None) -> SimpleNamespace:
+    return SimpleNamespace(index=index, seg=segment, t0=t0, t1=t1, start=start, cells=[None] * measures, mosaic=mosaic)
+
+
+def numbered_to_25(switches=()) -> SimpleNamespace:
+    return SimpleNamespace(slots=[SimpleNamespace(number=n, obs=0 if n < 22 else 1) for n in range(1, 26)],
+                           switches=list(switches))
+
+
+def test_a_screen_numbered_below_what_the_last_screen_showed_is_warned():
+    # The last screen showed 22-25, so a start at 21 is lower than any ordinary overlap
+    obs = [view(0, 0, 2.0, 30.0, 1), view(1, 0, 30.0, 50.0, 22), view(2, 1, 55.0, 59.0, 21), view(3, 1, 59.0, 70.0, 25)]
+    (w,) = numbers_restart(numbered_to_25(), obs)
+    assert (w["t0"], w["t1"], w["kind"]) == (50.0, 59.0, "numbers_restart")
+    assert "numbered from 21" in w["text"] and "up to 25" in w["text"]
+
+
+def test_a_screen_showing_the_last_screens_measures_again_is_not_warned():
+    obs = [view(0, 0, 2.0, 30.0, 1), view(1, 0, 30.0, 50.0, 22), view(2, 1, 55.0, 59.0, 22)]
+    assert numbers_restart(numbered_to_25(), obs) == []
+
+
+def test_a_segment_without_numbers_is_passed_over_and_the_next_compared_with_its_screen():
+    # The unnumbered screen at 0:55 shows 2 measures, so the next segment may start at 24 but not at 23
+    obs = [view(0, 0, 2.0, 30.0, 1), view(1, 0, 30.0, 50.0, 22), view(2, 1, 55.0, 59.0, None, measures=2)]
+    assert numbers_restart(numbered_to_25(), obs + [view(3, 2, 62.0, 66.0, 24)]) == []
+    (w,) = numbers_restart(numbered_to_25(), obs + [view(3, 2, 62.0, 66.0, 23)])
+    assert (w["t0"], w["t1"]) == (59.0, 66.0)
+
+
+def test_a_screen_already_read_as_another_part_is_not_warned_as_a_restart():
+    obs = [view(0, 0, 2.0, 30.0, 1), view(1, 0, 30.0, 50.0, 22), view(2, 1, 55.0, 59.0, 21)]
+    assert numbers_restart(numbered_to_25(switches=[(55.0, 59.0)]), obs) == []
+
+
+def test_a_blank_last_view_is_passed_over_for_the_screen_before_it():
+    # The faded view at 0:50 shows no measures; the screen before it showed 22-25, so a start at 22 is an overlap
+    obs = [view(0, 0, 2.0, 30.0, 1), view(1, 0, 30.0, 50.0, 22), view(2, 0, 50.0, 51.0, None, measures=0),
+           view(3, 1, 55.0, 59.0, 22)]
+    assert numbers_restart(numbered_to_25(), obs) == []
+    (w,) = numbers_restart(numbered_to_25(), obs[:3] + [view(3, 1, 55.0, 59.0, 21)])
+    assert (w["t0"], w["t1"]) == (50.0, 59.0)
+
+
+def test_a_glide_before_the_segment_is_passed_over_for_the_still_screen_before_it():
+    # The glide at 0:50 holds 20 measures; the still screen before it showed 22-25, so a start at 21 is warned
+    obs = [view(0, 0, 2.0, 30.0, 1), view(1, 0, 30.0, 50.0, 22),
+           view(2, 0, 50.0, 54.0, None, measures=20, mosaic=object()), view(3, 1, 55.0, 59.0, 21)]
+    (w,) = numbers_restart(numbered_to_25(), obs)
+    assert (w["t0"], w["t1"]) == (50.0, 59.0)

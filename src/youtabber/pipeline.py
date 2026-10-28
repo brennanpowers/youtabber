@@ -15,8 +15,9 @@ from youtabber.assemble import (GLIDE_CONTINUE, Assembly, Obs, assemble, cell_at
                                 same_cell)
 from youtabber.check import (DUP_RESEMBLE, dwell, empty_stretches, fmt, glide_fade, glide_gaps, glide_number_gaps,
                              glide_piece_cuts, glide_repeats, glide_rows, glide_steps, layout_changes, number_checks,
-                             numbers_against_cells, odd_widths, part_switch, pieces, possible_duplicates, redraw_gaps,
-                             screen_breaks, shared_barlines, slow_measures, too_few, unread_stretches)
+                             numbers_against_cells, numbers_restart, odd_widths, part_switch, pieces,
+                             possible_duplicates, redraw_gaps, screen_breaks, shared_barlines, slow_measures,
+                             tab_in_pieces, too_few, unread_stretches)
 from youtabber.match import resemble, resemble_scaled
 from youtabber.observe import (ABOVE_GAPS, BELOW_GAPS, OBS_FPS, PRINT_ABOVE_GAPS, ink_map, ink_threshold, set_paper,
                                to_gray, views_in)
@@ -494,7 +495,8 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
     for k, A in zip(streams, by_stream):
         mine = [o for o in stream_obs[k] if o.part not in idle]
         for w in (possible_duplicates(A, mine, gap) + dwell(mine, A) + odd_widths(mine) + slow_measures(mine)
-                  + numbers_against_cells(mine) + screen_breaks(A, mine) + shared_barlines(mine)):
+                  + numbers_against_cells(mine) + screen_breaks(A, mine) + shared_barlines(mine)
+                  + numbers_restart(A, mine)):
             notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
     for w in layout_changes(segments, obs) + glide_piece_cuts(obs) + redraw_gaps(obs):
         notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
@@ -547,7 +549,10 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
             for w in (glide_repeats(o, gap) + glide_gaps(o) + (glide_fade(o, step) if o.last_piece else [])
                       + glide_number_gaps(o) + glide_steps(o) + glide_rows(o)):
                 notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
-    for w in empty_stretches(r.tab_spans, [m.play_t for m in primary]):
+    played = [m.play_t for m in primary]
+    # Scattered clips have talk between them, so the gaps between their pieces aren't missing tab
+    for w in (empty_stretches(r.tab_spans, played)
+              + (tab_in_pieces(segments, played) if clips is None else [])):
         notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
     # A view counts as read when a staff was found on it; a glide's mosaic covers its whole time
     read = [(o.t0, o.t1) for o in obs if o.systems or o.mosaic is not None]

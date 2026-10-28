@@ -63,6 +63,10 @@ LABELS = {
     "no_measures": ("stretch of tab with no measures printed", "stretches of tab with no measures printed"),
     "unread_tab": ("stretch of tab with no screen read, measures may be missing",
                    "stretches of tab with no screen read, measures may be missing"),
+    "tab_in_pieces": ("stretch between pieces of one tab where none was found, measures may be missing",
+                      "stretches between pieces of one tab where none was found, measures may be missing"),
+    "numbers_restart": ("section numbered from a number already printed, measures may stand in for others",
+                        "sections numbered from numbers already printed, measures may stand in for others"),
     "last_screen": ("brief last screen, its measures may be missing or wrong",
                     "brief last screens, their measures may be missing or wrong"),
     "numbers_disagree": ("measure number that doesn't fit the barlines", "measure numbers that don't fit the barlines"),
@@ -84,7 +88,7 @@ TIMES_COL, DONE_COL = 42, 71
 RANGE_S = 30
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 # Notices reported in pieces of one long stretch
-STRETCHES = ("no_measures", "vertical_scroll")
+STRETCHES = ("no_measures", "vertical_scroll", "tab_in_pieces")
 
 
 class Ui:
@@ -373,8 +377,9 @@ def tilde(path) -> str:
 
 
 def merged_spots(notices: list[Notice]) -> list[Notice]:
-    """The PDF's spots to check: each doubtful notice once, in time order. no_measures and vertical_scroll notices
-    come in short pieces, so pieces of one kind that touch end to end become one notice over the whole stretch."""
+    """The PDF's spots to check: each doubtful notice once, in time order. no_measures, vertical_scroll and
+    tab_in_pieces notices come in short pieces, so pieces of one kind that touch end to end become one notice over the
+    whole stretch."""
     distinct = sorted({(n.t0, n.t1, n.text): n for n in notices if n.doubt}.values(), key=lambda n: (n.t0, n.t1))
     spots = [n for n in distinct if n.kind not in STRETCHES]
     stretches: list[Notice] = []

@@ -433,6 +433,61 @@ def unread_stretches(spans: list[tuple[float, float]], read: list[tuple[float, f
     return out
 
 
+# Two segments of one polarity whose line gaps differ by at most this share are drawn in one layout
+SAME_LAYOUT_SHARE = 0.05
+# Tab of one layout found in pieces whose gaps of UNREAD_SECONDS or more take at least this share of its time
+PIECES_GAP_SHARE = 0.6
+
+
+def tab_in_pieces(segments, play_times: list[float]) -> list[dict]:
+    """Gaps between segments of one layout (same polarity, line gaps within SAME_LAYOUT_SHARE) where no tab is found,
+    in a run of such segments that prints measures but spends at least PIECES_GAP_SHARE of its time in gaps of at least
+    UNREAD_SECONDS. The tab likely stays on screen there with lines too faint to find, so its measures are missing."""
+    runs, cur = [], []
+    for s in segments:
+        if cur and cur[-1].polarity == s.polarity and abs(cur[-1].gap - s.gap) <= SAME_LAYOUT_SHARE * cur[-1].gap:
+            cur.append(s)
+        else:
+            cur = [s]
+            runs.append(cur)
+    out = []
+    for run in runs:
+        gaps = [(a.t1, b.t0) for a, b in zip(run, run[1:]) if b.t0 - a.t1 >= UNREAD_SECONDS]
+        printed = any(s.t0 <= t <= s.t1 for s in run for t in play_times)
+        if not gaps or not printed or sum(b - a for a, b in gaps) < PIECES_GAP_SHARE * (run[-1].t1 - run[0].t0):
+            continue
+        for a, b in gaps:
+            for p0, p1 in pieces(a, b):
+                out.append({"t0": round(p0, 2), "t1": round(p1, 2), "kind": "tab_in_pieces",
+                            "text": f"The same tab layout shows before {fmt(a)} and after {fmt(b)}, but no tab is "
+                                    f"found in between. If it stays on screen, its lines may be too faint to find "
+                                    f"and its measures there are missing."})
+    return out
+
+
+def numbers_restart(A, obs) -> list[dict]:
+    """Segments whose first numbered view starts more measures below the highest number already printed than the
+    last screen before them showed. A new screen often shows the last screen's measures again; a lower start
+    means the numbering started over, so measures placed by number there may stand in for earlier ones holding other
+    music. The last screen is the latest still view with measures, since a blank or faded view shows none and a
+    glide's mosaic holds the whole scroll's. A screen already read as another part (in A.switches) is passed over."""
+    out = []
+    by_index = {o.index: o for o in obs}
+    for seg in sorted({o.seg for o in obs})[1:]:
+        o = next((o for o in obs if o.seg == seg and o.start is not None), None)
+        top = max((s.number for s in A.slots if s.number is not None and s.obs in by_index
+                   and by_index[s.obs].seg < seg), default=None)
+        last = max((p for p in obs if p.seg < seg and p.cells and p.mosaic is None), key=lambda p: p.t1, default=None)
+        if (o is None or top is None or last is None or (o.t0, o.t1) in A.switches
+                or o.start > top - len(last.cells)):
+            continue
+        out.append({"t0": round(last.t1, 2), "t1": round(o.t1, 2), "kind": "numbers_restart",
+                    "text": f"The screen starting at {fmt(o.t0)} is numbered from {o.start}, though measures up to "
+                            f"{top} are already printed; its measures may be printed in place of earlier ones with "
+                            f"the same numbers."})
+    return out
+
+
 def number_checks(labels: list[tuple[float, int | None]], once: bool) -> list[dict]:
     """Measure numbers of the printed measures, in print order with their play times: a measure printed later
     in the list than its number allows, numbers that skip ahead by more than the unread measures between them,
