@@ -98,6 +98,9 @@ STAFF_START_GAPS = 10
 STITCH_WIDTH = 1.6
 # A playhead that leaves a page with at least this many of its measures still to play jumped away from it
 UNPLAYED_CELLS = 2
+# A stretch of views whose numbers name earlier measures is a section numbered on its own when at least this many of
+# those measures, and most of those compared, hold other music
+OTHER_PART_MEASURES = 3
 # A view placed by an end-repeat sign that shows the sign again sends the next view back to the same place, within
 # this many slots
 SIGN_SLACK = 2
@@ -187,6 +190,10 @@ class Assembly:
     stitches: dict = field(default_factory=dict)
     other_music: list = field(default_factory=list)   # [t0, t1] where numbers placed other music on earlier measures
     switches: list = field(default_factory=list)   # (t0, t1) of views whose reused numbers were read as another part
+    # Slots below this id belong to an earlier part's numbering, which later numbers don't place measures on
+    number_floor: int = 0
+    # (first view, whether each measure compared showed the earlier music) of each stretch in other_music
+    other_starts: list = field(default_factory=list)
     sign_folds: dict = field(default_factory=dict)   # view index -> first slot its cells folded onto by a repeat sign
     sliding: dict = field(default_factory=dict)   # segment -> its band moves on by measured slides
     stream_orders: dict = field(default_factory=dict)   # stream -> its own slots in print order
@@ -1008,12 +1015,44 @@ def move_decision(p: Obs, o: Obs, gap: float) -> Decision:
 
 def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], words_of) -> Assembly:
     """Place views into the score. `use` names the evidence allowed ("numbers", "playhead", "navigation");
-    `fold_unresolved` says how to read a re-shown run with no evidence (the main reading prints it again)."""
-    A = Assembly()
-    seg_of = {o.index: o.seg for o in obs}
-    prev: Obs | None = None
-    prev_slots: list = []
-    last_end = None
+    `fold_unresolved` says how to read a re-shown run with no evidence (the main reading prints it again).
+
+    Where numbers fold a stretch of views onto earlier measures and at least OTHER_PART_MEASURES of them, and most of
+    those compared, hold other music, the stretch is another part or section numbered the same way: the views are
+    placed again with its first view starting a numbering of its own, so its measures print as new and the earlier
+    ones are kept."""
+    numbers = [[c.number for c in o.cells] for o in obs]
+    pairs = view_pairs(obs, gap)
+    others: set = set()
+    while True:
+        A = place_views(obs, gap, fold_unresolved, use, words_of, others, pairs)
+        found = {v for v, seen in A.other_starts
+                 if len(seen) - sum(seen) >= OTHER_PART_MEASURES and 2 * (len(seen) - sum(seen)) > len(seen)}
+        if not found - others:
+            return A
+        others |= found
+        # Placing can clear a view's numbers; each pass starts from the numbers read
+        for o, ns in zip(obs, numbers):
+            for c, n in zip(o.cells, ns):
+                c.number = n
+
+
+@dataclass
+class _Pairs:
+    """What consecutive views say about each other before any is placed, the same in every pass of `assemble`."""
+    moves: list            # a move decision per pair whose band move was measured
+    shift_cache: dict
+    track_joins: dict
+    scroll_share: dict
+    usual: dict
+    sliding: dict
+    beats: dict
+    held: dict
+
+
+def view_pairs(obs: list[Obs], gap: float) -> _Pairs:
+    """Register every consecutive pair of views and read the joins their band moves decide."""
+    moves = []
     # Registration of every consecutive pair
     shift_cache: dict = {}
     for p, o in zip(obs, obs[1:]):
@@ -1026,7 +1065,7 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
     for p, o in zip(obs, obs[1:]):
         if p.seg == o.seg and p.cells and o.cells and not glided_on(o):
             if o.move is not None:
-                A.decisions.append(move_decision(p, o, gap))
+                moves.append(move_decision(p, o, gap))
             tj = track_join(p, o, gap, shift_cache[o.index])
             if tj is not None:
                 track_joins[o.index] = tj
@@ -1037,11 +1076,24 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
     scroll_share = scroll_shares(obs, shift_cache, track_joins)
     usual = usual_slides(slides, drawn_slides, gap)
     # A segment slides when the playhead confirmed most of the slides and cuts its band was seen making
+    sliding = {}
     for sg in {o.seg for o in obs}:
         moved = [o for o in obs if o.seg == sg and o.move is not None and o.move.kind in ("slide", "cut")]
-        A.sliding[sg] = len(slides.get(sg, [])) >= 5 and len(slides.get(sg, [])) >= 0.7 * len(moved)
+        sliding[sg] = len(slides.get(sg, [])) >= 5 and len(slides.get(sg, [])) >= 0.7 * len(moved)
     beats = {s: measure_time([o for o in obs if o.seg == s and o.mosaic is None]) for s in {o.seg for o in obs}}
-    held = held_lines(obs)
+    return _Pairs(moves, shift_cache, track_joins, scroll_share, usual, sliding, beats, held_lines(obs))
+
+
+def place_views(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], words_of, others: set,
+                pairs: _Pairs) -> Assembly:
+    """One pass of `assemble`; each view in `others` (indexes) starts a numbering of its own."""
+    A = Assembly(decisions=[replace(d) for d in pairs.moves], sliding=dict(pairs.sliding))
+    seg_of = {o.index: o.seg for o in obs}
+    prev: Obs | None = None
+    prev_slots: list = []
+    last_end = None
+    shift_cache, track_joins, scroll_share = pairs.shift_cache, pairs.track_joins, pairs.scroll_share
+    usual, beats, held = pairs.usual, pairs.beats, pairs.held
     # While views keep being placed by their numbers on earlier measures: the first such view, whether each measure
     # showed the earlier music, the stretch once most did not, and whether the first view came after a break
     watch = None
@@ -1073,7 +1125,7 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
                 c.number = None
         if "numbers" in use and all(c.number is not None for c in cells):
             slots_before = len(A.slots)
-            place_numbered(o, slot_of, A, prev, prev_slots, gap, seg_of, held)
+            place_numbered(o, slot_of, A, prev, prev_slots, gap, seg_of, held, o.index in others)
             seen = earlier_music(o, slot_of, A, prev_slots, slots_before, gap)
             if not seen or (watch is not None and watch[0].seg != o.seg):
                 watch = None
@@ -1089,6 +1141,7 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
                 elif other >= 2 and (other > sum(watch[1]) or (watch[3] and other == sum(watch[1]))):
                     watch[2].append([watch[0].t0, o.t1])
                     A.other_music.append(watch[2][0])
+                    A.other_starts.append((watch[0].index, watch[1]))
         else:
             links: dict = {}
             joins_before = len(A.decisions)
@@ -1239,13 +1292,13 @@ def carry_numbers(slot_of, A) -> None:
     if not known:
         return
     i0, n0 = known[0]
-    taken = {s.number for s in A.slots if s.number is not None}
+    taken = {s.number for s in A.slots if s.number is not None and s.id >= A.number_floor}
     for i, s in enumerate(slot_of):
         if s is not None and A.slots[s].number is None and n0 + (i - i0) not in taken:
             A.slots[s].number = n0 + (i - i0)
 
 
-def place_numbered(o, slot_of, A, prev, prev_slots, gap, seg_of, held: dict) -> None:
+def place_numbered(o, slot_of, A, prev, prev_slots, gap, seg_of, held: dict, other: bool = False) -> None:
     """Map each cell to the slot with its measure number, making slots for numbers not seen before.
 
     A number seen on an earlier view (not the one just before, whose overlap is expected, unless o is a glide
@@ -1256,9 +1309,15 @@ def place_numbered(o, slot_of, A, prev, prev_slots, gap, seg_of, held: dict) -> 
     Glided measures fold a run at a time: a run whose numbers were seen before folds only when at least half its
     measures look like the ones they fold onto. Otherwise its numbers are taken as misread (a counter can drop a
     digit), and the run is printed as new music under numbers already used.
+
+    `other` says the view starts a section with numbers of its own. They go on from its own measures, so later
+    views place nothing by number on the measures before it, other than the expected overlap with the view before.
     """
-    by_number = {s.number: s.id for s in A.slots if s.number is not None}
-    other_part = switched_part(o, A, by_number, prev, prev_slots, gap, seg_of, held)
+    if other:
+        A.number_floor = len(A.slots)
+    by_number = {s.number: s.id for s in A.slots
+                 if s.number is not None and (s.id >= A.number_floor or s.id in prev_slots)}
+    other_part = other or switched_part(o, A, by_number, prev, prev_slots, gap, seg_of, held)
     if other_part:
         A.switches.append((o.t0, o.t1))
     # A glide piece shares no measure with the piece before, so none of its numbers is an expected overlap
