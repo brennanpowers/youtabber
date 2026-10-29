@@ -40,13 +40,37 @@ TINT_PAPER = 0.6
 # Colored pixels covering more than this share of the ink are the ink's own color (music drawn in color); the
 # compare keeps them too
 TINT_INK = 0.85
+# A pixel lighter than ink in the plate whose gray level spreads by more than this between a view's lighter and darker
+# frames is footage moving behind a see-through panel
+FOOTAGE_SPREAD = 12
+# There the plate takes the pixel from the frame lighter than this share of the view's frames, where the footage
+# hides the paper least
+FOOTAGE_RANK = 0.95
+# ...when that frame shows it within this many gray levels of the lightest pixel within FOOTAGE_NEAR_GAPS line gaps
+# (and at least 2 pixels), and shows none of its eight neighbors more than FOOTAGE_EDGE levels darker than that
+FOOTAGE_PAPER, FOOTAGE_NEAR_GAPS, FOOTAGE_EDGE = 10, 0.2, 20
+# Masked pixels are ranked this many at a time, so the frame order of a large crop never takes a gigabyte
+FOOTAGE_BLOCK = 1 << 16
+# A pixel whose median is within this many gray levels of its lightest frame keeps its median
+FOOTAGE_SHOWN = 6
+# Views with fewer frames keep the plain median
+FOOTAGE_MIN_FRAMES = 6
+# Footage shows through the panel only when at least this share of its paper spreads by more than FOOTAGE_SPREAD
+# between its lighter and darker frames; below it, the pixels that spread are faint lines and noise
+FOOTAGE_SHARE = 0.2
+# A pixel the median shows more than this many gray levels darker than the lightest of its eight neighbors keeps its
+# median: a faint line up to two pixels wide has paper beside it. Footage at a hard edge with paper passes this too
+FOOTAGE_DIP = 12
+# A view whose frames' overall gray levels spread by more than this is fading in or out
+FOOTAGE_FADE = 12
 
 
 @dataclass
 class View:
     t0: float
     t1: float
-    plate: np.ndarray                 # BGR median of the view's frames, in crop coordinates
+    # BGR median of the view's frames with footage behind the panel washed out, in crop coordinates
+    plate: np.ndarray
     playhead: list[tuple[float, float, float]] = field(default_factory=list)  # (t, x, y)
     times: list[float] = field(default_factory=list)
     rect: tuple[int, int, int, int] = (0, 0, 0, 0)   # panel in crop coordinates
@@ -59,6 +83,76 @@ def to_gray(frame: np.ndarray, polarity: str) -> np.ndarray:
     """Gray with ink dark, whatever the theme."""
     g = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     return 255 - g if polarity == "light" else g
+
+
+def clear_footage(stack: np.ndarray, plate: np.ndarray, polarity: str, thr: float, fthr: float, gap: float,
+                  rect: tuple[int, int, int, int]) -> np.ndarray:
+    """The median plate of a view's frames with footage seen through the panel `rect` (x0, y0, x1, y1) washed out.
+
+    The drawn page holds still while footage behind a see-through panel moves. A pixel lighter than ink whose level
+    keeps changing, and which in its lightest frames is as light as the paper around it, is paper under footage: it
+    takes its value from those frames. Faint lines drawn on the panel stay darker than the paper beside them even
+    then, so they keep their median. Lightness is judged with ink dark, so on a light-ink theme it means darkness.
+    Pixels outside the panel and pixels touching ink are left as they are: footage beside the panel isn't tab, and
+    the soft edges of ink change from frame to frame. Only pixels darker than the faint-ink threshold `fthr` change:
+    lighter ones already read as paper, and lifting them would only move the paper level the barline tests measure
+    against. A view whose spreading pixels cover little of the panel's paper shows no footage and keeps its median.
+    """
+    n = len(stack)
+    if n < FOOTAGE_MIN_FRAMES:
+        return plate
+    gray = np.stack([to_gray(f, polarity) for f in stack])
+    # A page fading in or out changes the level of the whole picture: such a view keeps its median plate
+    levels = np.median(gray[:, ::4, ::4].reshape(n, -1), axis=1)
+    if levels.max() - levels.min() > FOOTAGE_FADE:
+        return plate
+    still = to_gray(plate, polarity)
+    # The panel's paper: pixels inside it that neither are nor touch ink
+    x0, y0, x1, y1 = rect
+    paper = np.zeros(still.shape, bool)
+    paper[max(0, y0):y1, max(0, x0):x1] = True
+    paper &= cv2.dilate((still < thr).astype(np.uint8), np.ones((3, 3), np.uint8)) == 0
+    # Max minus min is quick and never smaller than the spread between ranks, so it picks the pixels worth ranking
+    mask = paper & (gray.max(axis=0) - gray.min(axis=0) > FOOTAGE_SPREAD)
+    if not mask.any():
+        return plate
+    ys, xs = np.nonzero(mask)
+    lo, hi = int(round((1 - FOOTAGE_RANK) * (n - 1))), int(round(FOOTAGE_RANK * (n - 1)))
+    light = np.empty(len(ys), np.int16)
+    spread = np.empty(len(ys), np.int16)
+    frame = np.empty(len(ys), np.intp)
+    for a in range(0, len(ys), FOOTAGE_BLOCK):
+        g = gray[:, ys[a:a + FOOTAGE_BLOCK], xs[a:a + FOOTAGE_BLOCK]]
+        order = np.argpartition(g, [lo, hi], axis=0)
+        cols = np.arange(g.shape[1])
+        light[a:a + FOOTAGE_BLOCK] = g[order[hi], cols]
+        spread[a:a + FOOTAGE_BLOCK] = light[a:a + FOOTAGE_BLOCK] - g[order[lo], cols]
+        frame[a:a + FOOTAGE_BLOCK] = order[hi]
+    # Keep the median unless footage spreads over FOOTAGE_SHARE of the paper: faint lines that flicker on
+    # low-resolution video spread too, but cover little of it
+    if (spread > FOOTAGE_SPREAD).sum() < FOOTAGE_SHARE * paper.sum():
+        return plate
+    # Each pixel at its lightest (the median where the pixel holds still), and the lightest of those nearby
+    lightest = still.copy()
+    lightest[ys, xs] = np.maximum(lightest[ys, xs], light)
+    r = max(2, int(round(FOOTAGE_NEAR_GAPS * gap)))
+    near = cv2.dilate(lightest, np.ones((2 * r + 1, 2 * r + 1), np.uint8))[ys, xs].astype(np.int16)
+    # The chosen frame must show the pixel's neighbors as paper too: a faint line that moved a pixel in that frame
+    # leaves its old place light there, but its new place beside it is still dark
+    h, w = plate.shape[:2]
+    darkest = np.full(len(ys), 255, np.int16)
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            darkest = np.minimum(darkest, gray[frame, np.clip(ys + dy, 0, h - 1), np.clip(xs + dx, 0, w - 1)])
+    # A pixel the median shows near its lightest needs nothing: paper a cursor crossed now and then stays as it is
+    median = still[ys, xs].astype(np.int16)
+    # A narrow faint line has paper beside it in the median; inside a patch of footage the neighbors are dark too
+    beside = cv2.dilate(still, np.ones((3, 3), np.uint8))[ys, xs].astype(np.int16)
+    keep = ((spread > FOOTAGE_SPREAD) & (light - median > FOOTAGE_SHOWN) & (light >= near - FOOTAGE_PAPER)
+            & (darkest >= near - FOOTAGE_EDGE) & (median < fthr) & (beside - median <= FOOTAGE_DIP))
+    out = plate.copy()
+    out[ys[keep], xs[keep]] = stack[frame[keep], ys[keep], xs[keep]]
+    return out
 
 
 def ink_threshold(gray: np.ndarray, paper_bgr: np.ndarray, polarity: str) -> tuple[float, float]:
@@ -317,10 +411,14 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
     # last screen, even if a fade or a cut to black after it closed a chunk of its own
     tail: list = []
 
-    def plate_of(chunk) -> np.ndarray:
+    def plates_of(chunk, clear: bool = True) -> tuple[np.ndarray, np.ndarray]:
+        """(median, plate) of the chunk's frames: the plate is the median with footage behind the panel washed out.
+        The playhead and the panel are found on the median, which the frames are compared against."""
         kept = [f for _, f, _, _ in chunk if f is not None]
         step = max(1, len(kept) // MAX_PLATE_FRAMES)
-        return np.median(np.stack(kept[::step]), axis=0).astype(np.uint8)
+        stack = np.stack(kept[::step])
+        median = np.median(stack, axis=0).astype(np.uint8)
+        return median, clear_footage(stack, median, polarity, thr, fthr, gap, rect_of(chunk)) if clear else median
 
     def rect_of(chunk) -> tuple[int, int, int, int]:
         return tuple(int(np.median([c[2][i] for c in chunk])) for i in range(4))
@@ -346,7 +444,7 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         elif -(-len(cur) // stride) > MAX_VIEW_FRAMES:
             # Keep every other picture of those kept so far
             stride *= 2
-            so_far = plate_of(cur), rect_of(cur)
+            so_far = plates_of(cur, clear=False)[0], rect_of(cur)
             for k in range(len(cur)):
                 if k % stride and cur[k][1] is not None:
                     drop(k)
@@ -356,10 +454,12 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         points[t] = playhead_at(f, *so_far)
         cur[k] = (t, None, rect, seed)
 
-    def build(chunk, plate=None) -> View:
-        plate = plate_of(chunk) if plate is None else plate
+    def build(chunk, plates=None) -> tuple[View, tuple[np.ndarray, np.ndarray]]:
+        """The view of the chunk's frames, and its (median, plate) for views that share them."""
+        plates = plates_of(chunk) if plates is None else plates
+        plate = plates[0]
         rect = rect_of(chunk)
-        v = View(chunk[0][0], chunk[-1][0] + 1 / OBS_FPS, plate, times=[t for t, _, _, _ in chunk], rect=rect)
+        v = View(chunk[0][0], chunk[-1][0] + 1 / OBS_FPS, plates[1], times=[t for t, _, _, _ in chunk], rect=rect)
         mid_seed = chunk[len(chunk) // 2][3]
         # On a dark theme, footage in a dark room looks like paper, so the print area keeps the panel's reach
         above, below = (ABOVE_GAPS, BELOW_GAPS) if polarity == "light" else (PRINT_ABOVE_GAPS, PRINT_BELOW_GAPS)
@@ -370,7 +470,7 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
             p = points.get(t) if f is None else playhead_at(f, plate, rect)
             if p is not None:
                 v.playhead.append((t, *p))
-        return v
+        return v, plates
 
     def wraps(v: View) -> list[float]:
         """Times where the playhead jumps back over part of the page: a page turn to a page that looks the same (a
@@ -415,7 +515,7 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
                 tail[:] = cur
             return
         tail.clear()
-        whole = build(cur)
+        whole, plates = build(cur)
         whole.brief = seconds < MIN_VIEW_SECONDS
         cuts = wraps(whole) if use_playhead else []
         if not cuts:
@@ -423,11 +523,11 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
             return
         bounds = [cur[0][0]] + cuts + [cur[-1][0] + 1]
         # A thinned view keeps few pictures per pass; all passes show the same page, so they share its plate
-        shared = whole.plate if stride > 1 else None
+        shared = plates if stride > 1 else None
         for n, (a, b) in enumerate(zip(bounds, bounds[1:])):
             chunk = [c for c in cur if a <= c[0] < b]
             if chunk and chunk[-1][0] - chunk[0][0] + 1 / OBS_FPS >= MIN_VIEW_SECONDS:
-                v = build(chunk, shared)
+                v, _ = build(chunk, shared)
                 v.wrapped = n > 0
                 views.append(v)
 
@@ -504,7 +604,7 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         held = [(t, f, rect, seed)]
     close(last=True)
     if tail and last_screen:
-        v = build(tail)
+        v, _ = build(tail)
         v.brief = True
         views.append(v)
     if lead and thr is not None and seed_at(t_start) is not None:

@@ -138,3 +138,189 @@ def test_colored_ink_counts_as_the_ink_s_own_color_past_its_share():
         tint = np.zeros_like(area)
         tint[4:6, :int(share * 100)] = True
         assert observe.tinted_paper(tint, area, ink) == kept
+
+
+# The panel covers all of a 20x60 test frame
+WHOLE = (0, 0, 60, 20)
+
+
+def footage_stack(polarity: str = "dark") -> np.ndarray:
+    """Ten 20x60 frames of paper (240) behind a see-through panel: a dark stripe of footage (200) covers columns 10-35
+    in the first seven frames and columns 40-49 in the last three. Column 30 holds a faint line (215 on bare paper,
+    180 under the stripe) and column 12 solid ink (40). With `polarity` "light", the levels are inverted."""
+    frames = []
+    for i in range(10):
+        f = np.full((20, 60), 240, np.uint8)
+        f[:, 10:36] = 200 if i < 7 else 240
+        f[:, 40:50] = 200 if i >= 7 else 240
+        f[:, 30] = 180 if i < 7 else 215
+        f[:, 12] = 40
+        frames.append(np.dstack([f, f, f]))
+    stack = np.stack(frames)
+    return 255 - stack if polarity == "light" else stack
+
+
+def test_footage_moving_behind_the_panel_is_washed_out_of_the_plate():
+    stack = footage_stack()
+    plate = np.median(stack, axis=0).astype(np.uint8)
+    assert plate[5, 20, 0] == 200
+    out = observe.clear_footage(stack, plate, "dark", 120.0, 225.0, 10.0, WHOLE)
+    # Paper under the stripe takes its lightest frames; the stripe seen in only three frames was never in the median
+    assert out[5, 20, 0] == 240 and out[5, 45, 0] == 240
+    # A faint line stays darker than the paper beside it in its lightest frames, so it keeps its median
+    assert out[5, 30, 0] == 180
+    # Solid ink is left as it is
+    assert out[5, 12, 0] == 40
+
+
+def test_footage_is_washed_out_toward_dark_paper_on_a_light_ink_theme():
+    stack = footage_stack("light")
+    plate = np.median(stack, axis=0).astype(np.uint8)
+    out = observe.clear_footage(stack, plate, "light", 120.0, 225.0, 10.0, WHOLE)
+    assert out[5, 20, 0] == 15 and out[5, 30, 0] == 75 and out[5, 12, 0] == 215
+
+
+def test_a_view_of_few_frames_keeps_its_median_plate():
+    stack = footage_stack()[:5]
+    plate = np.median(stack, axis=0).astype(np.uint8)
+    assert np.array_equal(observe.clear_footage(stack, plate, "dark", 120.0, 225.0, 10.0, WHOLE), plate)
+
+
+def test_a_faint_line_that_moves_a_pixel_in_one_frame_keeps_its_median():
+    # Footage at 200 over columns 40-59 in seven of ten frames covers more than FOOTAGE_SHARE of the paper
+    frames = []
+    for i in range(10):
+        f = np.full((20, 60), 240, np.uint8)
+        f[:, 40:] = 200 if i < 7 else 240
+        f[:, 31 if i == 4 else 30] = 180
+        frames.append(np.dstack([f, f, f]))
+    stack = np.stack(frames)
+    plate = np.median(stack, axis=0).astype(np.uint8)
+    out = observe.clear_footage(stack, plate, "dark", 120.0, 225.0, 10.0, WHOLE)
+    assert out[5, 30, 0] == 180 and out[5, 31, 0] == 240 and out[5, 50, 0] == 240
+
+
+def test_footage_over_too_little_of_the_paper_keeps_the_median_plate():
+    # Paper at 240 over 20x60 pixels; a stripe at 200 in seven of ten frames covers 11 columns (0.18 of the paper) in
+    # one stack and 13 columns (0.22) in the other
+    stack = np.full((10, 20, 60, 3), 240, np.uint8)
+    stack[:7, :, 10:21] = 200
+    plate = np.median(stack, axis=0).astype(np.uint8)
+    assert np.array_equal(observe.clear_footage(stack, plate, "dark", 120.0, 225.0, 10.0, WHOLE), plate)
+    stack[:7, :, 21:23] = 200
+    plate = np.median(stack, axis=0).astype(np.uint8)
+    assert observe.clear_footage(stack, plate, "dark", 120.0, 225.0, 10.0, WHOLE)[5, 15, 0] == 240
+
+
+def test_footage_lighter_than_faint_ink_keeps_its_median():
+    # Paper at 240 under footage at 222 in seven of ten frames over columns 10-35: with the faint-ink threshold at 220
+    # the median's 222 already reads as paper and stays; at 225 it is washed to 240
+    stack = np.full((10, 20, 60, 3), 240, np.uint8)
+    stack[:7, :, 10:36] = 222
+    plate = np.median(stack, axis=0).astype(np.uint8)
+    assert observe.clear_footage(stack, plate, "dark", 120.0, 220.0, 10.0, WHOLE)[5, 20, 0] == 222
+    assert observe.clear_footage(stack, plate, "dark", 120.0, 225.0, 10.0, WHOLE)[5, 20, 0] == 240
+
+
+def test_paper_under_footage_takes_its_second_lightest_frame_of_21():
+    # Footage over columns 10-35 of paper at 240: eighteen frames at 200, then one each at 220, 230 and 250. The frame
+    # lighter than 95% of them is the 230
+    levels = [200] * 18 + [220, 230, 250]
+    stack = np.full((21, 20, 60, 3), 240, np.uint8)
+    for i, v in enumerate(levels):
+        stack[i, :, 10:36] = v
+    plate = np.median(stack, axis=0).astype(np.uint8)
+    assert plate[5, 20, 0] == 200
+    assert observe.clear_footage(stack, plate, "dark", 120.0, 225.0, 10.0, WHOLE)[5, 20, 0] == 230
+
+
+def test_a_page_fading_in_keeps_its_median_plate():
+    # The whole frame brightens from 150 to 240 over ten frames
+    stack = np.stack([np.full((20, 60, 3), 150 + 10 * i, np.uint8) for i in range(10)])
+    plate = np.median(stack, axis=0).astype(np.uint8)
+    assert observe.clear_footage(stack, plate, "dark", 120.0, 225.0, 10.0, WHOLE)[5, 20, 0] == 195
+
+
+def test_a_view_ending_in_a_fade_keeps_its_median_plate():
+    # Paper at 240 with footage over columns 10-35 at 200 in eight frames and 230 in two; then four frames where the
+    # whole picture fades to 120
+    stack = np.full((14, 20, 60, 3), 240, np.uint8)
+    for i in range(10):
+        stack[i, :, 10:36] = 230 if i >= 8 else 200
+    stack[10:] = 120
+    plate = np.median(stack, axis=0).astype(np.uint8)
+    assert observe.clear_footage(stack, plate, "dark", 100.0, 225.0, 10.0, WHOLE)[5, 20, 0] == 200
+
+
+def test_paper_the_median_shows_near_its_lightest_keeps_its_median():
+    # A cursor darkens columns 10-35 to 200 in three of ten frames; the median paper there sits 5 levels under the
+    # lightest frame, which is noise, not footage
+    stack = np.full((10, 20, 60, 3), 240, np.uint8)
+    stack[:, :, 10:36] = 235
+    stack[9, :, 10:36] = 240
+    stack[:3, :, 10:36] = 200
+    plate = np.median(stack, axis=0).astype(np.uint8)
+    assert observe.clear_footage(stack, plate, "dark", 100.0, 238.0, 10.0, WHOLE)[5, 20, 0] == 235
+
+
+def test_paper_beside_ink_under_footage_keeps_its_median():
+    # The neighbor test can't tell solid ink from a faint line that moved a pixel, and such a line must survive, so
+    # the one-pixel strip beside the ink keeps the footage's 200
+    stack = footage_stack()
+    plate = np.median(stack, axis=0).astype(np.uint8)
+    assert observe.clear_footage(stack, plate, "dark", 120.0, 225.0, 10.0, WHOLE)[5, 13, 0] == 200
+
+
+def test_footage_outside_the_panel_keeps_its_median():
+    # The panel covers columns 0-24 only: paper under the stripe at column 20 is washed, at column 25 it isn't
+    stack = footage_stack()
+    plate = np.median(stack, axis=0).astype(np.uint8)
+    out = observe.clear_footage(stack, plate, "dark", 120.0, 225.0, 10.0, (0, 0, 25, 20))
+    assert out[5, 20, 0] == 240 and out[5, 25, 0] == 200
+
+
+def test_paper_touching_ink_keeps_its_median_even_where_the_ink_is_light_in_the_lightest_frames():
+    # Footage at 200 over columns 10-35 in seven of ten frames; ink at column 12 shows 40 in those frames and paper in
+    # the other three, so its median is ink. Column 13 touches it and keeps 200; column 14 is washed to 240
+    stack = np.full((10, 20, 60, 3), 240, np.uint8)
+    stack[:7, :, 10:36] = 200
+    stack[:7, :, 12] = 40
+    plate = np.median(stack, axis=0).astype(np.uint8)
+    out = observe.clear_footage(stack, plate, "dark", 120.0, 225.0, 10.0, WHOLE)
+    assert out[5, 12, 0] == 40 and out[5, 13, 0] == 200 and out[5, 14, 0] == 240
+
+
+def test_footage_ranked_a_few_pixels_at_a_time_gives_the_same_plate(monkeypatch):
+    stack = footage_stack()
+    plate = np.median(stack, axis=0).astype(np.uint8)
+    whole = observe.clear_footage(stack, plate, "dark", 120.0, 225.0, 10.0, WHOLE)
+    monkeypatch.setattr(observe, "FOOTAGE_BLOCK", 7)
+    out = observe.clear_footage(stack, plate, "dark", 120.0, 225.0, 10.0, WHOLE)
+    assert np.array_equal(out, whole)
+    assert out[5, 20, 0] == 240 and out[5, 30, 0] == 180
+
+
+def faint_line_stack(line: int, light: int = 246) -> np.ndarray:
+    """Ten 20x60 frames of paper (253): footage at 225 over columns 0-23 in seven of them, and a faint line along row
+    10 of columns 30-59 at `line` in eight frames and `light` in the other two."""
+    stack = np.full((10, 20, 60, 3), 253, np.uint8)
+    stack[:7, :, :24] = 225
+    stack[:8, 10, 30:] = line
+    stack[8:, 10, 30:] = light
+    return stack
+
+
+def test_a_faint_line_beside_footage_keeps_its_median():
+    stack = faint_line_stack(228)
+    plate = np.median(stack, axis=0).astype(np.uint8)
+    out = observe.clear_footage(stack, plate, "dark", 120.0, 235.3, 10.0, WHOLE)
+    # The line is 25 levels darker than the paper beside it in the median; the footage is washed to paper
+    assert out[10, 45, 0] == 228 and out[5, 10, 0] == 253
+
+
+def test_a_pixel_up_to_twelve_levels_darker_than_its_neighbors_is_washed():
+    # The paper beside the line is 253: a line at 241 is washed to its lightest frames' 254, one at 240 keeps its median
+    for line, want in ((241, 254), (240, 240)):
+        stack = faint_line_stack(line, 254)
+        plate = np.median(stack, axis=0).astype(np.uint8)
+        assert observe.clear_footage(stack, plate, "dark", 120.0, 245.0, 10.0, WHOLE)[10, 45, 0] == want
