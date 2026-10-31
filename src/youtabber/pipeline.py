@@ -75,9 +75,10 @@ MAX_GLIDE_PIECES, GLIDE_PIECE_SECONDS, GLIDE_ROWS_SECONDS = 8, 2.0, 10.0
 MOSAIC_PIECE = 40000
 # ...overlapping by this many columns, several times the widest measure
 MOSAIC_OVERLAP = 8000
-# A cell past a system's last barline with less ink than this share of its width times the line gap is blank staff,
-# not a measure
-BLANK_TAIL_INK = 0.02
+# A cell past a system's last barline with less ink than this share of its width times the line gap, and less than
+# BLANK_TAIL_TALL square line gaps of marks at least TALL_MARK_GAPS line gaps tall, is blank staff, not a measure.
+# What the staff lines leave behind is flat, while a lone fret digit stands tall
+BLANK_TAIL_INK, BLANK_TAIL_TALL, TALL_MARK_GAPS = 0.02, 0.02, 0.25
 # A part's last longer views whose paper is more than this many gray levels darker than its usual paper are
 # fading out
 FADE_PAPER_DROP = 20
@@ -1445,9 +1446,16 @@ def kept_cells(cells: list[Cell], typical: float) -> list[Cell]:
 
 
 def blank_tail(c: Cell) -> bool:
-    """True for a cell past a system's last barline with next to no ink: staff lines running on past the end, which
-    hold no measure."""
-    return c.kind == "tail" and c.ink.sum() < BLANK_TAIL_INK * (c.x1 - c.x0) * c.gap
+    """True for a cell past a system's last barline with next to no ink and no tall marks: staff lines running on
+    past the end, which hold no measure."""
+    if c.kind != "tail" or c.ink.sum() >= BLANK_TAIL_INK * (c.x1 - c.x0) * c.gap:
+        return False
+    # Columns as in staff_ink: past what is left of the barline, up to the cell's right edge
+    start = max(0, c.x0 - (c.x1 + 1 - c.ink.shape[1]) + int(BAR_SKIP_GAPS * c.gap))
+    k = max(3, int(round(TALL_MARK_GAPS * c.gap)))
+    tall = cv2.morphologyEx(c.ink[:, start:c.ink.shape[1] - 2].astype(np.uint8), cv2.MORPH_OPEN,
+                            np.ones((k, 1), np.uint8))
+    return int(tall.sum()) < BLANK_TAIL_TALL * c.gap * c.gap
 
 
 def counted_header(o: Obs) -> bool:
@@ -1622,12 +1630,19 @@ def part_pairs(obs: list[Obs]) -> list[tuple[Obs, Obs]]:
     return track.pairs([o for o in obs if o.mosaic is None], key=lambda o: (o.seg, o.part))
 
 
-def paper_level(v, seg: Segment) -> float | None:
-    """Gray level of a view's paper, the median color inside its panel, or None for an empty panel."""
+def paper_color(v) -> np.ndarray | None:
+    """A view's paper color, the median color inside its panel, or None for an empty panel."""
     x0, y0, x1, y1 = v.rect
     if x1 <= x0 or y1 <= y0:
         return None
-    own = np.median(v.plate[y0:y1, x0:x1].reshape(-1, 3), axis=0)
+    return np.median(v.plate[y0:y1, x0:x1].reshape(-1, 3), axis=0)
+
+
+def paper_level(v, seg: Segment) -> float | None:
+    """Gray level of a view's paper color, or None for an empty panel."""
+    own = paper_color(v)
+    if own is None:
+        return None
     return float(to_gray(own.astype(np.uint8)[None, None], seg.polarity)[0, 0])
 
 
@@ -1655,17 +1670,19 @@ def plate_obs(v, seg: Segment, si: int, thr: float, fthr: float, index: int, col
     segment's; `fading` says the view is one of its part's last, darkening as the video fades out."""
     x0, y0, x1, y1 = v.rect
     fading_read = False
-    if (v.brief or fading) and x1 > x0 and y1 > y0:
+    level = paper_level(v, seg) if v.brief or fading else None
+    if level is not None:
         # A screen shown briefly while the page fades, or one of the last screens as the video fades out, can have
         # paper darker than the segment's faint-ink level, which would make all of it ink; it is read with
         # thresholds set from its own paper
-        own = np.median(v.plate[y0:y1, x0:x1].reshape(-1, 3), axis=0)
-        if float(to_gray(own.astype(np.uint8)[None, None], seg.polarity)[0, 0]) < fthr:
+        if level < fthr:
+            own = paper_color(v)
             if not v.brief:
-                # The panel found from the segment's paper shrinks to the staff rows as the paper darkens, so it is
-                # grown again from the screen's own paper
-                v = replace(v, rect=panel_rect(v.plate, own, v.rect, seg.gap, polarity=seg.polarity))
-                x0, y0, x1, y1 = v.rect
+                # The panel found from the segment's paper shrinks to the staff rows as the paper darkens, so its
+                # rows are grown again from the screen's own paper. Its columns stay, as footage the color of the
+                # darker paper could widen them past the panel
+                _, y0, _, y1 = panel_rect(v.plate, own, v.rect, seg.gap, polarity=seg.polarity)
+                v = replace(v, rect=(x0, y0, x1, y1))
                 fading_read = True
             thr, fthr = ink_threshold(to_gray(v.plate, seg.polarity)[y0:y1, x0:x1], own, seg.polarity)
     systems = parse_view(index, v.plate, v.rect, seg.polarity, thr, fthr, seg.gap, v.print_rect)

@@ -683,8 +683,9 @@ def test_five_line_notation_far_above_four_line_bass_tab_is_its_notation():
 
 def test_close_lines_above_far_notation_leave_it_with_its_tab():
     up, tab = far_pair()
-    # Lines spaced 8 sit 3 notation gaps above the notation staff, whose top is at 106.7
-    stray = Staff([64.7 - 8 * (4 - i) for i in range(5)], 0, 1800, 8.0, "dark")
+    # Lines spaced 8 sit 10 notation gaps (140 px) above the notation staff, whose top is at 106.7: past the 9 gaps
+    # the scan pairs staffs within, but inside the 12 a staff spaced much closer may sit
+    stray = Staff([-33.3 - 8 * (4 - i) for i in range(5)], 0, 1800, 8.0, "dark")
     first, second = pair_far_notation([System(stray, None), up, tab])
     assert first.tab is stray and first.notation is None
     assert second.tab is tab.tab and second.notation is up.tab

@@ -119,3 +119,15 @@ def test_a_tail_past_the_last_barline_with_next_to_no_ink_is_no_measure():
     # Under 0.02 of its width times the line gap, 60 pixels, it is blank staff
     blank, inked = tail(59), tail(60)
     assert kept_cells([blank, inked], typical=300) == [inked]
+
+
+def test_a_lone_thin_digit_in_a_wide_tail_is_a_measure():
+    # 1000 px wide, so under 200 pixels of ink passes for blank staff; the staff lines left 150 flat pixels
+    ink = np.zeros((120, 1001), bool)
+    ink[70, 100:250] = True
+    blank = Cell(0, 0, 5, 100, 1100, "tail", ink, np.zeros_like(ink), 0, gap=GAP, ref_y=60, mid_y=85.0, top_y=15)
+    # A "1" drawn 6 px tall and 2 px wide stands taller than a quarter gap
+    digit = ink.copy()
+    digit[64:70, 500:502] = True
+    one = Cell(0, 0, 5, 100, 1100, "tail", digit, np.zeros_like(digit), 0, gap=GAP, ref_y=60, mid_y=85.0, top_y=15)
+    assert kept_cells([blank, one], typical=300) == [one]

@@ -1,5 +1,6 @@
 """A segment's first and last screens may be shown only briefly, and a brief screen that is a page fading in or
 out gives no measures."""
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -388,6 +389,10 @@ def test_a_fading_last_screen_is_read_from_its_own_paper_in_a_panel_grown_from_i
     own = ink_threshold(to_gray(v.plate, "dark")[75:190], np.array([150.0, 150.0, 150.0]), "dark")
     o = pipeline.plate_obs(v, seg, 0, 128.0, 230.0, 0, fading=True)
     assert used[-1][0] == o.rect == (0, 75, 640, 190) and used[-1][1:] == pytest.approx(own) and o.fading_out
+    # Only its rows grow: paper-colored footage beside a narrower panel doesn't widen it
+    narrow = replace(v, rect=(100, 100, 500, 160))
+    o = pipeline.plate_obs(narrow, seg, 0, 128.0, 230.0, 0, fading=True)
+    assert used[-1][0] == o.rect == (100, 75, 500, 190)
     # Not fading, or on paper lighter than the faint-ink level, it keeps the segment's panel and thresholds
     for fading, fthr in ((False, 230.0), (True, 140.0)):
         o = pipeline.plate_obs(v, seg, 0, 128.0, fthr, 0, fading=fading)

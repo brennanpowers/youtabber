@@ -458,8 +458,9 @@ def glide_number_gaps(o) -> list[dict]:
 def empty_stretches(spans: list[tuple[float, float]], play_times: list[float],
                     again: list[float] = ()) -> list[dict]:
     """Stretches of tab on screen at least EMPTY_SECONDS long with no new printed measure played in them. `again`
-    holds the play times of the measures first placed on a lone view holding an unresolved fold: they may repeat
-    measures already shown, with no sign whether the song plays them again, so they aren't new."""
+    holds the play times of the measures first placed on a view holding an unresolved fold when its stream's views
+    beside it hold none (`pipeline.lone_fold_times`): they may repeat measures already shown, with no sign whether
+    the song plays them again, so they aren't new."""
     times = sorted(play_times)
     for t in again:
         times.remove(t)

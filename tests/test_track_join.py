@@ -279,24 +279,41 @@ def test_with_no_usual_slide_a_jump_falls_back_on_the_segment_share():
     assert usual_pick(Move("slide", shifts=[400], drawn=[True], steps=5), usual=None) == (None, "prior", False)
 
 
-def playhead_pick(o_start: int, usual: float | None):
-    # Cells 200 px wide, so the playhead may carry on from 700 by -10 to 300 px
+def playhead_pick(o_start: int, usual: float | None, move: Move | None = None,
+                  shifts=((598, 0.0), (398, 0.05), (198, 0.1))):
+    # Cells 200 px wide, so the playhead may carry on from 700 by -10 to 300 px; the band slid 400 px unless
+    # another move is given
     p, o = slid(400, False, p_end=700, o_start=o_start)
-    return choose_shift(p, o, [(598, 0.0), (398, 0.05), (198, 0.1)], 0.9, {"playhead"}, 10.0, usual=usual)
+    if move is not None:
+        o.move = move
+    return choose_shift(p, o, list(shifts), 0.9, {"playhead"}, 10.0, usual=usual)
 
 
 def test_a_scrolling_segment_takes_the_shift_the_playhead_allows_nearest_the_usual_slide():
     # From 500 the playhead allows 398 and 198 but not the best-lining-up 598
-    assert playhead_pick(500, 420.0) == (398, "playhead", False)
-    assert playhead_pick(500, 220.0) == (198, "playhead", False)
-    assert playhead_pick(500, None) == (398, "playhead", False)
+    assert playhead_pick(500, 420.0, Move("still")) == (398, "playhead", False)
+    assert playhead_pick(500, 220.0, Move("still")) == (198, "playhead", False)
+    assert playhead_pick(500, None, Move("still")) == (398, "playhead", False)
+    # The slide measured 400 px points at 398, though 198 is nearer the usual slide
+    assert playhead_pick(500, 220.0) == (398, "playhead", False)
 
 
 def test_a_scrolling_segment_takes_the_allowed_shift_nearest_the_usual_slide_when_the_playhead_allows_several():
-    # From 320 the playhead allows 598 and 398; the slide measured 400 px doesn't point at the best one, 598
+    # From 320 the playhead allows 598 and 398; with no slide measured, 398 is nearest the usual slide
+    assert playhead_pick(320, 420.0, Move("still")) == (398, "playhead", False)
+    # The slide measured 400 px points at 398 too
     assert playhead_pick(320, 420.0) == (398, "playhead", False)
     # With no usual slide the best-lining-up shift stands
     assert playhead_pick(320, None) == (598, "segment_scrolls", False)
+
+
+def test_a_scrolling_segment_takes_an_allowed_shift_a_measured_slide_points_at():
+    # From 320 the playhead allows all three; the slide measured 500 px points at 498, which is neither the
+    # best-lining-up shift nor the one nearest the usual slide
+    shifts = ((598, 0.0), (498, 0.05), (398, 0.1))
+    assert playhead_pick(320, 420.0, Move("slide", shifts=[500], drawn=[False], steps=1), shifts) == (
+        498, "playhead", False)
+    assert playhead_pick(320, 420.0, Move("still"), shifts) == (398, "playhead", False)
 
 
 def test_a_scrolling_segment_keeps_the_best_lining_up_shift_when_a_measured_slide_points_at_it():

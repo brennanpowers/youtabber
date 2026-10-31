@@ -269,16 +269,18 @@ def test_a_measure_printed_where_its_unresolved_fold_is_noted_needs_no_other_not
     assert unsure_printed(0) == []
 
 
-def folded_times(folds: list[int]) -> list[float]:
-    """Play times lone_fold_times gives for views 0-3 (10 s apart, one measure each, slot i first placed on view i)
-    when the views at `folds` hold unresolved folds."""
+def folded_times(folds: list[int], measures: tuple[int, ...] = (1, 1, 1, 1)) -> list[float]:
+    """Play times lone_fold_times gives for views 0-3 (10 s apart, view i holding measures[i] measures, each first
+    placed on that view and played 1 s apart from 1 s into it) when the views at `folds` hold unresolved folds."""
     ink = np.zeros((60, 200), bool)
-    obs = [Obs(i, 10.0 * i, 10.0 * i + 8, [Cell(i, 0, 0, 0, 200, "full", ink, ink, 0, gap=10.0, mid_y=30.0)], [],
-               0, (0, 0)) for i in range(4)]
-    A = Assembly(slots=[Slot(i, None, i, None) for i in range(4)],
+    obs = [Obs(i, 10.0 * i, 10.0 * i + 8,
+               [Cell(i, 0, k, 200 * k, 200 * k + 200, "full", ink, ink, 0, gap=10.0, mid_y=30.0) for k in range(n)],
+               [], 0, (0, 0)) for i, n in enumerate(measures)]
+    cells = [(o, c) for o in obs for c in o.cells]
+    A = Assembly(slots=[Slot(s, c, o.index, None) for s, (o, c) in enumerate(cells)],
                  unresolved_folds=[(obs[i].t0, obs[i].t1, 0, 0) for i in folds])
-    printed = [Measure(i, i, o.cells[0], o.t0 + 1, o.t0 + 1, 100.0, 30.0, None, None, False)
-               for i, o in enumerate(obs)]
+    printed = [Measure(s, o.index, c, o.t0 + 1 + c.index, o.t0 + 1 + c.index, 100.0, 30.0, None, None, False)
+               for s, (o, c) in enumerate(cells)]
     return pipeline.lone_fold_times(A, {0: obs}, printed)
 
 
@@ -287,6 +289,16 @@ def test_only_a_lone_unresolved_fold_gives_measures_that_are_not_new():
     assert folded_times([0, 2]) == [1.0, 21.0]
     # Folds on views in a row follow earlier music page by page
     assert folded_times([1, 2]) == []
+
+
+def test_every_measure_first_placed_on_a_lone_fold_view_is_not_new():
+    assert folded_times([2], (1, 1, 2, 1)) == [21.0, 22.0]
+
+
+def test_a_view_without_measures_between_two_fold_views_keeps_them_in_a_row():
+    assert folded_times([1, 3], (1, 1, 0, 1)) == []
+    # With measures on the view between, each fold view stands alone
+    assert folded_times([1, 3]) == [11.0, 31.0]
 
 
 def test_a_measure_carried_on_from_the_view_before_needs_no_other_notice():

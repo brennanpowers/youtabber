@@ -481,7 +481,7 @@ def choose_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float
     (`drawn_against`). Next, in a segment whose band was seen sliding by about `usual` px, the shift nearest that is
     taken, unless the slide drawn between the two views lies within a gap of another of the shifts. Without either,
     a segment where nearly every pair lines up is taken to scroll, by a shift the playhead allows when it was seen;
-    when it allows several, by the one nearest `usual`, unless a slide measured here points at the best-lining-up one.
+    when it allows several, by the one a slide measured here points at, or else the one nearest `usual`.
     `confirmed` says the playhead confirmed the slides `usual` was learned from; slides drawn in several steps can be
     measured a riff's length short, so then a drawn slide agreeing with it doesn't settle the pick.
     """
@@ -515,11 +515,16 @@ def choose_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float
     if share >= SCROLL_SEGMENT_SHARE:
         m = o.move
         measured = m.shifts if m is not None and m.kind == "slide" else []
-        to_first = bool(measured) and abs(measured[0] - shifts[0][0]) <= gap
+        # The allowed shifts a slide measured here points at, nearest first
+        pointed = sorted((dx for dx in fits or [] if measured and abs(measured[0] - dx) <= gap),
+                         key=lambda dx: abs(measured[0] - dx))
+        to_first = bool(pointed) and pointed[0] == shifts[0][0]
         if fits and (shifts[0][0] not in fits or (len(fits) > 1 and usual is not None and not to_first)):
             # The playhead ruled out the best-lining-up shift, or allows several and no slide measured here points
-            # at the best one, so take the allowed shift nearest the segment's usual slide, left unsettled
-            pick = min(fits, key=lambda dx: abs(dx - usual)) if usual is not None else fits[0]
+            # at the best one, so take the allowed shift a measured slide points at, or else the one nearest the
+            # segment's usual slide, left unsettled
+            pick = (pointed[0] if pointed else min(fits, key=lambda dx: abs(dx - usual)) if usual is not None
+                    else fits[0])
             if drawn_against(o, pick, gap):
                 # The pick was a guess among shifts, so the page turn a slide drawn back says is left unsettled too
                 return None, "drawn_back", False
