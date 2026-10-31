@@ -289,13 +289,15 @@ NUMBER_DIFF = 80
 # A changed mark in the number row is a digit when it covers this many square line gaps, is this many line gaps wide
 # and between these many line gaps tall; a thin line cursor is narrower, and a piece of one is taller
 NUMBER_AREA, NUMBER_W, NUMBER_H = 0.05, 0.25, (0.3, 1.0)
+# ...and at most this many line gaps wide, as a number of a few digits is; the edge of a box cursor or a highlight
+# crossing the row is wider
+NUMBER_MAX_W = 3.0
 # A segment's views are told apart by their number rows once one of the first this many references whose number row
 # changes and that show a staff with two measures prints measure numbers
 NUMBER_CHECKS = 3
 # A changed dark mark is the same mark moved when one frame's pixels, shifted by up to NUMBER_SHIFT_PX pixels each
 # way, leave fewer than NUMBER_AREA square line gaps of it differing, or at most NUMBER_SHIFT_SHARE of the pixels that
-# differ unshifted: video compression and a page drifting by part of a pixel move strokes a pixel or two. A digit that
-# changes stays as different at every shift
+# differ unshifted: video compression and a page drifting by part of a pixel move strokes a pixel or two
 NUMBER_SHIFT_PX, NUMBER_SHIFT_SHARE = 2, 0.5
 
 
@@ -306,7 +308,8 @@ def number_changed(a: np.ndarray, b: np.ndarray, rect, seed, gap: float, skip: n
     mark moved by a pixel or two. Pages of one riff can differ only in their numbers, which the ink compare misses
     when they are colored, faint, or change shape in place. False while a wide colored area of `tint` comes up from
     the staff into the row."""
-    # Kept inside the panel, so footage above it doesn't count
+    # Kept inside the panel, so footage above it doesn't count. A number over a system's first barline can stand left
+    # of where the staffs were found, so the panel's whole width is compared
     y0 = max(rect[1] + 2, int(seed[1] - NUMBER_ROW_GAPS[0] * gap))
     y1 = int(seed[1] - NUMBER_ROW_GAPS[1] * gap)
     y2 = min(rect[3] - 2, int(seed[1] + NUMBER_STAFF_GAPS * gap))
@@ -335,16 +338,20 @@ def number_changed(a: np.ndarray, b: np.ndarray, rect, seed, gap: float, skip: n
         return False
     n, _, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
     return any(stats[i][1] < y1 - y0 and stats[i][1] + stats[i][3] < y2 - y0
-               and stats[i][4] >= NUMBER_AREA * gap * gap and stats[i][2] >= NUMBER_W * gap
+               and stats[i][4] >= NUMBER_AREA * gap * gap and NUMBER_W * gap <= stats[i][2] <= NUMBER_MAX_W * gap
                and NUMBER_H[0] * gap <= stats[i][3] <= NUMBER_H[1] * gap
                and (keep is None or not moved(pa, pb, stats[i][:4], NUMBER_AREA * gap * gap)) for i in range(1, n))
 
 
 def moved(a: np.ndarray, b: np.ndarray, box, area: float) -> bool:
-    """True when the box (x, y, w, h) of b matches a shifted by up to NUMBER_SHIFT_PX pixels each way, leaving under
-    `area` pixels, or at most NUMBER_SHIFT_SHARE of those differing unshifted, differing by more than NUMBER_DIFF."""
+    """True when the box (x, y, w, h) of b, grown by a pixel past NUMBER_SHIFT_PX on each side, matches a shifted by
+    up to NUMBER_SHIFT_PX pixels each way, leaving under `area` pixels, or at most NUMBER_SHIFT_SHARE of those
+    differing unshifted, differing by more than NUMBER_DIFF. Grown, the box takes in the strokes around a small
+    changed piece of a digit, which alone could match a shifted stroke."""
     x, y, w, h = (int(v) for v in box)
     s = NUMBER_SHIFT_PX
+    x0, y0 = max(0, x - s - 1), max(0, y - s - 1)
+    x, y, w, h = x0, y0, min(b.shape[1], x + w + s + 1) - x0, min(b.shape[0], y + h + s + 1) - y0
     pad = cv2.copyMakeBorder(a, s, s, s, s, cv2.BORDER_REPLICATE)
     part = b[y:y + h, x:x + w]
     left = min(int((channel_diff(pad[y + s + dy:y + s + dy + h, x + s + dx:x + s + dx + w], part) > NUMBER_DIFF).sum())

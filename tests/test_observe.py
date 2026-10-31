@@ -434,6 +434,20 @@ def test_a_line_cursor_or_a_speck_in_the_number_row_is_no_change():
     assert not observe.number_changed(a, speck, PANEL, STAFFS, 18.0)
 
 
+def test_a_number_left_of_where_the_staffs_were_found_is_compared():
+    # Staffs found from column 400; a number over the system's first barline sits at column 380
+    assert observe.number_changed(*number_frames(380), PANEL, (400, 70, 1280, 160), 18.0)
+
+
+def test_a_mark_wider_than_a_number_in_the_number_row_is_no_change():
+    # Dilated, a 50 px mark is 52 wide, about 2.9 line gaps of 18, and a 53 px one 55, past NUMBER_MAX_W: a black box
+    # cursor's top edge moving along the row
+    for width, changed in ((50, True), (53, False)):
+        edge = PAGE.copy()
+        edge[50:56, 300:300 + width] = (0, 0, 0)
+        assert observe.number_changed(PAGE, edge, PANEL, STAFFS, 18.0) == changed
+
+
 def test_a_digit_sized_mark_reaching_the_bottom_of_the_compared_rows_is_no_change():
     # At an 18-pixel gap the compare looks from the number row down to row 78; dilated, a mark over rows 64-78 is 16
     # tall, the size of a digit, and reaches that row; one over rows 62-74 stops short of it
@@ -609,7 +623,7 @@ def test_a_thin_black_number_moved_up_to_two_pixels_is_no_new_page_and_one_moved
 
 
 def test_a_thin_black_number_changing_in_place_tells_the_pages_apart(monkeypatch):
-    for a, b in (("3", "8"), ("12", "13"), ("68", "69"), ("9", "0")):
+    for a, b in (("3", "8"), ("12", "13"), ("68", "69"), ("9", "0"), ("1", "7"), ("7", "1"), ("17", "71")):
         views = two_pages(monkeypatch, thin_digits(a), thin_digits(b))
         assert [round(v.t0, 2) for v in views] == [0.0, 5.0]
 
