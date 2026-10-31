@@ -6,7 +6,7 @@ import numpy as np
 
 from youtabber import ocr
 from youtabber.observe import PRINT_ABOVE_GAPS, PRINT_BELOW_GAPS, PRINT_MARGIN_GAPS, colored, gray_pixels, ink_map, to_gray
-from youtabber.scan import NOTATION_FAR_GAPS, System, line_columns, systems_in
+from youtabber.scan import NOTATION_FAR_GAPS, NOTATION_GAPS, System, line_columns, systems_in
 from youtabber.staff import without_border
 
 # A barline covers at least this share of the rows between the tab staff's top and bottom lines
@@ -55,23 +55,32 @@ NOTATION_SHARE = 0.85
 # Two neighbor staffs left unpaired pair as notation over tab, whatever lies between them, when the upper one's lines
 # are spaced under this share of the lower one's
 FAR_PAIR_GAP_SHARE = 0.75
+# The lines left of a notation staff that lost a line in beams or chords measure a little wider spaced than the
+# staff does elsewhere (0.85 of the tab's spacing against 0.81-0.83), too wide for the scan to pair. An unpaired
+# staff close above tab with fewer lines pairs as its notation when spaced under NEAR_SHARE of it
+NEAR_SHARE = 0.92
 
 
 def pair_far_notation(syss: list[System]) -> list[System]:
     """`syss` with each unpaired staff taking the unpaired staff just above it as its notation when that one is
     spaced much closer, within NOTATION_FAR_GAPS of it, and has five lines, as notation over four-string bass tab
     does, or no more lines than it. A dashed "let ring" line or a row of beams between notation and tab set far apart
-    runs across them like a rule, so the scan leaves them apart. Pairing from the bottom up, as the scan does, keeps
-    close lines above a notation staff from pulling it away from its tab."""
+    runs across them like a rule, so the scan leaves them apart. It also takes one within NOTATION_GAPS that has fewer
+    lines and is spaced under NEAR_SHARE of it. Pairing from the bottom up, as the scan does, keeps close lines above
+    a notation staff from pulling it away from its tab."""
     out: list[System] = []
     i = len(syss) - 1
     while i >= 0:
         s = syss[i]
         up = syss[i - 1] if i > 0 else None
-        if (up is not None and up.notation is None and s.notation is None and up.tab.polarity == s.tab.polarity
-                and 0 < s.tab.top - up.tab.bottom < NOTATION_FAR_GAPS * s.tab.gap
-                and up.tab.gap < FAR_PAIR_GAP_SHARE * s.tab.gap
-                and (len(up.tab.lines) == 5 or len(up.tab.lines) <= len(s.tab.lines))):
+        free = (up is not None and up.notation is None and s.notation is None and up.tab.polarity == s.tab.polarity
+                and 0 < s.tab.top - up.tab.bottom)
+        far = (free and s.tab.top - up.tab.bottom < NOTATION_FAR_GAPS * s.tab.gap
+               and up.tab.gap < FAR_PAIR_GAP_SHARE * s.tab.gap
+               and (len(up.tab.lines) == 5 or len(up.tab.lines) <= len(s.tab.lines)))
+        near = (free and s.tab.top - up.tab.bottom < NOTATION_GAPS * s.tab.gap
+                and up.tab.gap < NEAR_SHARE * s.tab.gap and len(up.tab.lines) < len(s.tab.lines))
+        if far or near:
             out.append(System(s.tab, up.tab, s.panel, s.cut_from))
             i -= 2
         else:

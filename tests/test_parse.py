@@ -691,6 +691,26 @@ def test_close_lines_above_far_notation_leave_it_with_its_tab():
     assert second.tab is tab.tab and second.notation is up.tab
 
 
+def test_a_staff_close_above_tab_with_a_line_lost_is_its_notation():
+    # 17.9 is 0.852 of 21: four notation lines left, 4.4 tab gaps above six-line tab
+    (s,) = pair_far_notation(far_pair(up_gap=17.9, apart_gaps=4.4, up_lines=4))
+    assert s.tab.gap == 21.0 and s.notation.gap == 17.9
+    # Its lines found over only the last 1400 of the tab's 1800 columns
+    up, tab = far_pair(up_gap=17.9, apart_gaps=4.4, up_lines=4)
+    up.tab = Staff(up.tab.lines, 400, 1800, 17.9, "dark")
+    (s,) = pair_far_notation([up, tab])
+    assert s.notation is up.tab
+
+
+def test_a_close_staff_stays_apart_when_spaced_near_alike_too_far_or_with_as_many_lines():
+    # 19.33 is just over 0.92 of 21 (NEAR_SHARE); 9 gaps is NOTATION_GAPS
+    for syss in (far_pair(up_gap=19.33, apart_gaps=4.4, up_lines=4), far_pair(up_gap=17.9, apart_gaps=9.0, up_lines=4),
+                 far_pair(up_gap=17.9, apart_gaps=4.4, up_lines=6)):
+        assert [s.notation for s in pair_far_notation(syss)] == [None, None]
+    (s,) = pair_far_notation(far_pair(up_gap=19.3, apart_gaps=8.9, up_lines=5))
+    assert s.notation is not None
+
+
 def test_a_staff_already_paired_takes_no_far_notation():
     up, tab = far_pair()
     tab.notation = Staff([300.0 + 14 * i for i in range(5)], 0, 1800, 14.0, "dark")

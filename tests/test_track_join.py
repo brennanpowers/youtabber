@@ -6,11 +6,11 @@ from test_numbering import band_view, music, run, view
 
 from youtabber import assemble as assemble_module
 from youtabber.assemble import (RESTART_GAP_SECONDS, Assembly, Decision, Obs, Slot, after_header, assemble, cell_at,
-                                borrow_numbers, choose_shift, compare_cells, drawn_near, find_run, forget_compared,
-                                jumped_back, keeps_widths, measure_time, page_flip_join, place_rest, playhead_at,
-                                playhead_join, playhead_restarts, playhead_track, register, register_marks,
-                                repeat_played, replay_evidence, rest_of, same_cell, scroll_shares, scroll_shifts,
-                                split_measure, still_links, track_join, usual_slides)
+                                borrow_numbers, choose_shift, closes_piece, compare_cells, drawn_near, find_run,
+                                forget_compared, jumped_back, keeps_widths, measure_time, page_flip_join, place_rest,
+                                playhead_at, playhead_join, playhead_restarts, playhead_track, register, register_marks,
+                                repeat_played, replay_evidence, rest_of, restart_before, same_cell, scroll_shares,
+                                scroll_shifts, shown_again, split_measure, still_links, track_join, usual_slides)
 from youtabber.observe import unmatched
 from youtabber.parse import Cell
 from youtabber.pipeline import Measure, Notice, edge_notices, join_notices, readings, repeat_notices
@@ -1142,3 +1142,134 @@ def test_a_playhead_pick_in_a_scrolling_segment_gives_way_to_a_slide_drawn_back(
     p, o = slid(-1200, True, p_end=700, o_start=500)
     shifts = [(598, 0.0), (398, 0.05), (198, 0.1)]
     assert choose_shift(p, o, shifts, 0.9, {"playhead"}, 10.0, usual=420.0) == (None, "drawn_back", False)
+
+
+def closing(o: Obs, bar_px: int = 6, staff_end: int = 806, bar_x: int = 800) -> Obs:
+    """o with one system whose last measure ends at x 800, its last barline bar_px wide from bar_x, the staff
+    ending at staff_end."""
+    tab = SimpleNamespace(x1=staff_end, gap=10.0)
+    o.systems = [SimpleNamespace(bars=[(0, 2), (bar_x, bar_x + bar_px)], system=SimpleNamespace(tab=tab))]
+    return o
+
+
+def end_evidence(bar_px: int = 6, staff_end: int = 806, furthest: int = 840):
+    A = Assembly()
+    A.staff_ends = {0: furthest}
+    p, o = closing(band_view(0, 9), bar_px, staff_end), band_view(1, 1)
+    return replay_evidence(o, o.cells[:2], 0, A, 0.0, p, set(), lambda x: [])
+
+
+def test_the_opening_after_a_wide_closing_barline_short_of_the_segment_s_staff_end_starts_the_song_over():
+    # The 6 px barline is 0.6 gaps wide and its staff stops 3.4 gaps short of the furthest staff end
+    assert end_evidence() == (True, "end_restart", True)
+
+
+def test_a_thin_last_barline_one_ending_the_usual_staff_or_one_before_more_staff_is_no_closing_barline():
+    # 0.4 gaps wide; 1.4 gaps short of the furthest end; the staff going on 0.6 gaps past the barline
+    for kw in (dict(bar_px=4), dict(furthest=820), dict(staff_end=812, furthest=850)):
+        assert end_evidence(**kw) == (False, "none", False)
+
+
+def test_no_closing_barline_off_the_last_measure_s_end_after_a_last_cell_of_another_kind_or_system_or_in_a_glide():
+    assert closes_piece(closing(band_view(0, 9)), 840)
+    # 3 px right of the last measure's end
+    assert not closes_piece(closing(band_view(0, 9), staff_end=809, bar_x=803), 840)
+    for change in (dict(kind="tail"), dict(system=1)):
+        p = closing(band_view(0, 9))
+        p.cells[-1] = replace(p.cells[-1], **change)
+        assert not closes_piece(p, 840)
+    p = closing(band_view(0, 9))
+    p.mosaic = object()
+    assert not closes_piece(p, 840)
+
+
+def made_slots(n: int = 10, starts=(0,), seg: int = 0):
+    """An assembly of n slots whose last two this view made, with segment starts `starts`, and the view."""
+    A = Assembly()
+    A.slots = [Slot(k, None, 0, None) for k in range(n)]
+    A.segment_starts, A.seen_segments = set(starts), {0, seg}
+    return A, SimpleNamespace(seg=seg)
+
+
+def test_measures_before_the_opening_shown_again_fold_onto_the_slots_just_before_it_in_its_segment_only():
+    A, o = made_slots(starts=(0, 4))
+    slot_of = [8, 9, None]
+    restart_before(o, slot_of, 2, 6, 8, A)
+    assert slot_of == [4, 5, None] and len(A.slots) == 8
+    # Slot 5 lies one past a later segment's start at 4, so slot 3 before it is in another segment
+    A, o = made_slots(starts=(0, 4))
+    slot_of = [8, 9, None]
+    restart_before(o, slot_of, 2, 5, 8, A)
+    assert slot_of == [8, 9, None] and len(A.slots) == 10
+
+
+def test_measures_before_the_opening_stay_when_one_is_unsure_or_was_placed_by_the_join():
+    A, o = made_slots()
+    A.unsure_slots = {9: (0.0, 1.0)}
+    slot_of = [8, 9, None]
+    restart_before(o, slot_of, 2, 6, 8, A)
+    assert slot_of == [8, 9, None] and len(A.slots) == 10
+    A, o = made_slots()
+    slot_of = [3, 9, None]
+    restart_before(o, slot_of, 2, 6, 9, A)
+    assert slot_of == [3, 9, None] and len(A.slots) == 10
+
+
+def test_measures_before_the_opening_that_opened_their_segment_leave_it_not_yet_seen():
+    A, o = made_slots(starts=(0, 8), seg=1)
+    slot_of = [8, 9, None]
+    restart_before(o, slot_of, 2, 2, 8, A)
+    assert slot_of == [0, 1, None] and len(A.slots) == 8
+    assert A.segment_starts == {0} and A.seen_segments == {0}
+
+
+def test_measures_before_the_opening_shown_again_after_the_closing_barline_fold_by_position():
+    # The third view shows measures 1-4 again after the closing barline, the first under an overlay that makes it
+    # match nothing
+    first, last = band_view(0, 1), closing(band_view(1, 5))
+    closing(first, staff_end=840)
+    again = band_view(2, 1)
+    again.cells[0] = replace(again.cells[0], ink=music("x", 1))
+    A = assemble([first, last, again], 10.0, False, EVIDENCE, lambda v: [])
+    assert A.view_slots[2] == [0, 1, 2, 3]
+    assert len(A.slots) == 8
+
+
+def test_a_page_shown_again_after_a_stop_before_an_end_repeat_takes_no_shift():
+    # Every view lays out four 200 px measures alike, so the third has the barlines of the first
+    first, p, o = band_view(0, 1), band_view(1, 5), band_view(2, 1)
+    p.repeat_end = True
+    nav = {"navigation"}
+    assert choose_shift(p, o, [(398, 0.0)], 0.9, nav, 10.0, pages=[first, p, o]) == (None, "repeat_page", False)
+    # Without navigation evidence the repeat sign says nothing
+    assert choose_shift(p, o, [(398, 0.0)], 0.9, set(), 10.0, pages=[first, p, o]) == (398, "segment_scrolls", True)
+    # The view just before is no earlier page
+    assert choose_shift(p, o, [(398, 0.0)], 0.9, nav, 10.0, pages=[p, o]) == (398, "segment_scrolls", True)
+    p.repeat_end = False
+    assert choose_shift(p, o, [(398, 0.0)], 0.9, nav, 10.0, pages=[first, p, o]) == (398, "segment_scrolls", True)
+    # 3 px off is past a quarter of the 10 px gap
+    p.repeat_end = True
+    o.cells[2] = replace(o.cells[2], x0=o.cells[2].x0 + 3)
+    assert choose_shift(p, o, [(398, 0.0)], 0.9, nav, 10.0, pages=[first, p, o]) == (398, "segment_scrolls", True)
+
+
+def test_no_page_is_shown_again_on_two_systems_with_another_cell_count_or_after_a_page_of_another_segment():
+    def pages():
+        first, p, o = band_view(0, 1), band_view(1, 5), band_view(2, 1)
+        p.repeat_end = True
+        return first, p, o
+
+    first, p, o = pages()
+    assert shown_again(p, o, [first, p, o], 10.0)
+    first, p, o = pages()
+    o.single = False
+    assert not shown_again(p, o, [first, p, o], 10.0)
+    # The first page's three measures lie where the third page's first three do
+    first, p, o = pages()
+    first.cells = first.cells[:3]
+    assert not shown_again(p, o, [first, p, o], 10.0)
+    for change in (dict(seg=1), dict(single=False)):
+        first, p, o = pages()
+        for k, v in change.items():
+            setattr(first, k, v)
+        assert not shown_again(p, o, [first, p, o], 10.0)

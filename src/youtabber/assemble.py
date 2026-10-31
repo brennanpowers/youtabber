@@ -16,6 +16,12 @@ from youtabber.observe import WRAP_GAPS, unmatched
 RESTART_GAP_SECONDS = 1.5
 # ...and shows music from at most this many measures after a segment's first measure
 RESTART_SLACK = 3
+# A still view whose last staff ends on a barline at least END_BAR_GAPS line gaps wide, at most STAFF_END_GAPS from
+# the staff's end with no measure after it, and stops at least SHORT_GAPS short of the segment's furthest staff end,
+# shows the closing barline of the piece
+END_BAR_GAPS, STAFF_END_GAPS, SHORT_GAPS = 0.5, 0.5, 2.0
+# ...when its last measure ends at most this many pixels from that barline's left edge
+END_BAR_SLACK_PX = 2
 # A playhead sample this close to a view's start or end says where playback was at that moment
 PLAYHEAD_EDGE_SECONDS = 1.0
 # A playhead at most this many pixels outside a cell's left or right edge is still on that cell
@@ -110,6 +116,8 @@ OTHER_PART_MEASURES = 3
 # A view placed by an end-repeat sign that shows the sign again sends the next view back to the same place, within
 # this many slots
 SIGN_SLACK = 2
+# Barlines this many line gaps apart or closer on two views are in the same places
+SAME_BAR_GAPS = 0.25
 
 
 @dataclass
@@ -203,6 +211,7 @@ class Assembly:
     # (first view, whether each measure compared showed the earlier music) of each stretch in other_music
     other_starts: list = field(default_factory=list)
     sign_folds: dict = field(default_factory=dict)   # view index -> first slot its cells folded onto by a repeat sign
+    staff_ends: dict = field(default_factory=dict)   # segment -> furthest right end of a still view's last staff
     sliding: dict = field(default_factory=dict)   # segment -> its band moves on by measured slides
     stream_orders: dict = field(default_factory=dict)   # stream -> its own slots in print order
     # (t0, t1, j) of views the playhead jumped back to whose new measures look like earlier slots, the first being j
@@ -473,7 +482,32 @@ def keeps_widths(p: Obs, o: Obs, dx: int) -> bool:
 
 
 def choose_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float, usual: float | None = None,
-                 confirmed: bool = True):
+                 confirmed: bool = True, pages=()):
+    """`pick_shift`'s answer, except that with navigation evidence in use, a page shown again after p stopped before
+    an end-repeat sign (`shown_again`, against the earlier views in `pages`) takes no shift, left unsettled: the sign
+    places its measures."""
+    dx, basis, resolved = pick_shift(p, o, shifts, share, use, gap, usual, confirmed)
+    if dx is not None and "navigation" in use and shown_again(p, o, pages, gap):
+        return None, "repeat_page", False
+    return dx, basis, resolved
+
+
+def bar_edges(o: Obs) -> list:
+    return [c.x0 for c in o.cells] + [o.cells[-1].x1]
+
+
+def shown_again(p: Obs, o: Obs, pages, gap: float) -> bool:
+    """Whether p ended before an end-repeat sign it hadn't reached and o, one system, has every barline within
+    SAME_BAR_GAPS of those of an earlier view of its segment than p with as many cells: that page shown again."""
+    if not (p.repeat_end and repeat_played(p)) or not o.single or not o.cells:
+        return False
+    edges = bar_edges(o)
+    return any(e.index < p.index and e.seg == o.seg and e.single and len(e.cells) == len(o.cells)
+               and max(abs(x - y) for x, y in zip(bar_edges(e), edges)) <= SAME_BAR_GAPS * gap for e in pages)
+
+
+def pick_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float, usual: float | None = None,
+               confirmed: bool = True):
     """(dx or None, basis, resolved): whether o is p scrolled by one of the shifts, or a new page.
 
     The playhead decides when it was seen at both ends: after a scroll it carries on from where it was,
@@ -481,9 +515,10 @@ def choose_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float
     (`drawn_against`). Next, in a segment whose band was seen sliding by about `usual` px, the shift nearest that is
     taken, unless the slide drawn between the two views lies within a gap of another of the shifts. Without either,
     a segment where nearly every pair lines up is taken to scroll, by a shift the playhead allows when it was seen;
-    when it allows several, by the one a slide measured here points at, or else the one nearest `usual`.
-    `confirmed` says the playhead confirmed the slides `usual` was learned from; slides drawn in several steps can be
-    measured a riff's length short, so then a drawn slide agreeing with it doesn't settle the pick.
+    when it allows several, by the one a slide measured here points at, or else the one nearest `usual`. With no
+    `usual`, the best-lining-up shift stands whenever the playhead allows it. `confirmed` says the playhead
+    confirmed the slides `usual` was learned from; slides drawn in several steps can be measured a riff's length
+    short, so then a drawn slide agreeing with it doesn't settle the pick.
     """
     fits = None
     if "playhead" in use and tracked(p) and tracked(o):
@@ -717,8 +752,9 @@ def replay_evidence(o, run, j, A, gap_before, prev, use, words_of) -> tuple[bool
 
     Folding needs evidence that the video went back to the same place in the score: equal printed
     measure numbers, an end-repeat sign or a D.S./D.C. marking on the page played just before, a restart
-    from the first measure after a break, or a sliding band cut back to its opening. A run that only looks like
-    earlier music is an unresolved fold: the main reading prints it again and the folded reading folds it.
+    from the first measure after a break, the opening shown right after the piece's closing barline, or a sliding
+    band cut back to its opening. A run that only looks like earlier music is an unresolved fold: the main reading
+    prints it again and the folded reading folds it.
     """
     first = run[0]
     if "numbers" in use and first.number is not None and A.slots[j].number is not None:
@@ -737,12 +773,30 @@ def replay_evidence(o, run, j, A, gap_before, prev, use, words_of) -> tuple[bool
     slid = o.move is not None and o.move.kind == "slide"
     if near_start and gap_before >= RESTART_GAP_SECONDS and not slid:
         return True, "restart", True
+    # The opening measures right after the piece's closing barline are the song starting over
+    if near_start and prev is not None and closes_piece(prev, A.staff_ends.get(prev.seg)):
+        return True, "end_restart", True
     # A band that moves on by sliding and instead cuts back to the opening measures was sent back to the start.
     # Settled only when the playhead went from the end of the page before straight to the first measure here
     if near_start and o.move is not None and o.move.kind == "cut" and A.sliding.get(o.seg, False):
         from_end = prev is not None and cell_at(prev, playhead_at(prev, at_start=False)) == len(prev.cells) - 1
         return True, "track_restart", from_end and cell_at(o, playhead_at(o, at_start=True)) == 0
     return False, "none", False
+
+
+def closes_piece(p: Obs, staff_end: float | None) -> bool:
+    """Whether still view p ends its last staff on a closing barline (see END_BAR_GAPS), that staff stopping
+    SHORT_GAPS or more line gaps before `staff_end`, the furthest a still view's last staff reaches in p's
+    segment."""
+    if p.mosaic is not None or not p.systems or not p.cells or staff_end is None:
+        return False
+    ps, last = p.systems[-1], p.cells[-1]
+    st = ps.system.tab
+    if not ps.bars or last.kind != "full" or last.system != len(p.systems) - 1:
+        return False
+    b0, b1 = ps.bars[-1]
+    return (abs(last.x1 - b0) <= END_BAR_SLACK_PX and st.x1 - b1 <= STAFF_END_GAPS * st.gap
+            and b1 - b0 >= END_BAR_GAPS * st.gap and staff_end - st.x1 >= SHORT_GAPS * st.gap)
 
 
 def repeat_played(p: Obs) -> bool:
@@ -924,15 +978,16 @@ def usual_slides(slides: dict, drawn_slides: dict, gap: float) -> dict:
     return usual
 
 
-def existing_join(prev, o, gap, shift_cache, scroll_share, usual, use, A) -> dict:
+def existing_join(prev, o, gap, shift_cache, scroll_share, usual, use, A, pages=()) -> dict:
     """The join made without the band's measured movement: a registered shift, else an overlap of look-alike
-    cells. Its decisions go to A."""
+    cells. Its decisions go to A. `pages` are the views being placed."""
     links: dict = {}
     options = []
     shifts = shift_cache.get(o.index, [])
     if shifts:
         step, confirmed = usual.get(o.seg, (None, True))
-        dx, basis, resolved = choose_shift(prev, o, shifts, scroll_share.get(o.seg, 0.0), use, gap, step, confirmed)
+        dx, basis, resolved = choose_shift(prev, o, shifts, scroll_share.get(o.seg, 0.0), use, gap, step, confirmed,
+                                           pages)
         if dx is not None:
             links = scroll_links(prev, o, dx)
             # A page shown again whole can line up with itself one measure on; a riff scrolled on by its
@@ -1181,6 +1236,9 @@ def place_views(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str]
                 pairs: _Pairs) -> Assembly:
     """One pass of `assemble`; each view in `others` (indexes) starts a numbering of its own."""
     A = Assembly(decisions=[replace(d) for d in pairs.moves], sliding=dict(pairs.sliding))
+    for o in obs:
+        if o.systems and o.mosaic is None:
+            A.staff_ends[o.seg] = max(A.staff_ends.get(o.seg, 0), o.systems[-1].system.tab.x1)
     seg_of = {o.index: o.seg for o in obs}
     prev: Obs | None = None
     prev_slots: list = []
@@ -1248,7 +1306,7 @@ def place_views(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str]
                 if tj is not None and tj[1].startswith("slide?"):
                     # A slide the playhead didn't confirm only settles a pair the plates and overlaps left open
                     probe = Assembly()
-                    plain = existing_join(prev, o, gap, shift_cache, scroll_share, usual, use, probe)
+                    plain = existing_join(prev, o, gap, shift_cache, scroll_share, usual, use, probe, obs)
                     if probe.decisions:
                         links, tj, probed = plain, None, True
                         A.decisions.extend(probe.decisions)
@@ -1263,7 +1321,7 @@ def place_views(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str]
                         resolved = tj[1] != "still?"
                     A.decisions.append(Decision(o.t0, "join", tj[1].replace("?", ""), [], "track", resolved))
                 elif not probed:
-                    links = existing_join(prev, o, gap, shift_cache, scroll_share, usual, use, A)
+                    links = existing_join(prev, o, gap, shift_cache, scroll_share, usual, use, A, obs)
                 pj = playhead_join(prev, o, beats.get(o.seg), gap) if not links and tj is None else None
                 if pj is not None:
                     links, continues, edge = pj
@@ -1615,6 +1673,7 @@ def place_rest(o, slot_of, A, gap, gap_before, prev, use, words_of, fold_unresol
         return
     if all(s is None for s in slot_of) and glide_restart(o, slot_of, A, gap, gap_before):
         return
+    start = len(A.slots)
     i = 0
     cells = o.cells
     while i < len(cells):
@@ -1661,6 +1720,8 @@ def place_rest(o, slot_of, A, gap, gap_before, prev, use, words_of, fold_unresol
                                         basis, resolved))
             if fold and basis == "repeat_sign":
                 A.sign_folds.setdefault(o.index, j)
+            if fold and basis == "end_restart":
+                restart_before(o, slot_of, i, j, start, A)
             if fold and o.mosaic is not None and getattr(A.slots[j].first, "glided", False):
                 # A glide replaying an earlier glide: line the rest of it up with that glide as a whole
                 align_glide(o, slot_of, i, j, A, gap)
@@ -1675,6 +1736,25 @@ def place_rest(o, slot_of, A, gap, gap_before, prev, use, words_of, fold_unresol
         slot_of[i] = new_slot(A, cells[i], o)
         A.replay_next = None
         i += 1
+
+
+def restart_before(o, slot_of, i: int, j: int, start: int, A) -> None:
+    """Fold o's cells before cell i, which starts the opening measures again at slot j, onto the slots just before
+    j by position, when this view gave each of them a new slot of its own and as many slots before j lie in j's
+    segment: on a page shown again from the start, an overlay can change those measures' look enough that they
+    match nothing."""
+    made = slot_of[:i]
+    seg_start = max((s for s in A.segment_starts if s <= j), default=0)
+    if (not i or j - i < seg_start or made != list(range(start, len(A.slots)))
+            or any(s in A.unsure_slots for s in made)):
+        return
+    del A.slots[start:]
+    for sid in made:
+        if sid in A.segment_starts:
+            # That slot opened the segment, so the segment counts as not yet seen again
+            A.segment_starts.discard(sid)
+            A.seen_segments.discard(o.seg)
+    slot_of[:i] = range(j - i, j)
 
 
 def glide_alignment(cells, targets, A, gap) -> list[tuple[int, int]]:

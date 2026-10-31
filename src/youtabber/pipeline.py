@@ -76,8 +76,8 @@ MOSAIC_PIECE = 40000
 # ...overlapping by this many columns, several times the widest measure
 MOSAIC_OVERLAP = 8000
 # A cell past a system's last barline with less ink than this share of its width times the line gap, and less than
-# BLANK_TAIL_TALL square line gaps of marks at least TALL_MARK_GAPS line gaps tall, is blank staff, not a measure.
-# What the staff lines leave behind is flat, while a lone fret digit stands tall
+# BLANK_TAIL_TALL square line gaps of marks at least TALL_MARK_GAPS line gaps (and 3 px) tall, is blank staff, not a
+# measure. What the staff lines leave behind is flat, while a lone fret digit stands tall
 BLANK_TAIL_INK, BLANK_TAIL_TALL, TALL_MARK_GAPS = 0.02, 0.02, 0.25
 # A part's last longer views whose paper is more than this many gray levels darker than its usual paper are
 # fading out

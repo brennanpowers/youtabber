@@ -121,6 +121,17 @@ def test_a_tail_past_the_last_barline_with_next_to_no_ink_is_no_measure():
     assert kept_cells([blank, inked], typical=300) == [inked]
 
 
+def test_a_barline_left_at_the_start_of_a_blank_tail_is_no_tall_mark():
+    # The cell's left edge is ink column 15 and the barline's skipped columns reach column 22, so a 30 px column at
+    # 18 is read as that barline; at column 200 it would be a mark
+    left = tail(0)
+    left.ink[40:70, 18] = True
+    assert kept_cells([left], typical=300) == []
+    inside = tail(0)
+    inside.ink[40:70, 200] = True
+    assert kept_cells([inside], typical=300) == [inside]
+
+
 def test_a_lone_thin_digit_in_a_wide_tail_is_a_measure():
     # 1000 px wide, so under 200 pixels of ink passes for blank staff; the staff lines left 150 flat pixels
     ink = np.zeros((120, 1001), bool)
