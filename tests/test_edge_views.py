@@ -318,7 +318,7 @@ def test_a_brief_screen_that_parses_no_measures_is_not_read(monkeypatch):
     # The middle screen and the last one show measures; the brief first screen shows none
     measures = {0.0: [], 0.5: [5, 6, 7], 9.0: [8, 9]}
 
-    def plate_obs(v, seg, si, thr, fthr, index, col0=None):
+    def plate_obs(v, seg, si, thr, fthr, index, col0=None, fading=False):
         o = screen(index, measures[v.t0], brief=v.brief)
         o.t0, o.t1, o.systems = v.t0, v.t1, []
         return o
@@ -354,6 +354,46 @@ def test_a_brief_screen_with_paper_darker_than_the_faint_ink_level_is_read_with_
     assert used[-1] == (100.0, 140.0)
 
 
+def flat(t0, t1, level, brief=False):
+    """A screen of plain paper at gray `level` with black bars above and below, its panel the staff rows 100-160."""
+    plate = np.full((360, 640, 3), level, np.uint8)
+    plate[:40] = plate[300:] = 0
+    return View(t0, t1, plate, rect=(0, 100, 640, 160), print_rect=(0, 100, 640, 160), brief=brief)
+
+
+def test_a_parts_last_longer_screens_on_paper_over_20_levels_darker_than_its_usual_are_fading_out():
+    seg = Segment(0.0, 10.0, 10.0, "dark", paper=np.array([255.0, 255.0, 255.0]), x1=640, y1=360)
+    part = SimpleNamespace(id=0)
+
+    def fading(levels):
+        views = [flat(2.0 * i, 2.0 * i + 2.0, lv) for i, lv in enumerate(levels)] + [flat(10.0, 10.5, 100, True)]
+        ids = pipeline.fading_out([(v, part, 128.0, 230.0) for v in views], seg)
+        return [i for i, v in enumerate(views) if id(v) in ids]
+    # The usual paper is 228; the brief last screen is left out
+    assert fading([230, 228, 232, 207, 190]) == [3, 4]
+    # 20 levels under is no fade, and a darker screen before the last one isn't among the last
+    assert fading([230, 228, 232, 208, 190]) == [4]
+    assert fading([230, 228, 232, 190, 229]) == []
+
+
+def test_a_fading_last_screen_is_read_from_its_own_paper_in_a_panel_grown_from_it(monkeypatch):
+    seg = Segment(0.0, 10.0, 10.0, "dark", paper=np.array([255.0, 255.0, 255.0]), x1=640, y1=360)
+    used = []
+
+    def parse_view(index, image, rect, polarity, thr, fthr, *a, **kw):
+        used.append((rect, thr, fthr))
+        return []
+    monkeypatch.setattr(pipeline, "parse_view", parse_view)
+    v = flat(6.0, 9.0, 150)
+    own = ink_threshold(to_gray(v.plate, "dark")[75:190], np.array([150.0, 150.0, 150.0]), "dark")
+    o = pipeline.plate_obs(v, seg, 0, 128.0, 230.0, 0, fading=True)
+    assert used[-1][0] == o.rect == (0, 75, 640, 190) and used[-1][1:] == pytest.approx(own) and o.fading_out
+    # Not fading, or on paper lighter than the faint-ink level, it keeps the segment's panel and thresholds
+    for fading, fthr in ((False, 230.0), (True, 140.0)):
+        o = pipeline.plate_obs(v, seg, 0, 128.0, fthr, 0, fading=fading)
+        assert used[-1] == ((0, 100, 640, 160), 128.0, fthr) and not o.fading_out
+
+
 def contrasted(index, ink, line, brief=False):
     o = screen(index, [1, 2, 3], brief)
     o.contrast, o.line_contrast = ink, line
@@ -385,6 +425,23 @@ def test_a_faded_brief_screen_before_the_last_segment_is_cleared():
     last = contrasted(4, 50.0, 20.0, brief=True)
     mark_fades(obs[:3] + [last], parts, segments, 0)
     assert (last.faded, len(last.all_cells)) == (True, 3)
+
+
+def test_a_fading_last_screen_caught_in_the_fade_keeps_its_measures_when_its_barlines_moved_on():
+    parts, segments = [SimpleNamespace(id=0, seg=0)], [SimpleNamespace(polarity="dark")]
+    obs = [timed(contrasted(i, 100.0, 50.0), 2.0 * i, 2.0 * i + 2.0) for i in range(3)]
+
+    def last(fading_out, moved):
+        o = timed(contrasted(3, 50.0, 20.0), 6.0, 9.0)
+        o.fading_out = fading_out
+        for c in o.all_cells:
+            c.x0, c.x1 = c.x0 + moved, c.x1 + moved
+        mark_fades(obs + [o], parts, segments, 0)
+        return len(o.all_cells), o.faded
+    assert last(True, 100) == (3, False)
+    # Over the barlines of the page before, it is that page fading; not read from its own paper, it is cleared
+    assert last(True, 0) == (0, False)
+    assert last(False, 100) == (0, False)
 
 
 def test_a_brief_screen_left_with_no_measures_does_not_hide_a_break_before_a_restart():

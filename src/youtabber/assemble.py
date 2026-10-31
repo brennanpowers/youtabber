@@ -155,6 +155,7 @@ class Obs:
     counter: list = field(default_factory=list)   # (start, end, measure) runs of a bar counter shown with a glide
     brief: bool = False                  # a first or last screen held under observe.MIN_VIEW_SECONDS
     faded: bool = False                  # a brief screen with the weak contrast of a fade
+    fading_out: bool = False             # one of its part's last screens, read from its own darker paper
 
 
 @dataclass
@@ -479,7 +480,8 @@ def choose_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float
     which in o's coordinates is (where it was in p) - dx, unless a slide drawn the other way says o is a new page
     (`drawn_against`). Next, in a segment whose band was seen sliding by about `usual` px, the shift nearest that is
     taken, unless the slide drawn between the two views lies within a gap of another of the shifts. Without either,
-    a segment where nearly every pair lines up is taken to scroll, by a shift the playhead allows when it was seen.
+    a segment where nearly every pair lines up is taken to scroll, by a shift the playhead allows when it was seen;
+    when it allows several, by the one nearest `usual`, unless a slide measured here points at the best-lining-up one.
     `confirmed` says the playhead confirmed the slides `usual` was learned from; slides drawn in several steps can be
     measured a riff's length short, so then a drawn slide agreeing with it doesn't settle the pick.
     """
@@ -511,9 +513,12 @@ def choose_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float
                 lone = len(shifts) == 1 and share >= SCROLL_SEGMENT_SHARE and (not drawn or agrees)
                 return near[0], "usual_slide", (agrees and confirmed) or lone
     if share >= SCROLL_SEGMENT_SHARE:
-        if fits and shifts[0][0] not in fits:
-            # The best-lining-up shift is one the playhead ruled out, so take the one it allows nearest the
-            # segment's usual slide, left unsettled
+        m = o.move
+        measured = m.shifts if m is not None and m.kind == "slide" else []
+        to_first = bool(measured) and abs(measured[0] - shifts[0][0]) <= gap
+        if fits and (shifts[0][0] not in fits or (len(fits) > 1 and usual is not None and not to_first)):
+            # The playhead ruled out the best-lining-up shift, or allows several and no slide measured here points
+            # at the best one, so take the allowed shift nearest the segment's usual slide, left unsettled
             pick = min(fits, key=lambda dx: abs(dx - usual)) if usual is not None else fits[0]
             if drawn_against(o, pick, gap):
                 return None, "drawn_back", True

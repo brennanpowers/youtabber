@@ -106,3 +106,16 @@ def test_a_clef_cell_of_a_system_cut_by_the_panel_top_is_not_an_empty_bar():
     cut = cell(60, marks=False, clef=True)
     cut.top_y = -5
     assert not empty_bar(cut)
+
+
+def tail(inked: int) -> Cell:
+    """A 300 px cell past the system's last barline holding `inked` pixels of ink."""
+    ink = np.zeros((120, 316), bool)
+    ink.flat[:inked] = True
+    return Cell(0, 0, 5, 100, 400, "tail", ink, np.zeros_like(ink), 0, gap=GAP, ref_y=60, mid_y=85.0, top_y=15)
+
+
+def test_a_tail_past_the_last_barline_with_next_to_no_ink_is_no_measure():
+    # Under 0.02 of its width times the line gap, 60 pixels, it is blank staff
+    blank, inked = tail(59), tail(60)
+    assert kept_cells([blank, inked], typical=300) == [inked]

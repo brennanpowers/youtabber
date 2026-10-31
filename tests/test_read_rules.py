@@ -71,7 +71,7 @@ def test_an_end_card_is_left_out_of_the_reading(monkeypatch):
     card = Segment(62.0, 80.0, 14.0, "dark", paper=paper, x1=640, y1=360)
     views = {0.0: [still(0.0, 30.0, playhead=True), still(30.0, 60.0)], 62.0: [still(62.0, 70.0), still(70.0, 80.0)]}
 
-    def plate_obs(v, seg, si, thr, fthr, index, col0=None):
+    def plate_obs(v, seg, si, thr, fthr, index, col0=None, fading=False):
         o = screen(index, [1, 2, 3])
         o.t0, o.t1, o.seg, o.systems, o.playhead = v.t0, v.t1, si, [], v.playhead
         return o

@@ -20,8 +20,8 @@ from youtabber.check import (DUP_RESEMBLE, dwell, empty_stretches, fmt, glide_fa
                              possible_duplicates, redraw_gaps, screen_breaks, shared_barlines, slow_measures,
                              tab_in_pieces, too_few, unread_stretches)
 from youtabber.match import resemble, resemble_scaled
-from youtabber.observe import (ABOVE_GAPS, BELOW_GAPS, OBS_FPS, PRINT_ABOVE_GAPS, ink_map, ink_threshold, set_paper,
-                               to_gray, views_in)
+from youtabber.observe import (ABOVE_GAPS, BELOW_GAPS, OBS_FPS, PRINT_ABOVE_GAPS, ink_map, ink_threshold, panel_rect,
+                               set_paper, to_gray, views_in)
 from youtabber.parse import Cell, bare_header, line_darkness, numbers_printed, parse_view, staff_ink
 from youtabber.panel import panel_bounds
 from youtabber.parts import Part, find_parts, merge_order, stream_of
@@ -75,8 +75,12 @@ MAX_GLIDE_PIECES, GLIDE_PIECE_SECONDS, GLIDE_ROWS_SECONDS = 8, 2.0, 10.0
 MOSAIC_PIECE = 40000
 # ...overlapping by this many columns, several times the widest measure
 MOSAIC_OVERLAP = 8000
-# A glide's last cell with less ink than this share of its width times the line gap is blank staff, not a measure
+# A cell past a system's last barline with less ink than this share of its width times the line gap is blank staff,
+# not a measure
 BLANK_TAIL_INK = 0.02
+# A part's last longer views whose paper is more than this many gray levels darker than its usual paper are
+# fading out
+FADE_PAPER_DROP = 20
 # Where a glide starts, cells holding no more ink than an empty bar are left out when they are the staff's header
 # ending within LEAD_IN_GAPS line gaps of the playhead's column, or, with an uncolored playhead line (which passes for
 # a barline on the first frame), a cell starting there narrower than LEAD_IN_SHARE of a typical measure
@@ -359,9 +363,10 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
         # The parts' views in one list by time, the upper part first when two start together, then the left one
         still = []
         mine = []
+        fading = fading_out(read_views, seg) if si == len(segments) - 1 else set()
         for v, part, thr, fthr in sorted(read_views, key=lambda x: (x[0].t0, x[1].rows[0], part_crop(seg, x[1])[0])):
             pcrop = part_crop(seg, part)
-            o = plate_obs(v, seg, si, thr, fthr, len(obs), pcrop[0])
+            o = plate_obs(v, seg, si, thr, fthr, len(obs), pcrop[0], fading=id(v) in fading)
             if v.brief and not o.all_cells:
                 # A first or last screen held briefly with no measures is a page coming or going, not time with tab
                 continue
@@ -1067,8 +1072,17 @@ def mark_fades(obs: list[Obs], parts: list[Part], segments: list[Segment], last_
                 # next screen shows clearly.
                 if o.brief and o is not group[0] and part.seg == last_seg:
                     o.faded = True
-                else:
+                elif not (o.fading_out and new_page(o, group)):
+                    # The last page may show only while the video fades out, so a screen read from its own darker
+                    # paper keeps its measures when its barlines stand elsewhere than the page before's
                     o.all_cells = []
+
+
+def new_page(o: Obs, group: list[Obs]) -> bool:
+    """Whether view o has cells and its barlines stand elsewhere than those of the latest earlier view in the group
+    with cells."""
+    before = [p for p in group if p.t0 < o.t0 and p.all_cells]
+    return bool(o.all_cells) and (not before or not same_barlines(o, before[-1]))
 
 
 def drop_fades(obs: list[Obs]) -> dict[int, str]:
@@ -1410,8 +1424,14 @@ def kept_cells(cells: list[Cell], typical: float) -> list[Cell]:
     """The cells that are measures: those at least EDGE_SHARE of a typical measure wide, short bars on still screens,
     and empty bars however short. A clef and key header standing alone is no measure."""
     return [c for i, c in enumerate(cells)
-            if not c.header
+            if not c.header and not blank_tail(c)
             and (c.x1 - c.x0 >= EDGE_SHARE * typical or short_bar(c, typical) or empty_bar(c) or rest_run(cells, i))]
+
+
+def blank_tail(c: Cell) -> bool:
+    """True for a cell past a system's last barline with next to no ink: staff lines running on past the end, which
+    hold no measure."""
+    return c.kind == "tail" and c.ink.sum() < BLANK_TAIL_INK * (c.x1 - c.x0) * c.gap
 
 
 def counted_header(o: Obs) -> bool:
@@ -1586,21 +1606,58 @@ def part_pairs(obs: list[Obs]) -> list[tuple[Obs, Obs]]:
     return track.pairs([o for o in obs if o.mosaic is None], key=lambda o: (o.seg, o.part))
 
 
-def plate_obs(v, seg: Segment, si: int, thr: float, fthr: float, index: int, col0: int | None = None) -> Obs:
-    """One still view, parsed into measure cells. `col0` is the crop's first column when it starts right of the
-    segment's."""
+def paper_level(v, seg: Segment) -> float | None:
+    """Gray level of a view's paper, the median color inside its panel, or None for an empty panel."""
     x0, y0, x1, y1 = v.rect
-    if v.brief and x1 > x0 and y1 > y0:
-        # A screen shown briefly while the page fades can have paper darker than the segment's faint-ink level,
-        # which would make all of it ink; it is read with thresholds set from its own paper
+    if x1 <= x0 or y1 <= y0:
+        return None
+    own = np.median(v.plate[y0:y1, x0:x1].reshape(-1, 3), axis=0)
+    return float(to_gray(own.astype(np.uint8)[None, None], seg.polarity)[0, 0])
+
+
+def fading_out(read_views: list, seg: Segment) -> set[int]:
+    """Ids of each part's last longer views whose paper is more than FADE_PAPER_DROP gray levels darker than the
+    part's usual paper: the last pages, shown while the video fades out."""
+    out: set[int] = set()
+    for pid in {part.id for _, part, *_ in read_views}:
+        mine = sorted((v for v, part, *_ in read_views if part.id == pid and not v.brief), key=lambda v: v.t0)
+        levels = [paper_level(v, seg) for v in mine]
+        known = [lv for lv in levels if lv is not None]
+        if not known:
+            continue
+        usual = float(np.median(known))
+        for v, lv in reversed(list(zip(mine, levels))):
+            if lv is None or lv >= usual - FADE_PAPER_DROP:
+                break
+            out.add(id(v))
+    return out
+
+
+def plate_obs(v, seg: Segment, si: int, thr: float, fthr: float, index: int, col0: int | None = None,
+              fading: bool = False) -> Obs:
+    """One still view, parsed into measure cells. `col0` is the crop's first column when it starts right of the
+    segment's; `fading` says the view is one of its part's last, darkening as the video fades out."""
+    x0, y0, x1, y1 = v.rect
+    fading_read = False
+    if (v.brief or fading) and x1 > x0 and y1 > y0:
+        # A screen shown briefly while the page fades, or one of the last screens as the video fades out, can have
+        # paper darker than the segment's faint-ink level, which would make all of it ink; it is read with
+        # thresholds set from its own paper
         own = np.median(v.plate[y0:y1, x0:x1].reshape(-1, 3), axis=0)
         if float(to_gray(own.astype(np.uint8)[None, None], seg.polarity)[0, 0]) < fthr:
+            if not v.brief:
+                # The panel found from the segment's paper shrinks to the staff rows as the paper darkens, so it is
+                # grown again from the screen's own paper
+                v = replace(v, rect=panel_rect(v.plate, own, v.rect, seg.gap, polarity=seg.polarity))
+                x0, y0, x1, y1 = v.rect
+                fading_read = True
             thr, fthr = ink_threshold(to_gray(v.plate, seg.polarity)[y0:y1, x0:x1], own, seg.polarity)
     systems = parse_view(index, v.plate, v.rect, seg.polarity, thr, fthr, seg.gap, v.print_rect)
     cells = [c for ps in systems for c in ps.cells]
     o = Obs(index, v.t0, v.t1, cells, v.playhead, si, (seg.x0 if col0 is None else col0, seg.y0),
             v.plate[y0:y1, x0:x1])
     o.all_cells = cells
+    o.fading_out = fading_read
     o.wrapped = v.wrapped
     o.frames = len(v.times)
     o.rect = v.rect
@@ -1716,8 +1773,7 @@ def glide_obs(path: Path, crop, seg: Segment, si: int, found, thr: float, fthr: 
     systems = parse_mosaic(index, m.image, (0, rows[0] - print_top, w, rows[1] - print_top), seg.polarity, thr, fthr,
                            seg.gap)
     # Blank staff that scrolls on after the last barline is read as a tail cell holding only line residue
-    cells = [c for ps in systems for c in ps.cells
-             if not (c.kind == "tail" and c.ink.sum() < BLANK_TAIL_INK * (c.x1 - c.x0) * c.gap)]
+    cells = [c for ps in systems for c in ps.cells if not blank_tail(c)]
     if t0 <= seg.t0:
         cells = without_lead_in(cells, m.lead, seg.gap, m.inked_playhead)
     for c in cells:

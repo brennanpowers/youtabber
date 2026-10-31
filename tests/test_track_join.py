@@ -292,9 +292,25 @@ def test_a_scrolling_segment_takes_the_shift_the_playhead_allows_nearest_the_usu
     assert playhead_pick(500, None) == (398, "playhead", False)
 
 
-def test_a_scrolling_segment_keeps_the_best_lining_up_shift_when_the_playhead_allows_it():
-    # From 320 the playhead allows 598 and 398
-    assert playhead_pick(320, 420.0) == (598, "segment_scrolls", False)
+def test_a_scrolling_segment_takes_the_allowed_shift_nearest_the_usual_slide_when_the_playhead_allows_several():
+    # From 320 the playhead allows 598 and 398; the slide measured 400 px doesn't point at the best one, 598
+    assert playhead_pick(320, 420.0) == (398, "playhead", False)
+    # With no usual slide the best-lining-up shift stands
+    assert playhead_pick(320, None) == (598, "segment_scrolls", False)
+
+
+def test_a_scrolling_segment_keeps_the_best_lining_up_shift_when_a_measured_slide_points_at_it():
+    # The slide measured 600 px, within a gap of the best-lining-up 598, drawn in steps or not
+    for drawn in (True, False):
+        p, o = slid(600, drawn, p_end=700, o_start=320)
+        shifts = [(598, 0.0), (398, 0.05), (198, 0.1)]
+        assert choose_shift(p, o, shifts, 0.9, {"playhead"}, 10.0, usual=420.0) == (598, "segment_scrolls", False)
+
+
+def test_a_pick_among_several_playhead_fits_gives_way_to_a_slide_drawn_back():
+    p, o = slid(-1200, True, p_end=700, o_start=320)
+    shifts = [(598, 0.0), (398, 0.05), (198, 0.1)]
+    assert choose_shift(p, o, shifts, 0.9, {"playhead"}, 10.0, usual=420.0) == (None, "drawn_back", True)
 
 
 def test_a_playhead_that_rules_out_every_shift_settles_a_new_page():
