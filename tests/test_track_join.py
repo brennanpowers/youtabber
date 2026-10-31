@@ -7,7 +7,8 @@ from test_numbering import band_view, music
 from youtabber import assemble as assemble_module
 from youtabber.assemble import (RESTART_GAP_SECONDS, Assembly, Decision, Obs, Slot, after_header, assemble, cell_at,
                                 choose_shift, compare_cells, drawn_near, find_run, forget_compared, jumped_back,
-                                keeps_widths, measure_time, place_rest, playhead_at, playhead_join, playhead_restarts,
+                                keeps_widths, measure_time, page_flip_join, place_rest, playhead_at, playhead_join,
+                                playhead_restarts,
                                 playhead_track, register, repeat_played, replay_evidence, rest_of, same_cell,
                                 scroll_shares, scroll_shifts, split_measure, still_links, track_join, usual_slides)
 from youtabber.observe import unmatched
@@ -691,6 +692,80 @@ def test_a_cut_measure_played_long_joins_a_next_page_that_opens_on_its_sliver():
     assert playhead_join(p, o, 2.0, 10.0) is None
     o.cells[0] = replace(piece(o.cells[0], "lead", 120, 200), x0=0, x1=80)
     assert playhead_join(p, o, 2.0, 10.0)[0] == {0: 3}
+
+
+def test_a_page_flip_with_no_playhead_seen_joins_a_narrow_cut_first_cell_to_the_cut_last_measure():
+    p, o = cut_pair(120, 9.0)
+    played(o)
+    o.cells[0] = replace(piece(o.cells[0], "lead", 70, 200), x0=0, x1=130)
+    # 130 px is under 0.7 of the page's 200 px whole measures
+    assert playhead_join(p, o, 2.0, 10.0) == ({0: 3}, True, True)
+    assert playhead_join(p, o, None, 10.0) == ({0: 3}, True, True)
+    o.cells[0] = replace(o.cells[0], x1=150)
+    assert playhead_join(p, o, 2.0, 10.0) is None
+
+
+def test_a_page_flip_join_by_shape_needs_the_last_measure_cut_and_the_first_cell_a_piece():
+    p, o = cut_pair(120, 9.0)
+    played(o)
+    o.cells[0] = replace(piece(o.cells[0], "lead", 120, 200), x0=0, x1=80)
+    whole = band_view(0, 1)
+    assert page_flip_join(whole, o) is None
+    assert page_flip_join(p, band_view(1, 4)) is None
+    assert page_flip_join(p, o) == ({0: 3}, True, True)
+    # A page with no whole measure can't size the piece
+    p.cells = [replace(p.cells[2], kind="lead", complete=False), p.cells[3]]
+    assert page_flip_join(p, o) is None
+
+
+def test_no_page_flip_join_when_the_playhead_left_the_page_two_or_more_cells_before_its_last():
+    p, o = cut_pair(120, 9.0)
+    o.cells[0] = replace(piece(o.cells[0], "lead", 120, 200), x0=0, x1=80)
+    played(o)
+    # Bar 2 (x 200-400) is two cells before the cut bar 4: the playhead jumped away from the page
+    played(p, (9.9, 300, 30))
+    assert page_flip_join(p, o) is None
+    assert playhead_join(p, o, 2.0, 10.0) is None
+    # Bar 3 (x 400-600) is the cell before the cut one, so the page may have flipped as playback reached it
+    played(p, (9.9, 500, 30))
+    assert page_flip_join(p, o) == ({0: 3}, True, True)
+
+
+def test_a_playhead_left_of_a_next_pages_whole_first_measure_joins_it_to_the_cut_measure_without_continuing_it():
+    p, o = cut_pair(120, 9.0)
+    o.cells = [replace(c, x0=c.x0 + 40, x1=c.x1 + 40) for c in o.cells]
+    # The playhead at x 30 sat on a blank opening piece left of the first cell, which starts at x 40
+    assert playhead_join(p, o, 2.0, 10.0) == ({0: 3}, False, True)
+    played(o, (0.1, 38, 30))
+    assert page_flip_join(p, o) is None
+    # At y 300 the playhead is far below the first cell's system, on another row
+    played(o, (0.1, 30, 300))
+    assert page_flip_join(p, o) is None
+    played(o)
+    assert page_flip_join(p, o) is None
+    # A playhead that ended p on the whole measure before the cut one says nothing about a blank piece: the cut
+    # cell may be an empty staff end
+    played(o, (0.1, 30, 30))
+    played(p, (9.9, 590, 30))
+    assert page_flip_join(p, o) is None
+
+
+def test_a_blank_opening_piece_is_narrower_than_the_cut_piece_limit():
+    p, o = cut_pair(120, 9.0)
+    # The first cell starts at x 160, 150 px right of the playhead: more than 0.7 of a 200 px measure
+    o.cells = [replace(c, x0=c.x0 + 160, x1=c.x1 + 160) for c in o.cells]
+    played(o, (0.1, 10, 30))
+    assert page_flip_join(p, o) is None
+    played(o, (0.1, 30, 30))
+    assert page_flip_join(p, o) == ({0: 3}, False, True)
+
+
+def test_a_narrow_last_cell_played_as_long_as_a_whole_measure_is_not_joined_by_shape():
+    # Played from 7.5 s, longer than a cut measure, so the 120 px cell was a short whole measure
+    p, o = cut_pair(120, 7.5)
+    o.cells[0] = replace(piece(o.cells[0], "lead", 70, 200), x0=0, x1=130)
+    assert page_flip_join(p, o) == ({0: 3}, True, True)
+    assert playhead_join(p, o, 2.0, 10.0) is None
 
 
 def system_view() -> Obs:

@@ -18,6 +18,8 @@ RESTART_GAP_SECONDS = 1.5
 RESTART_SLACK = 3
 # A playhead sample this close to a view's start or end says where playback was at that moment
 PLAYHEAD_EDGE_SECONDS = 1.0
+# A playhead at most this many pixels outside a cell's left or right edge is still on that cell
+CELL_SLACK_PX = 2
 # Horizontal registration: share of overlapping ink allowed to disagree
 SCROLL_MISMATCH = 0.35
 # Shifts tried from the column-profile comparison, best first
@@ -90,6 +92,10 @@ EDGE_DWELL = 0.6
 # A page's cut first cell narrower than LEAD_SHARE of a typical measure, which with the previous page's cut last cell
 # makes REST_SPAN of a typical measure, holds the rest of that measure
 LEAD_SHARE, REST_SPAN = 0.5, (0.85, 1.4)
+# After a page flip the playhead can't place, a new page's cut first cell narrower than this share of the previous
+# page's typical whole measure is the rest of that page's cut last measure. A blank opening piece left unread is a
+# cut lead too, so a playhead on one lies at most this share of a measure left of the page's first cell
+FLIP_LEAD_SHARE = 0.7
 # A page's first measure starts at most this many line gaps right of the staff start (clef, key, time signature)
 STAFF_START_GAPS = 10
 # Two pieces of a measure split by a page turn are together at most this share of a typical whole measure wide,
@@ -367,13 +373,17 @@ def cell_at(o: Obs, xy) -> int | None:
         return None
     x, y = xy
     for i, c in enumerate(o.cells):
-        # A cursor drawn over notation and tab centers between the two staffs, so any height on the system counts:
-        # from a line gap above its top staff line to a line gap below its tab staff's bottom line
-        top = c.y0 + c.top_y - c.gap
-        bottom = 2 * c.mid_y - (c.y0 + c.ref_y) + c.gap
-        if c.x0 - 2 <= x <= c.x1 + 2 and (abs(y - c.mid_y) < 4 * c.gap or top <= y <= bottom):
+        if c.x0 - CELL_SLACK_PX <= x <= c.x1 + CELL_SLACK_PX and on_system(c, y):
             return i
     return None
+
+
+def on_system(c, y: float) -> bool:
+    """Whether height y lies on cell c's system. A cursor drawn over notation and tab centers between the two staffs,
+    so any height from a line gap above its top staff line to a line gap below its tab staff's bottom line counts."""
+    top = c.y0 + c.top_y - c.gap
+    bottom = 2 * c.mid_y - (c.y0 + c.ref_y) + c.gap
+    return abs(y - c.mid_y) < 4 * c.gap or top <= y <= bottom
 
 
 def scroll_shifts(p: Obs, o: Obs, gap: float) -> list[tuple[int, float]]:
@@ -924,12 +934,13 @@ def playhead_join(p: Obs, o: Obs, beat: float | None, gap: float) -> tuple[dict[
     last measure, cut by the page edge, found from where the playhead was. The cut measure is the one being played
     when the page changed, or the one after a whole measure played to its end. `continues` says o's first cell
     looks like the rest of that measure; `edge` says the join may leave out notes: the cut measure may have been a
-    whole one, or o's first cell holds only part of it. None when the playhead doesn't say."""
+    whole one, or o's first cell holds only part of it. When the playhead doesn't say, `page_flip_join` reads the
+    join from the shapes of the two pages' edge cells."""
     if beat is None or not p.cells or not o.cells:
-        return None
+        return page_flip_join(p, o)
     e, s = cell_at(p, playhead_at(p, at_start=False)), cell_at(o, playhead_at(o, at_start=True))
     if e is None or s is None:
-        return None
+        return page_flip_join(p, o)
     # When the playhead came onto the cell it was on at p's end
     entered = p.t1
     for t, x, y in reversed(playhead_track(p)):
@@ -941,14 +952,20 @@ def playhead_join(p: Obs, o: Obs, beat: float | None, gap: float) -> tuple[dict[
         k = e + 1 if played >= MOVED_ON * beat else None
     else:
         k = e if played < CUT_DWELL * beat or rest_of(p.cells[e], o.cells[0], p) else None
-    # The cut measure is p's last and opens the next page
-    if s != 0 or k is None or k != len(p.cells) - 1 or p.cells[k].complete or p.cells[k].kind != "tail":
-        return None
-    # A cell cut by the page edge is narrower than a measure; a whole last measure that only lost its barline isn't
     widths = [c.x1 - c.x0 for c in p.cells if c.kind == "full"]
+    last = len(p.cells) - 1
+    # A narrow last cell the playhead stayed on as long as on a whole measure was a short whole measure that lost its
+    # barline to the page edge, so the next page doesn't carry it on
+    if (k is None and e == last and not p.cells[e].complete and widths
+            and p.cells[e].x1 - p.cells[e].x0 < CUT_WIDTH * float(np.median(widths))):
+        return None
+    # The cut measure is p's last and opens the next page
+    if s != 0 or k is None or k != last or p.cells[k].complete or p.cells[k].kind != "tail":
+        return page_flip_join(p, o)
+    # A cell cut by the page edge is narrower than a measure; a whole last measure that only lost its barline isn't
     share = (p.cells[k].x1 - p.cells[k].x0) / float(np.median(widths)) if widths else None
     if share is not None and share >= CUT_WIDTH:
-        return None
+        return page_flip_join(p, o)
     # Only one sighting of a measure prints, so when o's first cell starts mid-measure at the page edge the notes
     # of whichever piece doesn't print may be lost. A page with no whole measure can't size the cut one, so it
     # may have been whole
@@ -958,6 +975,34 @@ def playhead_join(p: Obs, o: Obs, beat: float | None, gap: float) -> tuple[dict[
     continues = (same_part(p.cells[k], o.cells[0], gap, "left")
                  or resemble(p.cells[k], o.cells[0], gap, any_kind=True) <= REPLAY_RESEMBLE)
     return {0: k}, continues, edge
+
+
+def page_flip_join(p: Obs, o: Obs) -> tuple[dict[int, int], bool, bool] | None:
+    """(links, continues, edge) tying o's first cell to p's last cell, cut by the page edge, when the playhead can't
+    say where the page changed. o's first cell is either a narrow cut piece holding the rest of that measure, or a
+    whole measure after a blank opening piece that wasn't read as a cell: the playhead was on the cut measure as p
+    ended and left of o's first cell as o began. Either join may leave out notes. None otherwise."""
+    if not p.cells or not o.cells:
+        return None
+    h, t = o.cells[0], p.cells[-1]
+    if t.kind != "tail" or t.complete:
+        return None
+    last = len(p.cells) - 1
+    # A playhead that ended p two or more cells before its last had jumped elsewhere, so o may not follow on from p
+    e = cell_at(p, playhead_at(p, at_start=False))
+    if e is not None and e < last - 1:
+        return None
+    widths = [c.x1 - c.x0 for c in p.cells if c.kind == "full"]
+    # A page with no whole measure can't size a piece, and its pieces can't be stitched into one measure
+    if h.kind == "lead" and not h.complete and widths and h.x1 - h.x0 < FLIP_LEAD_SHARE * float(np.median(widths)):
+        return {0: last}, True, True
+    # A playhead on p's cut last cell as p ended, then on o's system left of o's whole first cell as o began, past the
+    # slack that would put it on that cell, was on a blank opening piece of the cut measure
+    xy = playhead_at(o, at_start=True)
+    if (h.kind == "full" and h.complete and xy is not None and widths and e == last and on_system(h, xy[1])
+            and CELL_SLACK_PX < h.x0 - xy[0] < FLIP_LEAD_SHARE * float(np.median(widths))):
+        return {0: last}, False, True
+    return None
 
 
 class _Columns:
