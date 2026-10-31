@@ -9,8 +9,8 @@ from youtabber.assemble import (RESTART_GAP_SECONDS, Assembly, Decision, Obs, Sl
                                 borrow_numbers, choose_shift, closes_piece, compare_cells, drawn_near, find_run,
                                 forget_compared, jumped_back, keeps_widths, measure_time, page_flip_join, place_rest,
                                 playhead_at, playhead_join, playhead_restarts, playhead_track, register, register_marks,
-                                repeat_played, replay_evidence, rest_of, restart_before, same_cell, scroll_shares,
-                                scroll_shifts, shown_again, split_measure, still_links, track_join, usual_slides)
+                                repeat_played, replay_evidence, rest_of, restart_before, same_cell, samples_on,
+                                scroll_shares, scroll_shifts, shown_again, split_measure, still_links, track_join, usual_slides)
 from youtabber.observe import unmatched
 from youtabber.parse import Cell
 from youtabber.pipeline import Measure, Notice, edge_notices, join_notices, readings, repeat_notices
@@ -25,6 +25,15 @@ def test_the_playhead_track_keeps_only_samples_on_the_music():
     o.playhead = [(0.0, 50, 30), (0.5, 100, 30), (1.0, 700, 30), (1.5, 120, 30), (2.0, 200, 300), (2.5, 150, 30),
                   (3.0, 900, 30)]
     assert playhead_track(o) == [(0.0, 50, 30), (0.5, 100, 30), (1.5, 120, 30), (2.5, 150, 30)]
+
+
+def test_the_samples_on_a_blank_tail_drop_a_lone_jump_and_a_sample_past_its_right_edge():
+    # The tail is the last measure, 600-800; 100 jumps away from both neighbors, 830-840 are more than two line gaps
+    # right of the tail's edge
+    o = band_view(0, 1)
+    o.playhead = [(0.0, 600, 30), (0.5, 640, 30), (1.0, 100, 30), (1.5, 680, 30), (2.0, 720, 30),
+                  (2.5, 830, 30), (3.0, 835, 30), (3.5, 840, 30)]
+    assert samples_on(o, o.cells[3:]) == [(0.0, 600, 30), (0.5, 640, 30), (1.5, 680, 30), (2.0, 720, 30)]
 
 
 def test_a_playhead_first_seen_well_into_a_view_does_not_say_where_it_started():
@@ -535,16 +544,35 @@ def test_a_slide_the_playhead_confirmed_clears_numbers_that_disagree_with_the_me
     assert [(d.chosen, d.basis) for d in joins] == [("slide 398", "track")]
 
 
-def test_a_confirmed_slide_from_a_view_whose_reads_disagree_with_its_count_keeps_the_numbers_as_read():
+def miscounted_slide(first: int) -> Obs:
+    """A confirmed slide from a view numbered 1-4 whose second measure was read as 3, to a view numbered from
+    `first`; returns the second view after assembling."""
     p, o = slid(400, True, 700, 320)
     for n, c in enumerate(p.cells, 1):
         c.number = c.read = n
-    # Measure 2 read as 3: a barline was missed or added on that view, so its slots may be counted wrong
     p.number_conflicts = [(p.cells[1], 3)]
-    for n, c in enumerate(o.cells, 11):
+    for n, c in enumerate(o.cells, first):
         c.number = c.read = n
     assemble([p, o], 10.0, False, EVIDENCE, lambda v: [])
-    assert [c.number for c in o.cells] == [11, 12, 13, 14]
+    return o
+
+
+def test_a_confirmed_slide_from_a_view_whose_reads_disagree_with_its_count_keeps_reads_a_measure_off():
+    # The slide puts the second view's first measures on 3-4; reads of 4-5 there are one off, as a missed barline
+    # on the view before would make them
+    assert [c.number for c in miscounted_slide(4).cells] == [4, 5, 6, 7]
+
+
+def test_a_confirmed_slide_from_a_view_whose_reads_disagree_with_its_count_still_clears_reads_far_off():
+    o = miscounted_slide(11)
+    assert [c.number for c in o.cells] == [None] * 4
+    assert [c.read for c in o.cells] == [11, 12, 13, 14]
+
+
+def test_a_confirmed_slide_from_a_view_whose_reads_disagree_with_its_count_keeps_reads_two_off_and_clears_three():
+    # The slide puts the second view's first measures on 3-4; reads of 1-4 are two off, reads of 0-3 are three off
+    assert [c.number for c in miscounted_slide(1).cells] == [1, 2, 3, 4]
+    assert [c.number for c in miscounted_slide(0).cells] == [None] * 4
 
 
 def test_an_unconfirmed_slide_keeps_the_numbers_as_read():

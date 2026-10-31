@@ -340,30 +340,33 @@ def read_against(o: Obs, start: int) -> bool:
 
 
 def playhead_track(o: Obs) -> list:
-    """The view's playhead samples that lie on its music: inside the panel and near its staffs, without a sample
-    that jumps away from both its neighbors (footage moving beside the panel)."""
-    if o.track is not None:
-        return o.track
-    if not o.cells:
-        o.track = []
-        return o.track
-    g = o.cells[0].gap
+    """The view's playhead samples that lie on its music, as `samples_on` finds them for its cells."""
+    if o.track is None:
+        o.track = samples_on(o, o.cells)
+    return o.track
+
+
+def samples_on(o: Obs, cells: list) -> list:
+    """The view's playhead samples that lie on the music of `cells`: inside the panel and near their staffs, without
+    a sample that jumps away from both its neighbors (footage moving beside the panel)."""
+    if not cells:
+        return []
+    g = cells[0].gap
     # Nothing is played right of the last measure; left of the first, a narrow measure may have been left out
-    x0, x1 = o.rect[0] - g, max(c.x1 for c in o.cells) + 2 * g
+    x0, x1 = o.rect[0] - g, max(c.x1 for c in cells) + 2 * g
     # From a line gap above a system's top staff to a few below its tab staff's middle
-    y0 = min(c.y0 + c.top_y for c in o.cells) - g
-    y1 = max(c.mid_y for c in o.cells) + 3 * g
+    y0 = min(c.y0 + c.top_y for c in cells) - g
+    y1 = max(c.mid_y for c in cells) + 3 * g
     pts = [(t, x, y) for t, x, y in o.playhead if x0 <= x <= x1 and y0 <= y <= y1]
 
     def far(a, b):
         return abs(a[1] - b[1]) > 4 * g or abs(a[2] - b[2]) > 2 * g
-    o.track = [q for k, q in enumerate(pts)
-               if not (0 < k < len(pts) - 1 and far(q, pts[k - 1]) and far(q, pts[k + 1])
-                       and not far(pts[k - 1], pts[k + 1]))
-               # A first or last sample away from the two next to it
-               and not (k == 0 and len(pts) >= 3 and far(q, pts[1]) and not far(pts[1], pts[2]))
-               and not (k == len(pts) - 1 and len(pts) >= 3 and far(q, pts[-2]) and not far(pts[-2], pts[-3]))]
-    return o.track
+    return [q for k, q in enumerate(pts)
+            if not (0 < k < len(pts) - 1 and far(q, pts[k - 1]) and far(q, pts[k + 1])
+                    and not far(pts[k - 1], pts[k + 1]))
+            # A first or last sample away from the two next to it
+            and not (k == 0 and len(pts) >= 3 and far(q, pts[1]) and not far(pts[1], pts[2]))
+            and not (k == len(pts) - 1 and len(pts) >= 3 and far(q, pts[-2]) and not far(pts[-2], pts[-3]))]
 
 
 def tracked(o: Obs) -> bool:
@@ -1230,6 +1233,12 @@ def view_pairs(obs: list[Obs], gap: float) -> _Pairs:
     return _Pairs(moves, shift_cache, track_joins, scroll_share, usual, sliding, beats, held_lines(obs))
 
 
+def miscounted(p: Obs, j: int, number: int, slot_number: int) -> bool:
+    """Whether p's barlines were likely misread, which explains a number that differs from the slot number on p's
+    cell j: p has reads that disagree with its own count, and the number is within CONFLICT_SPAN of the slot's."""
+    return bool(p.number_conflicts) and abs(number - slot_number) <= CONFLICT_SPAN
+
+
 def place_views(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], words_of, others: set,
                 pairs: _Pairs) -> Assembly:
     """One pass of `assemble`; each view in `others` (indexes) starts a numbering of its own."""
@@ -1270,11 +1279,12 @@ def place_views(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str]
                       and A.slots[prev_slots[-1]].number is not None
                       and cells[0].number == A.slots[prev_slots[-1]].number + 1)
         # Only the main reading clears numbers: a view the folded reading folded without evidence may sit on the
-        # wrong numbered measures. A view before whose own reads disagree with its count had barlines misread, so its
-        # slots' numbers can't overrule this view's reads
-        if (not fold_unresolved and tj is not None and "?" not in tj[1] and not page_ahead and not prev.number_conflicts
+        # wrong numbered measures
+        if (not fold_unresolved and tj is not None and "?" not in tj[1] and not page_ahead
                 and any(cells[i].number is not None and prev_slots[j] is not None
-                        and A.slots[prev_slots[j]].number not in (None, cells[i].number) for i, j in tj[0].items())):
+                        and A.slots[prev_slots[j]].number not in (None, cells[i].number)
+                        and not miscounted(prev, j, cells[i].number, A.slots[prev_slots[j]].number)
+                        for i, j in tj[0].items())):
             # The playhead confirmed these measures are the ones shown before, so numbers that differ from theirs
             # were misread and the view is placed by the join. Its reads stay as they were
             for c in cells:

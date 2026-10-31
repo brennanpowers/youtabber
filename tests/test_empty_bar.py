@@ -151,3 +151,6 @@ def test_a_blank_tail_the_playhead_was_seen_on_twice_is_a_measure():
     assert kept_cells([blank], typical=300, playhead=[(1.0, 150, 85), (1.2, 200, 85)]) == [blank]
     # Samples right of the tail, or far below its system, don't count
     assert kept_cells([blank], typical=300, playhead=[(1.0, 450, 85), (1.2, 200, 400)]) == []
+    # Nor do samples on its left barline or within two pixels of it
+    assert kept_cells([blank], typical=300, playhead=[(1.0, 100, 85), (1.2, 102, 85)]) == []
+    assert kept_cells([blank], typical=300, playhead=[(1.0, 103, 85), (1.2, 103, 85)]) == [blank]

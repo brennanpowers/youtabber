@@ -552,13 +552,18 @@ def test_a_brief_first_screen_with_false_barlines_from_a_fade_gives_none():
     assert hidden_openings([lacking, page]) == []
 
 
-def test_a_brief_first_screen_wiping_in_shows_the_page_after_it_again_from_two_measures_between_its_barlines():
+def test_a_brief_first_screen_wiping_in_shows_the_page_after_it_again_from_all_but_one_measure_between_its_barlines():
     page = held_page(1, [70, 321, 538, 753, 968, 1183, 1721])
     # The wipe's edge at 300 passed for a barline, so the screen's first measure is cut differently
     wipe = held_page(0, [300, 538, 753, 968, 1183, 1721], brief=True, move=None)
     assert hidden_openings([wipe, page]) == [wipe]
     # One measure between shared barlines is too few to tell
     wipe = held_page(0, [300, 538, 753, 1100, 1300, 1500], brief=True, move=None)
+    assert hidden_openings([wipe, page]) == []
+    # Two of five, or two of eight, leave other music on the screen: a new page drawn on the same grid
+    wipe = held_page(0, [300, 538, 753, 968, 1300, 1500], brief=True, move=None)
+    assert hidden_openings([wipe, page]) == []
+    wipe = held_page(0, [300, 538, 753, 968, 1250, 1350, 1450, 1550, 1700], brief=True, move=None)
     assert hidden_openings([wipe, page]) == []
     # Held longer, it is a page of its own
     wipe = held_page(0, [300, 538, 753, 968, 1183, 1721], move=None)
@@ -594,15 +599,17 @@ def test_a_first_screen_cleared_under_a_card_gives_no_notice_for_its_long_hold(m
     assert [w["kind"] for w in check.dwell([first, page, after], out.assembly)] == ["few_measures"]
 
 
-def test_a_last_screen_read_from_its_own_paper_counts_as_read_only_when_it_gave_cells():
+def test_a_last_screen_read_from_its_own_paper_counts_as_read_only_when_it_kept_cells():
     def last_screen(fading_out, cells):
         o = timed(contrasted(3, 50.0, 20.0), 6.0, 9.0)
         o.systems = ["staff"]
         o.fading_out = fading_out
         if not cells:
-            o.all_cells = []
+            o.cells = []
         return o
     assert pipeline.read_spans([last_screen(True, True)]) == [(6.0, 9.0)]
+    # Cells parsed but none kept as measures, such as a lone blank tail, leave it unread
+    assert last_screen(True, False).all_cells
     assert pipeline.read_spans([last_screen(True, False)]) == []
     # A screen read with the segment's paper counts once a staff is found on it
     assert pipeline.read_spans([last_screen(False, False)]) == [(6.0, 9.0)]

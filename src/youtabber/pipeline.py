@@ -12,8 +12,8 @@ import cv2
 import numpy as np
 
 from youtabber import counter, glide, ocr, track
-from youtabber.assemble import (GLIDE_CONTINUE, Assembly, Obs, assemble, cell_at, forget_compared, number_views,
-                                on_system, same_cell)
+from youtabber.assemble import (CELL_SLACK_PX, GLIDE_CONTINUE, Assembly, Obs, assemble, cell_at, forget_compared,
+                                number_views, on_system, same_cell, samples_on)
 from youtabber.check import (DUP_RESEMBLE, dwell, empty_stretches, fmt, glide_fade, glide_gaps, glide_number_gaps,
                              glide_piece_cuts, glide_repeats, glide_rows, glide_steps, layout_changes, number_checks,
                              no_barlines, numbers_against_cells, numbers_restart, odd_widths, part_switch, pieces,
@@ -60,8 +60,8 @@ FADE_SHARE, FADE_LINE_SHARE = 0.85, 0.8
 FADED_BAR_GAPS = 0.25
 # ...and when at least this share of the neighbour's barlines have one of its barlines that close
 FADED_BAR_SHARE = 0.2
-# A brief screen shows a neighbouring page again when at least this many of its whole measures stand between that
-# page's barlines and hold the same music
+# A brief screen shows a neighbouring page again when all but one of its whole measures, and at least this many,
+# stand between that page's barlines and hold the same music
 SHOWN_AGAIN_BOUND = 2
 # A brief screen with more than this share of its cells narrower than EDGE_SHARE of a measure had its barlines misread
 BRIEF_SLIVER_SHARE = 0.5
@@ -454,7 +454,7 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
     full_widths = [c.x1 - c.x0 for o in obs for c in o.all_cells if c.kind == "full"]
     typical = float(np.median(full_widths)) if full_widths else 0.0
     for o in obs:
-        o.cells = kept_cells(o.all_cells, typical, o.playhead)
+        o.cells = kept_cells(o.all_cells, typical, samples_on(o, o.all_cells))
         o.bars = sorted({c.x0 for c in o.all_cells if c.kind != "lead"}
                         | {c.x1 for c in o.all_cells if c.kind != "tail"})
     carry_on(r.parts, obs, ocr.read_number)
@@ -1270,9 +1270,9 @@ def overlaid(a: Obs, b: Obs) -> bool:
 
 def measures_shown_again(a: Obs, b: Obs) -> bool:
     """Whether view b shows all of view a's whole measures again, in order and next to each other, or shows again
-    the two or more whole measures of a that b bounds at the same barlines (within FADED_BAR_GAPS line gaps), which
-    leaves out a measure of a page wiping in whose edge passed for a barline. Cells cut by the panel edge are left
-    out: a page drawing in shows them blank."""
+    the whole measures of a that b bounds at the same barlines (within FADED_BAR_GAPS line gaps), when they are all of
+    a's whole measures but one and at least two, which leaves out a measure of a page wiping in whose edge passed for a
+    barline. Cells cut by the panel edge are left out: a page drawing in shows them blank."""
     cells = [c for c in a.all_cells if c.kind == "full"]
     other = [c for c in b.all_cells if c.kind == "full"]
     if not cells:
@@ -1284,7 +1284,7 @@ def measures_shown_again(a: Obs, b: Obs) -> bool:
     tol = FADED_BAR_GAPS * gap
     bound = [(c, d) for c in cells for d in other
              if c.system == d.system and abs(c.x0 - d.x0) <= tol and abs(c.x1 - d.x1) <= tol]
-    return len(bound) >= SHOWN_AGAIN_BOUND and all(same_cell(c, d, gap) for c, d in bound)
+    return len(bound) >= max(SHOWN_AGAIN_BOUND, len(cells) - 1) and all(same_cell(c, d, gap) for c, d in bound)
 
 
 def covered(p: Obs, o: Obs) -> bool:
@@ -1455,17 +1455,18 @@ def placed_notation(cells: list[Cell]) -> list[Cell]:
 
 def read_spans(obs: list[Obs]) -> list[tuple[float, float]]:
     """(t0, t1) of the views that count as read: those where a staff was found, and glides, whose mosaic covers their
-    whole time. A last screen read from its own darker paper counts only when it gave cells, as a fade can leave
-    staff lines with no notes to find."""
-    return [(o.t0, o.t1) for o in obs if (o.systems and (o.all_cells or not o.fading_out)) or o.mosaic is not None]
+    whole time. A last screen read from its own darker paper counts only when it kept cells as measures, as a fade
+    can leave staff lines with no notes to find."""
+    return [(o.t0, o.t1) for o in obs if (o.systems and (o.cells or not o.fading_out)) or o.mosaic is not None]
 
 
 def kept_cells(cells: list[Cell], typical: float, playhead: list = ()) -> list[Cell]:
     """The cells that are measures: those at least EDGE_SHARE of a typical measure wide, short bars on still screens,
     and empty bars however short. A clef and key header standing alone is no measure, and neither is a blank tail
-    unless the view's `playhead` samples (t, x, y) show it played."""
+    unless the view's `playhead` samples (t, x, y) show it played. A sample on the tail's left barline is the
+    playhead parked at the end of the last measure, so it doesn't count."""
     def played(c: Cell) -> bool:
-        return sum(c.x0 <= x <= c.x1 and on_system(c, y) for _, x, y in playhead) >= TAIL_PLAYED_SAMPLES
+        return sum(c.x0 + CELL_SLACK_PX < x <= c.x1 and on_system(c, y) for _, x, y in playhead) >= TAIL_PLAYED_SAMPLES
     return [c for i, c in enumerate(cells)
             if not c.header and not (blank_tail(c) and not played(c))
             and (c.x1 - c.x0 >= EDGE_SHARE * typical or short_bar(c, typical) or empty_bar(c) or rest_run(cells, i))]
