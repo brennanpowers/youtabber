@@ -1,4 +1,6 @@
 """Checks on the assembled score that turn likely mistakes into warnings next to the measures concerned."""
+from collections import Counter
+
 import numpy as np
 
 from youtabber.assemble import cell_at, glided_on, measure_time, playhead_track
@@ -21,18 +23,42 @@ PLAYED_TWICE_RATIO = 1.8
 # No measure is played for longer than this: a 4/4 bar at 40 bpm takes 6 s. A screen or a video holding
 # its measures longer than this on average has lost measures, whatever the rest of the video does.
 MAX_SECONDS_PER_MEASURE = 15.0
+# A cell spanning at least this share of its panel's width is a whole line of music
+WIDE_SHARE = 0.9
 
 
 def too_few(obs, printed: int, A) -> str | None:
     """A message when the whole video yields far fewer measures than its time with tab on screen allows and the
     reading itself shows signs of lost measures. A lesson can hold a few measures on screen for minutes, so time
-    alone doesn't refuse."""
+    alone doesn't refuse, and neither does tab without barlines, whose cells are whole lines."""
     shown = sum(o.t1 - o.t0 for o in obs)
-    if shown >= 2 * MAX_SECONDS_PER_MEASURE and printed < shown / MAX_SECONDS_PER_MEASURE and not settled(obs, A):
+    if (shown >= 2 * MAX_SECONDS_PER_MEASURE and printed < shown / MAX_SECONDS_PER_MEASURE and not settled(obs, A)
+            and not whole_lines(obs)):
         return (f"Read only {printed} measure{'' if printed == 1 else 's'} from {shown:.0f} s of tab on screen; "
                 f"at least {shown / MAX_SECONDS_PER_MEASURE:.0f} would fit. Measures were missed, so no PDF was "
                 f"written.")
     return None
+
+
+def whole_lines(obs) -> bool:
+    """True when every view that reads cells has one cell a system, each spanning at least WIDE_SHARE of the panel:
+    tab drawn without barlines, where each line of music is read as one cell."""
+    read = [o for o in obs if o.cells]
+    return bool(read) and all(max(Counter(c.system for c in o.cells).values()) == 1
+                              and all(c.x1 - c.x0 >= WIDE_SHARE * (o.rect[2] - o.rect[0]) for c in o.cells)
+                              for o in read)
+
+
+def no_barlines(obs) -> list[dict]:
+    """A notice over the whole tab when it has no barlines. Two pages that differ only above or below the staff
+    then look the same and are read as one."""
+    read = [o for o in obs if o.cells]
+    if not whole_lines(obs):
+        return []
+    t0, t1 = min(o.t0 for o in read), max(o.t1 for o in read)
+    return [{"t0": round(t0, 2), "t1": round(t1, 2), "kind": "few_measures",
+             "text": "This tab has no barlines, so each line of music is printed as one measure, and pages that look "
+                     "the same may be printed once."}]
 
 
 def settled(obs, A) -> bool:
@@ -429,9 +455,11 @@ def glide_number_gaps(o) -> list[dict]:
     return out
 
 
-def empty_stretches(spans: list[tuple[float, float]], play_times: list[float]) -> list[dict]:
-    """Stretches of tab on screen at least EMPTY_SECONDS long with no printed measure played in them."""
-    times = sorted(play_times)
+def empty_stretches(spans: list[tuple[float, float]], play_times: list[float],
+                    repeats: list[tuple[float, float]] = ()) -> list[dict]:
+    """Stretches of tab on screen at least EMPTY_SECONDS long with no new printed measure played in them. A measure
+    played inside one of `repeats` is printed again with no sign whether the song plays it again, so it isn't new."""
+    times = sorted(t for t in play_times if not any(a <= t < b for a, b in repeats))
     out = []
     for s0, s1 in spans:
         marks = [s0] + [t for t in times if s0 <= t <= s1] + [s1]

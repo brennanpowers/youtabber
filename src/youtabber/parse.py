@@ -6,7 +6,7 @@ import numpy as np
 
 from youtabber import ocr
 from youtabber.observe import PRINT_ABOVE_GAPS, PRINT_BELOW_GAPS, PRINT_MARGIN_GAPS, colored, gray_pixels, ink_map, to_gray
-from youtabber.scan import System, line_columns, systems_in
+from youtabber.scan import NOTATION_FAR_GAPS, System, line_columns, systems_in
 from youtabber.staff import without_border
 
 # A barline covers at least this share of the rows between the tab staff's top and bottom lines
@@ -52,6 +52,29 @@ CLOSE_STAFF_SHARE = 0.6
 NOTATION_MATCH = 0.15
 # ...and below this share of the view's widest tab staff
 NOTATION_SHARE = 0.85
+# Two neighbor staffs left unpaired pair as notation over tab, whatever lies between them, when the upper one's lines
+# are spaced under this share of the lower one's
+FAR_PAIR_GAP_SHARE = 0.75
+# ...and it runs over at least this share of the lower one's columns
+FAR_PAIR_COLUMNS = 0.8
+
+
+def pair_far_notation(syss: list[System]) -> list[System]:
+    """`syss` with each unpaired staff taken as the notation of the unpaired staff below it when it is spaced much
+    closer, has no more lines, lies over the same columns and within NOTATION_FAR_GAPS of it. A dashed "let ring"
+    line or a row of beams between notation and tab set far apart runs across them like a rule, so the scan leaves
+    them apart."""
+    out: list[System] = []
+    for s in syss:
+        up = out[-1] if out else None
+        if (up is not None and up.notation is None and s.notation is None and up.tab.polarity == s.tab.polarity
+                and 0 < s.tab.top - up.tab.bottom < NOTATION_FAR_GAPS * s.tab.gap
+                and up.tab.gap < FAR_PAIR_GAP_SHARE * s.tab.gap and len(up.tab.lines) <= len(s.tab.lines)
+                and min(up.tab.x1, s.tab.x1) - max(up.tab.x0, s.tab.x0) >= FAR_PAIR_COLUMNS * (s.tab.x1 - s.tab.x0)):
+            out[-1] = System(s.tab, up.tab, s.panel, s.cut_from)
+        else:
+            out.append(s)
+    return out
 
 
 def lone_notation(s: System, notation_gaps: list[float], widest: float) -> bool:
@@ -815,7 +838,8 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
     # A staff with no rows inside the print area is not on the paper, such as the strings of a fretboard drawn
     # below it
     px0, py0, px1, py1 = print_rect or rect
-    syss = [s for s in systems_in(sub, whole_lines=whole_lines) if s.top < py1 and s.tab.bottom > py0]
+    syss = [s for s in pair_far_notation(systems_in(sub, whole_lines=whole_lines))
+            if s.top < py1 and s.tab.bottom > py0]
     # Past the panel the plate is painted paper, so a border at the panel's edge passes for a staff line there; the
     # plate as it is shows what lies past it
     for s in syss:

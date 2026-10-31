@@ -2,16 +2,15 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
-from test_numbering import band_view, music
+from test_numbering import band_view, music, run, view
 
 from youtabber import assemble as assemble_module
 from youtabber.assemble import (RESTART_GAP_SECONDS, Assembly, Decision, Obs, Slot, after_header, assemble, cell_at,
-                                choose_shift, compare_cells, drawn_near, find_run, forget_compared, jumped_back,
-                                keeps_widths, measure_time, page_flip_join, place_rest, playhead_at, playhead_join,
-                                playhead_restarts,
-                                playhead_track, register, register_marks, repeat_played, replay_evidence, rest_of,
-                                same_cell, scroll_shares, scroll_shifts, split_measure, still_links, track_join,
-                                usual_slides)
+                                borrow_numbers, choose_shift, compare_cells, drawn_near, find_run, forget_compared,
+                                jumped_back, keeps_widths, measure_time, page_flip_join, place_rest, playhead_at,
+                                playhead_join, playhead_restarts, playhead_track, register, register_marks,
+                                repeat_played, replay_evidence, rest_of, same_cell, scroll_shares, scroll_shifts,
+                                split_measure, still_links, track_join, usual_slides)
 from youtabber.observe import unmatched
 from youtabber.parse import Cell
 from youtabber.pipeline import Measure, Notice, edge_notices, join_notices, readings, repeat_notices
@@ -1053,3 +1052,60 @@ def test_a_held_look_alike_page_numbered_a_page_ahead_keeps_its_numbers():
             a.number, b.number = 1 + k, first + k
         A = assemble([p, o], 10.0, False, EVIDENCE, lambda v: [])
         assert A.view_slots[1] == want
+
+
+def numbered(index: int, first: int):
+    o = view(index, run("a", first, first + 3))
+    o.start = first
+    return o
+
+
+def unnumbered(index: int, measures):
+    o = view(index, measures)
+    for c in o.cells:
+        c.number = None
+    return o
+
+
+def test_the_view_before_lends_a_start_at_or_after_its_own():
+    # Its measures 7 and 8 sit first on the next screen, which then starts at 7
+    obs = [numbered(0, 5), unnumbered(1, [("a", 7), ("a", 8), ("b", 1), ("b", 2)])]
+    borrow_numbers(obs)
+    assert obs[1].start == 7 and [c.number for c in obs[1].cells] == [7, 8, 9, 10]
+
+
+def test_the_view_before_lends_no_start_below_its_own():
+    # Its measures 5 and 6 third and fourth on the next screen would start that screen at 3, before 5
+    obs = [numbered(0, 5), unnumbered(1, [("b", 1), ("b", 2), ("a", 5), ("a", 6)])]
+    borrow_numbers(obs)
+    assert obs[1].start is None and [c.number for c in obs[1].cells] == [None] * 4
+
+
+def test_the_view_after_lends_a_start_at_or_before_its_own_but_none_above_it():
+    obs = [unnumbered(0, [("b", 1), ("b", 2), ("a", 10), ("a", 11)]), numbered(1, 10)]
+    borrow_numbers(obs)
+    assert obs[0].start == 8
+    # Its measures 12 and 13 first on the screen before would start that screen at 12, after 10
+    obs = [unnumbered(0, [("a", 12), ("a", 13), ("b", 1), ("b", 2)]), numbered(1, 10)]
+    borrow_numbers(obs)
+    assert obs[0].start is None
+
+
+def test_a_playhead_that_carries_on_gives_way_to_a_slide_drawn_back():
+    # The playhead carries on from 700 to 320 at the 398 px shift, but the band was seen sliding 1200 px back
+    p, o = slid(-1200, True, p_end=700, o_start=320)
+    assert choose_shift(p, o, [(398, 0.0)], 0.5, {"playhead"}, 10.0) == (None, "drawn_back", True)
+    # A backward slide not drawn in steps, one no longer than a gap, or one with another drawn near the shift
+    # leaves the pick to the playhead
+    for move in (Move("slide", shifts=[-1200], drawn=[False], steps=1),
+                 Move("slide", shifts=[-5], drawn=[True], steps=5),
+                 Move("slide", shifts=[-1200, 400], drawn=[True, True], steps=5)):
+        o.move = move
+        assert choose_shift(p, o, [(398, 0.0)], 0.5, {"playhead"}, 10.0) == (398, "playhead", True)
+
+
+def test_a_playhead_pick_in_a_scrolling_segment_gives_way_to_a_slide_drawn_back():
+    # From 500 the playhead allows 398 and 198 but not the best-lining-up 598
+    p, o = slid(-1200, True, p_end=700, o_start=500)
+    shifts = [(598, 0.0), (398, 0.05), (198, 0.1)]
+    assert choose_shift(p, o, shifts, 0.9, {"playhead"}, 10.0, usual=420.0) == (None, "drawn_back", True)

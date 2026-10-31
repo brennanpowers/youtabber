@@ -309,7 +309,10 @@ def borrow_numbers(obs: list[Obs]) -> None:
                 continue
             for i, c in enumerate(o.cells):
                 for d in obs[m].cells:
-                    if d.number is not None and resemble(c, d, o.cells[0].gap, any_kind=True) < BORROW_RESEMBLE:
+                    # Music goes forward, so the view before can't lend a start below its own, nor the view after
+                    # one above its own: a riff played again looks like an earlier page
+                    if (d.number is not None and (d.number - i - obs[m].start) * (m - k) <= 0
+                            and resemble(c, d, o.cells[0].gap, any_kind=True) < BORROW_RESEMBLE):
                         votes[d.number - i] += 1
         if votes:
             start, n = votes.most_common(1)[0]
@@ -473,10 +476,10 @@ def choose_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float
     """(dx or None, basis, resolved): whether o is p scrolled by one of the shifts, or a new page.
 
     The playhead decides when it was seen at both ends: after a scroll it carries on from where it was,
-    which in o's coordinates is (where it was in p) - dx. Next, in a segment whose band was seen sliding by
-    about `usual` px, the shift nearest that is taken, unless the slide drawn between the two views lies within
-    a gap of another of the shifts. Without either, a segment where nearly every pair lines up is taken to scroll,
-    by a shift the playhead allows when it was seen.
+    which in o's coordinates is (where it was in p) - dx, unless a slide drawn the other way says o is a new page
+    (`drawn_against`). Next, in a segment whose band was seen sliding by about `usual` px, the shift nearest that is
+    taken, unless the slide drawn between the two views lies within a gap of another of the shifts. Without either,
+    a segment where nearly every pair lines up is taken to scroll, by a shift the playhead allows when it was seen.
     `confirmed` says the playhead confirmed the slides `usual` was learned from; slides drawn in several steps can be
     measured a riff's length short, so then a drawn slide agreeing with it doesn't settle the pick.
     """
@@ -488,6 +491,8 @@ def choose_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float
             reach = 1.5 * float(np.median(widths))
             fits = [dx for dx, _ in shifts if -gap <= (b[0] + dx) - a[0] <= reach and abs(b[1] - a[1]) < 3 * gap]
             if len(fits) == 1:
+                if drawn_against(o, fits[0], gap):
+                    return None, "drawn_back", True
                 return fits[0], "playhead", True
             if not fits:
                 return None, "playhead", True
@@ -510,9 +515,21 @@ def choose_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float
             # The best-lining-up shift is one the playhead ruled out, so take the one it allows nearest the
             # segment's usual slide, left unsettled
             pick = min(fits, key=lambda dx: abs(dx - usual)) if usual is not None else fits[0]
+            if drawn_against(o, pick, gap):
+                return None, "drawn_back", True
             return pick, "playhead", False
         return shifts[0][0], "segment_scrolls", len(shifts) == 1
     return None, "prior", False
+
+
+def drawn_against(o: Obs, dx: int, gap: float) -> bool:
+    """True when the band was seen sliding, between the view before and o, more than a gap the other way from dx,
+    and no slide drawn there lies within a gap of dx. Look-alike music on both sides of a repeat can line up with
+    the playhead carrying on while the page went back."""
+    m = o.move
+    drawn = [d for d, dr in zip(m.shifts, m.drawn) if dr] if m is not None and m.kind == "slide" else []
+    return (bool(drawn) and drawn[0] * dx < 0 and abs(drawn[0]) > gap
+            and not any(abs(d - dx) <= gap for d in drawn))
 
 
 def scroll_links(p: Obs, o: Obs, dx: int) -> dict[int, int]:

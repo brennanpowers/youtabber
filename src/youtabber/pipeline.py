@@ -16,7 +16,7 @@ from youtabber.assemble import (GLIDE_CONTINUE, Assembly, Obs, assemble, cell_at
                                 same_cell)
 from youtabber.check import (DUP_RESEMBLE, dwell, empty_stretches, fmt, glide_fade, glide_gaps, glide_number_gaps,
                              glide_piece_cuts, glide_repeats, glide_rows, glide_steps, layout_changes, number_checks,
-                             numbers_against_cells, numbers_restart, odd_widths, part_switch, pieces,
+                             no_barlines, numbers_against_cells, numbers_restart, odd_widths, part_switch, pieces,
                              possible_duplicates, redraw_gaps, screen_breaks, shared_barlines, slow_measures,
                              tab_in_pieces, too_few, unread_stretches)
 from youtabber.match import resemble, resemble_scaled
@@ -511,7 +511,7 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
                   + numbers_against_cells(mine) + screen_breaks(A, mine) + shared_barlines(mine)
                   + numbers_restart(A, mine)):
             notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
-    for w in layout_changes(segments, obs) + glide_piece_cuts(obs) + redraw_gaps(obs):
+    for w in layout_changes(segments, obs) + glide_piece_cuts(obs) + redraw_gaps(obs) + no_barlines(obs):
         notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
     for a, b in unread:
         for p0, p1 in pieces(a, b):
@@ -564,7 +564,7 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
                 notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
     played = [m.play_t for m in primary]
     # Scattered clips have talk between them, so the gaps between their pieces aren't missing tab
-    for w in (empty_stretches(r.tab_spans, played)
+    for w in (empty_stretches(r.tab_spans, played, [(t0, t1) for t0, t1, _, _ in main.unresolved_folds])
               + (tab_in_pieces(segments, played) if clips is None else [])):
         notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
     # A view counts as read when a staff was found on it; a glide's mosaic covers its whole time

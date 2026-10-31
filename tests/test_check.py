@@ -4,9 +4,9 @@ import numpy as np
 
 from youtabber import track
 from youtabber.check import (dwell, empty_stretches, glide_fade, glide_gaps, glide_number_gaps, glide_piece_cuts,
-                             glide_repeats, glide_rows, glide_steps, judged_width, number_checks, numbers_restart,
-                             odd_widths, pieces, redraw_gaps, same_columns, settled, shared_barlines, slow_measures,
-                             tab_in_pieces, too_few, unread_stretches)
+                             glide_repeats, glide_rows, glide_steps, judged_width, no_barlines, number_checks,
+                             numbers_restart, odd_widths, pieces, redraw_gaps, same_columns, settled, shared_barlines,
+                             slow_measures, tab_in_pieces, too_few, unread_stretches)
 from youtabber.assemble import Obs
 from youtabber.glide import Mosaic
 from youtabber.parse import Cell
@@ -113,6 +113,14 @@ def test_a_long_wait_across_a_redraw_of_a_glide_is_flagged():
 def test_empty_stretches_come_in_pieces():
     ws = empty_stretches([(0.0, 100.0)], [1.0, 2.0, 3.0, 60.0])
     assert [(w["t0"], w["t1"]) for w in ws] == [(3.0, 33.0), (33.0, 60.0), (60.0, 90.0), (90.0, 100.0)]
+
+
+def test_measures_printed_again_in_an_unresolved_fold_are_no_new_music():
+    played = [341.5, 357.5, 380.17, 383.5, 386.5, 389.12]
+    assert empty_stretches([(340.0, 396.5)], played) == []
+    # The fold covers 380.17 up to the next view at 386.5, which counts again
+    ws = empty_stretches([(340.0, 396.5)], played, [(380.17, 386.5)])
+    assert [(w["kind"], w["t0"], w["t1"]) for w in ws] == [("no_measures", 357.5, 386.5)]
 
 
 def test_unread_stretches_need_four_seconds_with_no_view_read():
@@ -308,7 +316,7 @@ def test_a_screen_held_long_for_one_measure_says_measure():
 
 def test_one_measure_from_a_long_video_says_measure():
     unsettled = SimpleNamespace(decisions=[SimpleNamespace(kind="join", resolved=False)])
-    assert too_few([HeldView(0.0, 60.0, 1)], 1, unsettled).startswith("Read only 1 measure from 60 s of tab")
+    assert too_few([lines_view(0.0, 60.0, [[300]])], 1, unsettled).startswith("Read only 1 measure from 60 s of tab")
 
 
 def test_a_lesson_holding_few_measures_long_prints_when_its_reading_is_settled():
@@ -505,3 +513,35 @@ def test_a_playhead_that_goes_back_more_often_than_the_page_time_allows_is_lost_
     thrice = [32.0 + 2.7 * k for k in range(9)]
     (w,) = dwell(page_views(24.0, thrice), SimpleNamespace(view_slots={}))
     assert (w["t0"], w["t1"]) == (32.0, 56.0) and "the playhead goes back over it" in w["text"]
+
+
+def lines_view(t0: float, t1: float, rows: list[list[int]]) -> HeldView:
+    """A view on a panel 1000 px wide whose systems hold cells of the given widths, one list a system."""
+    view = HeldView(t0, t1, 0)
+    view.rect = (0, 0, 1000, 600)
+    view.cells = []
+    for s, widths in enumerate(rows):
+        x = 0
+        for w in widths:
+            c = cell(x, x + w)
+            c.system, x = s, x + w
+            view.cells.append(c)
+    return view
+
+
+def test_tab_without_barlines_reads_a_cell_a_line_and_prints_with_a_notice():
+    # 186 s for 3 cells is over the 15 s a measure may take, but each cell is a whole line
+    unsettled = SimpleNamespace(decisions=[SimpleNamespace(kind="join", resolved=False)])
+    views = [lines_view(0.0, 90.0, [[985], [900]]), lines_view(90.0, 186.0, [[1000]])]
+    assert too_few(views, 3, unsettled) is None
+    (w,) = no_barlines(views)
+    assert (w["kind"], w["t0"], w["t1"]) == ("few_measures", 0.0, 186.0)
+    assert w["text"].startswith("This tab has no barlines, so")
+
+
+def test_a_cell_short_of_the_panel_or_two_cells_on_a_line_are_measures():
+    unsettled = SimpleNamespace(decisions=[SimpleNamespace(kind="join", resolved=False)])
+    for rows in ([[985], [899]], [[500, 500]]):
+        views = [lines_view(0.0, 90.0, rows), lines_view(90.0, 186.0, [[1000]])]
+        assert too_few(views, 3, unsettled) is not None
+        assert no_barlines(views) == []
