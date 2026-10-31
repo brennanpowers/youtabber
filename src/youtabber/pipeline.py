@@ -406,6 +406,12 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
         if covered(p, o):
             p.all_cells = []
     mark_fades(obs, r.parts, segments, len(segments) - 1)
+    # A card, count-in or fade over a segment's first screens hides or adds barlines of the page shown clean after
+    # them, or a brief first screen shows measures that page shows again, so those screens give no measures
+    covered_first = {id(o) for o in hidden_openings(obs)}
+    for o in obs:
+        if id(o) in covered_first:
+            o.all_cells = []
     # Ink at the same screen place in nearly every view of a part is fixed to the frame (a clef and key
     # panel that stays while the music scrolls behind it)
     for part in r.parts:
@@ -495,7 +501,9 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
     # Each stream is checked on its own views, so another part's views shown in between aren't its neighbours
     for k, A in zip(streams, by_stream):
         mine = [o for o in stream_obs[k] if o.part not in idle]
-        for w in (possible_duplicates(A, mine, gap) + dwell(mine, A) + odd_widths(mine) + slow_measures(mine)
+        # A first screen left with no measures because the page after it shows them is not tab held too long
+        held_long = dwell([o for o in mine if id(o) not in covered_first], A)
+        for w in (possible_duplicates(A, mine, gap) + held_long + odd_widths(mine) + slow_measures(mine)
                   + numbers_against_cells(mine) + screen_breaks(A, mine) + shared_barlines(mine)
                   + numbers_restart(A, mine)):
             notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
@@ -1145,6 +1153,75 @@ def same_barlines(a: Obs, b: Obs) -> bool:
     gap = a.all_cells[0].gap
     near = sum(any(abs(p - q) <= FADED_BAR_GAPS * gap for p in xa) for q in xb)
     return near >= FADED_BAR_SHARE * len(xb)
+
+
+def hidden_openings(obs: list[Obs]) -> list[Obs]:
+    """The views at the start of each segment's part that show the page of the first view after them, held still,
+    with a card or a count-in laid over some of its barlines, or, for a brief screen, with false barlines from a
+    fade (`overlaid`), and brief screens whose whole measures that view shows again. Views with no cells are passed
+    over, and the band must hold still from each view to the one it is judged against."""
+    groups: dict = {}
+    for o in obs:
+        if o.mosaic is None:
+            groups.setdefault((o.seg, o.part), []).append(o)
+    out = []
+    for group in groups.values():
+        # Judged from the end, so each view is compared with the first later view that stays
+        gone = [not o.all_cells for o in group]
+        for k in range(len(group) - 2, -1, -1):
+            if gone[k]:
+                continue
+            j = next((j for j in range(k + 1, len(group)) if not gone[j]), None)
+            if j is not None and all(o.move is not None and o.move.kind == "still" for o in group[k + 1:j + 1]):
+                a, b = group[k], group[j]
+                gone[k] = overlaid(a, b) or (a.brief and shown_again(a, b))
+        n = gone.index(False) if False in gone else len(group)
+        out += [o for o in group[:n] if o.all_cells]
+    return out
+
+
+def overlaid(a: Obs, b: Obs) -> bool:
+    """Whether still view a, with two or more whole measures, shows b's page with some barlines hidden: every
+    barline of a stands on one of b's, each barline of b inside a's cells that a lacks ends one of b's cells and
+    starts another, and the cells both views bound at the same barlines hold the same music. A brief a may instead
+    show false barlines a fade adds: every barline of b inside a's cells stands on one of a's, a has one b lacks,
+    and all of a's lie within b's. Barlines match within FADED_BAR_GAPS line gaps on the same system."""
+    def bars(o: Obs) -> set[tuple[int, int]]:
+        return ({(c.system, c.x0) for c in o.all_cells if c.kind != "lead"}
+                | {(c.system, c.x1) for c in o.all_cells if c.kind != "tail"})
+
+    def spans(o: Obs) -> dict[int, tuple[int, int]]:
+        out: dict[int, tuple[int, int]] = {}
+        for c in o.all_cells:
+            lo, hi = out.get(c.system, (c.x0, c.x1))
+            out[c.system] = (min(lo, c.x0), max(hi, c.x1))
+        return out
+    if not b.all_cells:
+        return False
+    tol = FADED_BAR_GAPS * b.all_cells[0].gap
+    xa, xb = bars(a), bars(b)
+    sa, sb = spans(a), spans(b)
+    if sum(c.kind == "full" for c in a.all_cells) < 2 or not set(sa) <= set(sb):
+        return False
+
+    def on(p: tuple[int, int], xs: set) -> bool:
+        return any(s == p[0] and abs(x - p[1]) <= tol for s, x in xs)
+
+    def inside(p: tuple[int, int], span: dict) -> bool:
+        return p[0] in span and span[p[0]][0] + tol < p[1] < span[p[0]][1] - tol
+    def between_cells(q: tuple[int, int]) -> bool:
+        # A barline the card hid ends one of b's cells and starts the next; one with no cell on a side is a misread
+        cells = [c for c in b.all_cells if c.system == q[0]]
+        return any(abs(c.x1 - q[1]) <= tol for c in cells) and any(abs(c.x0 - q[1]) <= tol for c in cells)
+    extra = [q for q in xb if inside(q, sa) and not on(q, xa)]
+    # A card leaves the measures between barlines both views show alone; a new page drawn on the same grid changes them
+    bound = [(c, d) for c in a.all_cells for d in b.all_cells
+             if c.system == d.system and abs(c.x0 - d.x0) <= tol and abs(c.x1 - d.x1) <= tol]
+    if (all(on(p, xb) for p in xa) and extra and all(between_cells(q) for q in extra) and bound
+            and all(same_cell(c, d, d.gap) for c, d in bound)):
+        return True
+    return (a.brief and all(on(q, xa) for q in xb if inside(q, sa)) and any(not on(p, xb) for p in xa)
+            and all(sb[s][0] - tol <= x <= sb[s][1] + tol for s, x in xa))
 
 
 def shown_again(a: Obs, b: Obs) -> bool:

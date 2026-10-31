@@ -12,8 +12,10 @@ from youtabber import glide, observe, pipeline
 from youtabber.assemble import Obs, assemble
 from youtabber.observe import View, ink_threshold, to_gray
 from youtabber.parse import Cell
-from youtabber.pipeline import drop_fades, last_screen_notice, lead_before, mark_fades, same_barlines
+from youtabber.pipeline import (drop_fades, hidden_openings, last_screen_notice, lead_before, mark_fades,
+                                same_barlines)
 from youtabber.scan import Segment
+from youtabber.track import Move
 from youtabber.video import VideoInfo
 
 PAPER = np.array([255, 255, 255], np.uint8)
@@ -404,3 +406,109 @@ def test_a_brief_screen_left_with_no_measures_does_not_hide_a_break_before_a_res
     assert restart_fold(False) == [("fold", "restart")]
     # A page fading in just before the restart, emptied of its measures, leaves the break as long as it was
     assert restart_fold(True) == [("fold", "restart")]
+
+
+def held_page(index, edges, brief=False, move="still", lead=False, tail=False):
+    """A still view whose cells lie between the given x positions on one system; with `lead` or `tail` the first or
+    last cell is cut by the panel edge. `move` is how the band moved from the view before."""
+    cells = []
+    for i, (x0, x1) in enumerate(zip(edges, edges[1:])):
+        kind = "lead" if lead and i == 0 else "tail" if tail and i == len(edges) - 2 else "full"
+        # Barlines a few pixels apart bound the same music on every view
+        ink = music("a", 1000 * (x0 // 20) + x1 // 20)
+        cells.append(Cell(index, 0, i, x0, x1, kind, ink, np.zeros_like(ink), 0, gap=20.0, mid_y=30.0,
+                          tint=np.zeros_like(ink)))
+    o = Obs(index, float(index), index + 1.0, cells, [], 0, (0, 0))
+    o.all_cells, o.brief = cells, brief
+    o.move = None if move is None else Move(move)
+    return o
+
+
+PAGE_ONE = [70, 321, 538, 753, 968, 1183, 1721]
+
+
+def test_a_first_screen_with_barlines_hidden_by_a_card_over_the_still_page_after_it_gives_none():
+    # A count-in card covers measures 3-5, so the first screen reads one wide cell where the page has three
+    card = held_page(0, [70, 321, 538, 1183, 1721], brief=True, move=None)
+    page = held_page(1, PAGE_ONE)
+    assert hidden_openings([card, page, held_page(2, [70, 900, 1721], move="cut")]) == [card]
+    # Barlines within a quarter line gap (5 px) still match
+    assert hidden_openings([held_page(0, [70, 326, 538, 1183, 1721], move=None), page]) != []
+    assert hidden_openings([held_page(0, [70, 327, 538, 1183, 1721], move=None), page]) == []
+    # A page turn between the two, or the same barlines on both, says nothing about a card
+    assert hidden_openings([card, held_page(1, PAGE_ONE, move="cut")]) == []
+    assert hidden_openings([held_page(0, PAGE_ONE, move=None), page]) == []
+    # A screen of one barline between two cut cells is too little to judge
+    assert hidden_openings([held_page(0, [36, 958, 1795], move=None, lead=True, tail=True),
+                            held_page(1, [36, 600, 958, 1795], lead=True, tail=True)]) == []
+    # A barline 15 px after one of the first screen's, with no cell between the two, is a misread, not a card
+    sliver = held_page(1, [70, 259, 439, 830])
+    sliver.all_cells[1].x0 = 274
+    assert hidden_openings([held_page(0, [70, 259, 439, 830], move=None), sliver]) == []
+    # A page on the same grid with other music between the barlines both show is a page of its own
+    other = held_page(1, PAGE_ONE)
+    other.all_cells[0].ink = music("b", 1)
+    assert hidden_openings([card, other]) == []
+    # Only the views at the start of a segment's part are judged
+    assert hidden_openings([held_page(0, [70, 900, 1721], move=None), held_page(1, [70, 321, 538, 1183, 1721]), page]) == []
+
+
+def test_screens_under_a_card_that_also_cuts_the_panel_are_judged_against_the_first_clean_page():
+    # A brief screen of the page's last five measures, then a longer one whose panel the card cuts at both ends,
+    # then the clean page
+    first = held_page(0, [308, 507, 707, 1072, 1327, 1729], brief=True, move=None)
+    cut = held_page(1, [229, 507, 707, 1072, 1327, 1565], lead=True, tail=True)
+    clean = held_page(2, [77, 308, 507, 707, 1072, 1327, 1729])
+    assert hidden_openings([first, cut, clean]) == [first, cut]
+    # Views already left with no cells are passed over
+    cut.all_cells = []
+    assert hidden_openings([first, cut, clean]) == [first]
+    # A first screen with the same barlines stays when it is held longer or shows other music
+    held = held_page(0, [308, 507, 707, 1072, 1327, 1729], move=None)
+    assert hidden_openings([held, held_page(1, [229, 507, 707, 1072, 1327, 1565], lead=True, tail=True), clean]) == []
+    other = held_page(0, [308, 507, 707, 1072, 1327, 1729], brief=True, move=None)
+    other.all_cells[2].ink = music("b", 1)
+    assert hidden_openings([other, cut, clean]) == []
+
+
+def test_a_brief_first_screen_with_false_barlines_from_a_fade_gives_none():
+    page = held_page(1, [361, 597, 723, 849, 975, 1101, 1481, 1845], tail=True)
+    fading = held_page(0, [358, 597, 723, 849, 975, 1101, 1148, 1353, 1481, 1852], brief=True, move=None, lead=True,
+                    tail=True)
+    assert hidden_openings([fading, page]) == [fading]
+    # A screen held longer is a page of its own
+    held = held_page(0, [358, 597, 723, 849, 975, 1101, 1148, 1353, 1481, 1852], move=None, lead=True, tail=True)
+    assert hidden_openings([held, page]) == []
+    # ...as is a brief screen that lacks one of the page's barlines as well
+    lacking = held_page(0, [358, 597, 849, 975, 1101, 1148, 1353, 1481, 1852], brief=True, move=None, lead=True,
+                     tail=True)
+    assert hidden_openings([lacking, page]) == []
+
+
+def test_a_first_screen_cleared_under_a_card_gives_no_notice_for_its_long_hold(monkeypatch):
+    from youtabber import check, ocr
+    from youtabber.parts import Part
+    for name in ("screen_breaks", "possible_duplicates", "shared_barlines", "numbers_against_cells", "odd_widths",
+                 "slow_measures", "numbers_restart", "text_tab_shown"):
+        monkeypatch.setattr(pipeline, name, lambda *a, **k: [])
+    monkeypatch.setattr(ocr, "read_number", lambda *a, **k: None)
+    monkeypatch.setattr(ocr, "find_words", lambda *a, **k: [])
+    # 8 s of a page whose measures 2-3 a card covers, then the clean page, then a page turn
+    first, page, after = view(0, [("a", 1), ("b", 9), ("a", 4)]), view(1, run("a", 1, 4)), view(2, run("a", 5, 8))
+    first.cells[1].x1 = 600
+    first.cells[2].x0, first.cells[2].x1 = 600, 800
+    for k, o in enumerate((first, page, after)):
+        o.t0, o.t1, o.all_cells = 8.0 * k, 8.0 * k + 8, o.cells
+        o.band, o.contrast, o.line_contrast = np.zeros((60, 800), bool), 100.0, 50.0
+        for c in o.cells:
+            c.number = None
+    page.move, after.move = Move("still"), Move("cut")
+    seg = SimpleNamespace(t0=0.0, t1=24.0, polarity="dark", x0=0, y0=0, x1=800, y1=60, gap=10.0, passed=None)
+    r = pipeline.Reading(24.0, [seg])
+    r.parts = [Part(0, 0, (0, 60), "page")]
+    out = pipeline.finish(None, SimpleNamespace(duration=24.0), r, [seg], [], None, [first, page, after], [10.0], [],
+                          [], lambda *a: None)
+    assert first.all_cells == []
+    assert [n.kind for n in out.notices if n.kind == "few_measures"] == []
+    # The emptied screen alone would read as tab held long for no measures
+    assert [w["kind"] for w in check.dwell([first, page, after], out.assembly)] == ["few_measures"]
