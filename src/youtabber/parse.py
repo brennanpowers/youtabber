@@ -55,25 +55,29 @@ NOTATION_SHARE = 0.85
 # Two neighbor staffs left unpaired pair as notation over tab, whatever lies between them, when the upper one's lines
 # are spaced under this share of the lower one's
 FAR_PAIR_GAP_SHARE = 0.75
-# ...and it runs over at least this share of the lower one's columns
-FAR_PAIR_COLUMNS = 0.8
 
 
 def pair_far_notation(syss: list[System]) -> list[System]:
-    """`syss` with each unpaired staff taken as the notation of the unpaired staff below it when it is spaced much
-    closer, has no more lines, lies over the same columns and within NOTATION_FAR_GAPS of it. A dashed "let ring"
-    line or a row of beams between notation and tab set far apart runs across them like a rule, so the scan leaves
-    them apart."""
+    """`syss` with each unpaired staff taking the unpaired staff just above it as its notation when that one is
+    spaced much closer, within NOTATION_FAR_GAPS of it, and has five lines, as notation over four-string bass tab
+    does, or no more lines than it. A dashed "let ring" line or a row of beams between notation and tab set far apart
+    runs across them like a rule, so the scan leaves them apart. Pairing from the bottom up, as the scan does, keeps
+    close lines above a notation staff from pulling it away from its tab."""
     out: list[System] = []
-    for s in syss:
-        up = out[-1] if out else None
+    i = len(syss) - 1
+    while i >= 0:
+        s = syss[i]
+        up = syss[i - 1] if i > 0 else None
         if (up is not None and up.notation is None and s.notation is None and up.tab.polarity == s.tab.polarity
                 and 0 < s.tab.top - up.tab.bottom < NOTATION_FAR_GAPS * s.tab.gap
-                and up.tab.gap < FAR_PAIR_GAP_SHARE * s.tab.gap and len(up.tab.lines) <= len(s.tab.lines)
-                and min(up.tab.x1, s.tab.x1) - max(up.tab.x0, s.tab.x0) >= FAR_PAIR_COLUMNS * (s.tab.x1 - s.tab.x0)):
-            out[-1] = System(s.tab, up.tab, s.panel, s.cut_from)
+                and up.tab.gap < FAR_PAIR_GAP_SHARE * s.tab.gap
+                and (len(up.tab.lines) == 5 or len(up.tab.lines) <= len(s.tab.lines))):
+            out.append(System(s.tab, up.tab, s.panel, s.cut_from))
+            i -= 2
         else:
             out.append(s)
+            i -= 1
+    out.reverse()
     return out
 
 

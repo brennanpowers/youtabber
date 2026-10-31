@@ -50,15 +50,15 @@ def whole_lines(obs) -> bool:
 
 
 def no_barlines(obs) -> list[dict]:
-    """A notice over the whole tab when it has no barlines. Two pages that differ only above or below the staff
-    then look the same and are read as one."""
+    """A notice over the whole tab when no barlines were found in it. Two pages that differ only above or below the
+    staff then look the same and are read as one."""
     read = [o for o in obs if o.cells]
     if not whole_lines(obs):
         return []
     t0, t1 = min(o.t0 for o in read), max(o.t1 for o in read)
-    return [{"t0": round(t0, 2), "t1": round(t1, 2), "kind": "few_measures",
-             "text": "This tab has no barlines, so each line of music is printed as one measure, and pages that look "
-                     "the same may be printed once."}]
+    return [{"t0": round(t0, 2), "t1": round(t1, 2), "kind": "no_barlines",
+             "text": "No barlines were found in this tab, so each line of music is printed as one measure, and pages "
+                     "that look the same may be printed once."}]
 
 
 def settled(obs, A) -> bool:
@@ -456,10 +456,13 @@ def glide_number_gaps(o) -> list[dict]:
 
 
 def empty_stretches(spans: list[tuple[float, float]], play_times: list[float],
-                    repeats: list[tuple[float, float]] = ()) -> list[dict]:
-    """Stretches of tab on screen at least EMPTY_SECONDS long with no new printed measure played in them. A measure
-    played inside one of `repeats` is printed again with no sign whether the song plays it again, so it isn't new."""
-    times = sorted(t for t in play_times if not any(a <= t < b for a, b in repeats))
+                    again: list[float] = ()) -> list[dict]:
+    """Stretches of tab on screen at least EMPTY_SECONDS long with no new printed measure played in them. `again`
+    holds the play times of the measures first placed on a lone view holding an unresolved fold: they may repeat
+    measures already shown, with no sign whether the song plays them again, so they aren't new."""
+    times = sorted(play_times)
+    for t in again:
+        times.remove(t)
     out = []
     for s0, s1 in spans:
         marks = [s0] + [t for t in times if s0 <= t <= s1] + [s1]

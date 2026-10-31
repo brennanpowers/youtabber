@@ -310,7 +310,7 @@ def test_a_scrolling_segment_keeps_the_best_lining_up_shift_when_a_measured_slid
 def test_a_pick_among_several_playhead_fits_gives_way_to_a_slide_drawn_back():
     p, o = slid(-1200, True, p_end=700, o_start=320)
     shifts = [(598, 0.0), (398, 0.05), (198, 0.1)]
-    assert choose_shift(p, o, shifts, 0.9, {"playhead"}, 10.0, usual=420.0) == (None, "drawn_back", True)
+    assert choose_shift(p, o, shifts, 0.9, {"playhead"}, 10.0, usual=420.0) == (None, "drawn_back", False)
 
 
 def test_a_playhead_that_rules_out_every_shift_settles_a_new_page():
@@ -1111,7 +1111,7 @@ def test_a_playhead_that_carries_on_gives_way_to_a_slide_drawn_back():
     # The playhead carries on from 700 to 320 at the 398 px shift, but the band was seen sliding 1200 px back
     p, o = slid(-1200, True, p_end=700, o_start=320)
     assert choose_shift(p, o, [(398, 0.0)], 0.5, {"playhead"}, 10.0) == (None, "drawn_back", True)
-    # A backward slide not drawn in steps, one no longer than a gap, or one with another drawn near the shift
+    # A backward slide not drawn in steps, one shorter than a gap, or one with another drawn near the shift
     # leaves the pick to the playhead
     for move in (Move("slide", shifts=[-1200], drawn=[False], steps=1),
                  Move("slide", shifts=[-5], drawn=[True], steps=5),
@@ -1124,4 +1124,4 @@ def test_a_playhead_pick_in_a_scrolling_segment_gives_way_to_a_slide_drawn_back(
     # From 500 the playhead allows 398 and 198 but not the best-lining-up 598
     p, o = slid(-1200, True, p_end=700, o_start=500)
     shifts = [(598, 0.0), (398, 0.05), (198, 0.1)]
-    assert choose_shift(p, o, shifts, 0.9, {"playhead"}, 10.0, usual=420.0) == (None, "drawn_back", True)
+    assert choose_shift(p, o, shifts, 0.9, {"playhead"}, 10.0, usual=420.0) == (None, "drawn_back", False)

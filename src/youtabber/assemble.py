@@ -521,7 +521,8 @@ def choose_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float
             # at the best one, so take the allowed shift nearest the segment's usual slide, left unsettled
             pick = min(fits, key=lambda dx: abs(dx - usual)) if usual is not None else fits[0]
             if drawn_against(o, pick, gap):
-                return None, "drawn_back", True
+                # The pick was a guess among shifts, so the page turn a slide drawn back says is left unsettled too
+                return None, "drawn_back", False
             return pick, "playhead", False
         return shifts[0][0], "segment_scrolls", len(shifts) == 1
     return None, "prior", False

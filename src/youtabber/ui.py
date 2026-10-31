@@ -41,6 +41,8 @@ LABELS = {
     "possible_duplicate": ("measure that may print twice", "measures that may print twice"),
     "number_again": ("measure number printed again", "measure numbers printed again"),
     "few_measures": ("screen with fewer measures than expected", "screens with fewer measures than expected"),
+    "no_barlines": ("tab with no barlines found, look-alike pages may print once",
+                    "tabs with no barlines found, look-alike pages may print once"),
     "numbers_skipped": ("measure number skipped", "measure numbers skipped"),
     "numbers_start": ("first number read is high, opening measures may be missing",
                       "first number read is high, opening measures may be missing"),

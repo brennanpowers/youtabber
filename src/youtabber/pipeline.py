@@ -569,7 +569,7 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
                 notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
     played = [m.play_t for m in primary]
     # Scattered clips have talk between them, so the gaps between their pieces aren't missing tab
-    for w in (empty_stretches(r.tab_spans, played, [(t0, t1) for t0, t1, _, _ in main.unresolved_folds])
+    for w in (empty_stretches(r.tab_spans, played, lone_fold_times(main, stream_obs, primary))
               + (tab_in_pieces(segments, played) if clips is None else [])):
         notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
     # A view counts as read when a staff was found on it; a glide's mosaic covers its whole time
@@ -973,6 +973,22 @@ def repeat_notices(A: Assembly, obs: list[Obs]) -> list[Notice]:
                               f"like ones first shown at {fmt(first_seen.t0)}-{fmt(first_seen.t1)}, so they may be "
                               f"printed twice. Check whether they repeat.", True))
     return notices
+
+
+def lone_fold_times(A: Assembly, stream_obs: dict[int, list[Obs]], printed: list[Measure]) -> list[float]:
+    """Play times of the measures first placed on a view holding an unresolved fold, when the views before and after
+    it, among its stream's views with measures, hold none. Such a view among new music may be a page shown again,
+    whose other measures can repeat earlier ones the fold's match missed. Folds on several views in a row follow
+    earlier music page by page, as a song playing a section again does, so their measures are played music."""
+    folds = {(t0, t1) for t0, t1, _, _ in A.unresolved_folds}
+    lone = set()
+    for views in stream_obs.values():
+        read = [o for o in views if o.cells]
+        marks = [(o.t0, o.t1) in folds for o in read]
+        for i, o in enumerate(read):
+            if marks[i] and not (i > 0 and marks[i - 1]) and not (i + 1 < len(marks) and marks[i + 1]):
+                lone.add(o.index)
+    return [m.play_t for m in printed if A.slots[m.slot].obs in lone]
 
 
 def unsure_notices(A: Assembly, obs: list[Obs], printed: list[Measure]) -> list[Notice]:

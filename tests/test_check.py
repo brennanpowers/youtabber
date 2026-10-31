@@ -118,9 +118,11 @@ def test_empty_stretches_come_in_pieces():
 def test_measures_printed_again_in_an_unresolved_fold_are_no_new_music():
     played = [341.5, 357.5, 380.17, 383.5, 386.5, 389.12]
     assert empty_stretches([(340.0, 396.5)], played) == []
-    # The fold covers 380.17 up to the next view at 386.5, which counts again
-    ws = empty_stretches([(340.0, 396.5)], played, [(380.17, 386.5)])
+    # The measures played at 380.17 and 383.5 may repeat earlier ones; the one at 386.5 is new
+    ws = empty_stretches([(340.0, 396.5)], played, [380.17, 383.5])
     assert [(w["kind"], w["t0"], w["t1"]) for w in ws] == [("no_measures", 357.5, 386.5)]
+    # A measure at 380.17 left out of `again` breaks the stretch
+    assert empty_stretches([(340.0, 396.5)], played, [383.5]) == []
 
 
 def test_unread_stretches_need_four_seconds_with_no_view_read():
@@ -535,8 +537,8 @@ def test_tab_without_barlines_reads_a_cell_a_line_and_prints_with_a_notice():
     views = [lines_view(0.0, 90.0, [[985], [900]]), lines_view(90.0, 186.0, [[1000]])]
     assert too_few(views, 3, unsettled) is None
     (w,) = no_barlines(views)
-    assert (w["kind"], w["t0"], w["t1"]) == ("few_measures", 0.0, 186.0)
-    assert w["text"].startswith("This tab has no barlines, so")
+    assert (w["kind"], w["t0"], w["t1"]) == ("no_barlines", 0.0, 186.0)
+    assert w["text"].startswith("No barlines were found in this tab, so")
 
 
 def test_a_cell_short_of_the_panel_or_two_cells_on_a_line_are_measures():

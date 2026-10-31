@@ -654,11 +654,11 @@ def test_numbers_are_printed_when_neighboring_measures_of_one_staff_read_one_apa
         assert parse.numbers_printed(frame, (0, 0, 10, 10), 120.0, 230.0, "dark", 18.0) is want
 
 
-def far_pair(up_gap: float = 14.0, apart_gaps: float = 11.3, up_x1: int = 1800, up_lines: int = 5):
-    """An unpaired staff with lines `up_gap` apart, `apart_gaps` tab gaps above a 6-line tab staff spaced 21."""
-    tab = Staff([400.0 + 21 * i for i in range(6)], 0, 1800, 21.0, "dark")
+def far_pair(up_gap: float = 14.0, apart_gaps: float = 11.3, up_lines: int = 5, tab_lines: int = 6):
+    """An unpaired staff with lines `up_gap` apart, `apart_gaps` tab gaps above a tab staff spaced 21."""
+    tab = Staff([400.0 + 21 * i for i in range(tab_lines)], 0, 1800, 21.0, "dark")
     bottom = 400.0 - apart_gaps * 21
-    up = Staff([bottom - up_gap * (up_lines - 1 - i) for i in range(up_lines)], 0, up_x1, up_gap, "dark")
+    up = Staff([bottom - up_gap * (up_lines - 1 - i) for i in range(up_lines)], 0, 1800, up_gap, "dark")
     return [System(up, None), System(tab, None)]
 
 
@@ -667,12 +667,27 @@ def test_an_unpaired_staff_spaced_much_closer_far_above_tab_is_its_notation():
     assert s.tab.gap == 21.0 and s.notation.gap == 14.0
 
 
-def test_a_far_unpaired_staff_stays_apart_when_spaced_near_alike_too_far_or_over_other_columns():
-    # 15.75 is 0.75 of 21; 12 gaps is NOTATION_FAR_GAPS; 1440 columns are 0.8 of the tab's 1800
-    for syss in (far_pair(up_gap=15.75), far_pair(apart_gaps=12.0), far_pair(up_x1=1430), far_pair(up_lines=7)):
+def test_a_far_unpaired_staff_stays_apart_when_spaced_near_alike_too_far_or_with_more_lines():
+    # 15.75 is 0.75 of 21; 12 gaps is NOTATION_FAR_GAPS
+    for syss in (far_pair(up_gap=15.75), far_pair(apart_gaps=12.0), far_pair(up_lines=7)):
         assert [s.notation for s in pair_far_notation(syss)] == [None, None]
-    (s,) = pair_far_notation(far_pair(up_gap=15.7, apart_gaps=11.9, up_x1=1440, up_lines=6))
+    (s,) = pair_far_notation(far_pair(up_gap=15.7, apart_gaps=11.9, up_lines=6))
     assert s.notation is not None
+
+
+def test_five_line_notation_far_above_four_line_bass_tab_is_its_notation():
+    (s,) = pair_far_notation(far_pair(tab_lines=4))
+    assert len(s.notation.lines) == 5 and len(s.tab.lines) == 4
+    assert [s.notation for s in pair_far_notation(far_pair(up_lines=6, tab_lines=4))] == [None, None]
+
+
+def test_close_lines_above_far_notation_leave_it_with_its_tab():
+    up, tab = far_pair()
+    # Lines spaced 8 sit 3 notation gaps above the notation staff, whose top is at 106.7
+    stray = Staff([64.7 - 8 * (4 - i) for i in range(5)], 0, 1800, 8.0, "dark")
+    first, second = pair_far_notation([System(stray, None), up, tab])
+    assert first.tab is stray and first.notation is None
+    assert second.tab is tab.tab and second.notation is up.tab
 
 
 def test_a_staff_already_paired_takes_no_far_notation():
