@@ -28,6 +28,9 @@ CURSOR_DIFF = 45
 # A playhead that sweeps at least this many line gaps, then jumps back as many into its sweep's left half, starts
 # the page over
 WRAP_GAPS = 6
+# On dark paper a staff area can show too little ink to measure; the ink is then taken to be at least this share
+# of the way from the paper to white, so a see-through cursor bar a little lighter than the paper isn't ink
+DARK_INK_REACH = 0.6
 # Faint ink (light-gray measure numbers) is at least this much darker than paper, in levels or share of contrast
 FAINT_MIN, FAINT_SHARE = 18, 0.1
 # Color spread (max minus min channel) below which a pixel counts as gray
@@ -166,6 +169,8 @@ def ink_threshold(gray: np.ndarray, paper_bgr: np.ndarray, polarity: str) -> tup
     if polarity == "light":
         paper = 255 - paper
     ink = min(float(np.percentile(gray, 0.5)), paper - 60)
+    if polarity == "light":
+        ink = min(ink, (1 - DARK_INK_REACH) * paper)
     return ink + INK_LEVEL * (paper - ink), paper - max(FAINT_MIN, FAINT_SHARE * (paper - ink))
 
 
@@ -294,6 +299,13 @@ def significant_change(a: np.ndarray, b: np.ndarray, gap: float, radius: int = 1
 
 
 PAPER_TOL = 40
+# On dark paper, dark footage above a band passes PAPER_TOL, but the band is drawn flat. A row is flat when its middle
+# color is within PAPER_TOL of the paper and its share of pixels within FLAT_TOL of that color is at least FLAT_SHARE
+# of the staff rows' share; judged against each row's own color, a gradient band stays flat. The panel's rows above
+# the staffs end at the first stretch of rows that aren't flat, FLAT_RUN_GAPS line gaps tall; chord names are shorter
+FLAT_TOL, FLAT_SHARE, FLAT_RUN_GAPS = 12, 0.75, 1.0
+# Every FLAT_STEP-th column is enough to judge a row's flatness
+FLAT_STEP = 4
 # A panel border is darker than this in every color channel (averaged over half a line gap left of the paper)
 BORDER_LEVEL = 40
 # A row (or column) belongs to the panel when this share of it is paper colored
@@ -326,9 +338,42 @@ def grow(ok: np.ndarray, i: int, step: int, slack: int = 3) -> int:
     return last
 
 
+def flat_band_top(frame: np.ndarray, paper: np.ndarray, sx0: int, sx1: int, sy0: int, sy1: int, gap: float,
+                  above: float) -> int:
+    """The first row of a dark band above the staffs (rows sy0 to sy1, columns sx0 to sx1): the row below the lowest
+    stretch of rows that aren't flat, FLAT_RUN_GAPS line gaps tall, which starts within `above` line gaps of the
+    staffs. 0 when there is none."""
+    run = max(1, int(FLAT_RUN_GAPS * gap))
+    top = max(0, int(sy0 - above * gap) - run)
+    if sy1 <= sy0 or sy0 <= top:
+        return 0
+    band = frame[top:sy1, sx0:sx1:FLAT_STEP].astype(np.int16)
+    if band.shape[1] == 0:
+        return 0
+    middle = np.median(band, axis=1)
+    share = (np.abs(band - middle[:, None, :]).max(axis=2) < FLAT_TOL).mean(axis=1)
+    near = np.abs(middle - paper).max(axis=1) < PAPER_TOL
+    staff = share[sy0 - top:][near[sy0 - top:]]
+    if len(staff) == 0:
+        return 0
+    flat = near[:sy0 - top] & (share[:sy0 - top] >= FLAT_SHARE * float(np.median(staff)))
+    lowest = int(sy0 - above * gap) - top
+    k = sy0 - top - 1
+    while k >= max(lowest, 0):
+        if flat[k]:
+            k -= 1
+            continue
+        end = k
+        while k >= 0 and not flat[k]:
+            k -= 1
+        if end - k >= run:
+            return top + end + 1
+    return 0
+
+
 def panel_rect(frame: np.ndarray, paper: np.ndarray, seed: tuple[int, int, int, int], gap: float,
                above: float = ABOVE_GAPS, below: float = BELOW_GAPS,
-               for_print: bool = False) -> tuple[int, int, int, int]:
+               for_print: bool = False, polarity: str = "dark") -> tuple[int, int, int, int]:
     """(x0, y0, x1, y1) of the paper panel around the seed box (the staffs), grown while rows and columns stay paper.
 
     With `for_print`, the area to print from, which keeps a margin around the staffs.
@@ -343,10 +388,11 @@ def panel_rect(frame: np.ndarray, paper: np.ndarray, seed: tuple[int, int, int, 
     sx0, sx1 = max(0, sx0), min(w, sx1)
     sy0, sy1 = max(0, sy0), min(h, sy1)
     rows = m[:, sx0:sx1].mean(axis=1) >= PANEL_SHARE
+    flat_top = flat_band_top(frame, p, sx0, sx1, sy0, sy1, gap, above) if polarity == "light" else 0
     slack = max(3, int(gap / 2))
     # Chord names, numbers and beams stay within a few line gaps of the staffs; past that, paper-colored
     # rows are footage that happens to match (dark rooms behind a dark theme)
-    y0 = max(grow(rows, sy0, -1, slack), int(sy0 - above * gap))
+    y0 = max(grow(rows, sy0, -1, slack), int(sy0 - above * gap), flat_top)
     y1 = min(grow(rows, sy1 - 1, 1, slack) + 1, int(sy1 + below * gap))
     if for_print:
         # Digits sit centered on the outer staff lines, so the print area always reaches past them
@@ -464,7 +510,8 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         # On a dark theme, footage in a dark room looks like paper, so the print area keeps the panel's reach
         above, below = (ABOVE_GAPS, BELOW_GAPS) if polarity == "light" else (PRINT_ABOVE_GAPS, PRINT_BELOW_GAPS)
         mid_bound = bound_at(chunk[len(chunk) // 2][0]) if bound_at is not None else None
-        v.print_rect = within(panel_rect(plate, paper, mid_seed, gap, above, below, for_print=True), mid_bound,
+        v.print_rect = within(panel_rect(plate, paper, mid_seed, gap, above, below, for_print=True,
+                                         polarity=polarity), mid_bound,
                               (int(mid_seed[1] - PRINT_MARGIN_GAPS * gap), int(mid_seed[3] + PRINT_MARGIN_GAPS * gap)))
         for t, f, _, _ in chunk:
             p = points.get(t) if f is None else playhead_at(f, plate, rect)
@@ -578,7 +625,7 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         g = to_gray(f, polarity)
         if thr is None:
             thr, fthr = ink_threshold(g[max(0, seed[1]):seed[3], max(0, seed[0]):seed[2]], paper, polarity)
-        rect = within(panel_rect(f, paper, seed, gap), bound_at(t) if bound_at is not None else None,
+        rect = within(panel_rect(f, paper, seed, gap, polarity=polarity), bound_at(t) if bound_at is not None else None,
                       (seed[1], seed[3]))
         if ref is None:
             ref = start(t, f, g, rect, seed)

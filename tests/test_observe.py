@@ -104,6 +104,61 @@ def test_paper_rect_counts_pixels_within_the_tolerance():
     assert observe.panel_rect(frame, PAPER.astype(np.float64), (10, 15, 50, 25), 10.0) == (0, 0, 60, 30)
 
 
+def dark_footage(rows: int, width: int, seed: int) -> np.ndarray:
+    """Dark footage: every channel 0-45, within PAPER_TOL of black paper in most pixels but far from flat."""
+    return np.random.default_rng(seed).integers(0, 46, (rows, width, 3), dtype=np.uint8)
+
+
+def test_dark_paper_rows_above_the_staffs_end_at_a_line_gap_of_rows_that_are_not_flat():
+    dark = np.array([19.0, 19.0, 19.0])
+    frame = np.full((100, 60, 3), 19, np.uint8)
+    frame[:40] = dark_footage(40, 60, 1)
+    seed = (10, 50, 50, 70)
+    assert observe.panel_rect(frame, dark, seed, 10.0) == (0, 25, 60, 100)
+    assert observe.panel_rect(frame, dark, seed, 10.0, polarity="light") == (0, 40, 60, 100)
+    # Rows of chord names under a line gap tall don't end the band
+    frame[:40] = 19
+    frame[35:42, ::3] = 230
+    assert observe.panel_rect(frame, dark, seed, 10.0, polarity="light") == (0, 25, 60, 100)
+
+
+def test_a_dark_band_lightening_toward_its_top_stays_flat():
+    dark = np.array([19.0, 19.0, 19.0])
+    frame = np.full((100, 60, 3), 19, np.uint8)
+    # Each row is one color, up to 30 levels lighter than the paper at the top
+    frame[:50] = (19 + np.linspace(30, 0, 50)).astype(np.uint8)[:, None, None]
+    assert observe.panel_rect(frame, dark, (10, 50, 50, 70), 10.0, polarity="light") == (0, 25, 60, 100)
+
+
+def test_views_on_dark_paper_keep_footage_above_the_band_out_of_the_panel(monkeypatch):
+    page = 255 - PAGE
+
+    def frames(path, fps, crop=None, start=0.0, length=None):
+        for i in range(30):
+            f = page.copy()
+            f[:56] = dark_footage(56, f.shape[1], i)
+            yield i / fps, f
+    monkeypatch.setattr(observe, "frames", frames)
+    black = np.array([0.0, 0.0, 0.0])
+    observe.set_paper(black)
+    views = observe.views_in(None, (0, 0, 1280, 270), "light", 18.0, black, lambda t: STAFFS, 0.0, 5.0)[0]
+    observe.set_paper(PAPER)
+    assert [v.rect[1] for v in views] == [56]
+
+
+def test_dark_paper_with_too_little_ink_keeps_the_threshold_below_a_cursor_bar():
+    # Inverted gray of paper at level 19, with a few white digit pixels, too few to set the ink level
+    gray = np.full((100, 100), 236, np.uint8)
+    gray[0, :20] = 0
+    thr, fthr = observe.ink_threshold(gray, np.array([19.0, 19.0, 19.0]), "light")
+    assert round(thr, 2) == 172.28 and round(fthr, 2) == 218.0
+    # A see-through amber cursor bar at gray 49.5 is lighter than the threshold, so it isn't ink
+    assert 255 - 49.5 > thr
+    # Light paper takes its ink to be at least 60 levels darker than the paper
+    thr, fthr = observe.ink_threshold(gray, np.array([236.0, 236.0, 236.0]), "dark")
+    assert round(thr, 2) == 209.0 and round(fthr, 2) == 218.0
+
+
 def test_color_is_judged_the_same_on_a_wide_image_in_pieces():
     rng = np.random.default_rng(3)
     wide = rng.integers(0, 256, (20, observe.COLOR_PIECE * 2 + 37, 3), dtype=np.uint8)
