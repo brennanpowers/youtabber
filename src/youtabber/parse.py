@@ -1013,11 +1013,16 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
 
 
 def numbers_printed(frame: np.ndarray, rect: tuple[int, int, int, int], thr: float, fthr: float, polarity: str,
-                    gap: float) -> bool:
+                    gap: float) -> bool | None:
     """True when two neighboring measures of a staff in the frame read as measure numbers one apart. Chord names,
-    counts and cursor marks above the staff don't."""
+    counts and cursor marks above the staff don't. None when no staff in the frame has two measures to read, as on
+    a count-in or title screen."""
+    judged = False
     for ps in parse_view(0, frame, rect, polarity, thr, fthr, gap):
+        if len(ps.cells) < 2:
+            continue
+        judged = True
         reads = [None if c.number_crop is None else ocr.read_number(c.number_crop) for c in ps.cells]
         if any(a is not None and b == a + 1 for a, b in zip(reads, reads[1:])):
             return True
-    return False
+    return False if judged else None

@@ -661,7 +661,8 @@ def test_numbers_are_printed_when_neighboring_measures_of_one_staff_read_one_apa
                                       for r in reads])
     pages = {"apart": [system(7, None, 9)], "next": [system(None, 7, 8)], "two staffs": [system(3), system(4)]}
     monkeypatch.setattr(ocr, "read_number", lambda crop: int(crop[0, 0]))
-    for name, want in (("apart", False), ("next", True), ("two staffs", False)):
+    # Two staffs of one measure each have no neighboring measures to judge
+    for name, want in (("apart", False), ("next", True), ("two staffs", None)):
         monkeypatch.setattr(parse, "parse_view", lambda *a, systems=pages[name]: systems)
         frame = np.full((10, 10, 3), 255, np.uint8)
         assert parse.numbers_printed(frame, (0, 0, 10, 10), 120.0, 230.0, "dark", 18.0) is want

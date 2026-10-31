@@ -1,6 +1,7 @@
 """Still views from a fake frame stream: a long-held page keeps a bounded number of frames in memory."""
 import weakref
 
+import cv2
 import numpy as np
 
 from synth import Song, draw_measures
@@ -455,11 +456,20 @@ def test_a_cursor_reaching_up_from_the_staff_into_the_number_row_is_no_change():
     assert observe.number_changed(PAGE, b, PANEL, STAFFS, 18.0)
 
 
-def test_a_number_row_change_in_skipped_pixels_is_no_change():
+def test_a_number_row_change_in_skipped_pixels_or_outside_kept_ones_is_no_change():
     a, b = number_frames(300)
-    skip = np.zeros(PAGE.shape[:2], bool)
-    skip[40:65, 295:315] = True
-    assert not observe.number_changed(a, b, PANEL, STAFFS, 18.0, skip)
+    marked = np.zeros(PAGE.shape[:2], bool)
+    marked[40:65, 295:315] = True
+    assert not observe.number_changed(a, b, PANEL, STAFFS, 18.0, marked)
+    assert observe.number_changed(a, b, PANEL, STAFFS, 18.0, keep=marked)
+    assert not observe.number_changed(a, b, PANEL, STAFFS, 18.0, keep=~marked)
+
+
+def thin_digits(text: str, dx: int = 0, dy: int = 0) -> np.ndarray:
+    """PAGE with black digits about 13 pixels tall and 1-2 pixels thick in the row of measure numbers."""
+    f = PAGE.copy()
+    cv2.putText(f, text, (300 + dx, 60 + dy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1, cv2.LINE_AA)
+    return f
 
 
 def test_a_colored_box_coming_up_from_the_staff_over_the_number_row_stops_the_number_compare():
@@ -528,6 +538,92 @@ def test_a_number_row_change_is_no_change_where_no_measure_numbers_are_printed(m
     assert [round(v.t0, 2) for v in views] == [0.0]
     # Each reference whose number row changed is checked once, up to NUMBER_CHECKS of them
     assert 1 <= len(calls) <= observe.NUMBER_CHECKS
+
+
+def two_pages(monkeypatch, first: np.ndarray, second: np.ndarray) -> list:
+    """Views of two pages held 5 s each, in a segment that prints measure numbers."""
+    def frames(path, fps, crop=None, start=0.0, length=None):
+        for i in range(60):
+            yield i / fps, (first if i < 30 else second).copy()
+    monkeypatch.setattr(observe, "frames", frames)
+    observe.set_paper(PAPER)
+    return observe.views_in(None, (0, 0, 1280, 270), "dark", 18.0, PAPER, lambda t: STAFFS, 0.0, 10.0,
+                            prints_numbers=lambda *a: True)[0]
+
+
+def black_mark(mask: np.ndarray, x: int = 300, y: int = 45) -> np.ndarray:
+    """PAGE with the 15x10 mask drawn black at (x, y), in the row of measure numbers."""
+    f = PAGE.copy()
+    f[y:y + 15, x:x + 10][mask] = (0, 0, 0)
+    return f
+
+
+def test_a_black_number_changing_shape_in_place_tells_the_pages_apart(monkeypatch):
+    # Two glyphs in one 10x15 box: bars across the top, middle and left, against bars across the top, bottom and right
+    a = np.zeros((15, 10), bool)
+    a[:, :3] = a[:3, :] = a[6:9, :] = True
+    b = np.zeros((15, 10), bool)
+    b[:, 7:] = b[:3, :] = b[12:, :] = True
+    views = two_pages(monkeypatch, black_mark(a), black_mark(b))
+    assert [round(v.t0, 2) for v in views] == [0.0, 5.0]
+
+
+def test_a_solid_black_mark_shifted_one_pixel_is_no_new_page(monkeypatch):
+    solid = np.ones((15, 10), bool)
+    for x, y in ((301, 45), (300, 46)):
+        views = two_pages(monkeypatch, black_mark(solid), black_mark(solid, x, y))
+        assert [round(v.t0, 2) for v in views] == [0.0]
+
+
+def test_count_in_screens_without_measures_leave_the_numbers_check_to_the_pages_after_them(monkeypatch):
+    # Three count-in screens told apart by a black block in the staff, each with a light-gray count in the number row
+    # that changes halfway, then two pages differing only in their light-gray measure numbers. A count-in screen is
+    # marked by its top-left pixel, outside the panel
+    def screen(k: int, second_half: bool) -> np.ndarray:
+        f = number_frames(600 if second_half else 300, (170, 170, 170))[1].copy()
+        f[100:120, 100 + 300 * k:140 + 300 * k] = 0
+        f[0, 0] = (1, 2, 3)
+        return f
+    shown = [screen(k, half) for k in range(3) for half in (False, True)]
+    pages = [number_frames(300, (170, 170, 170))[1], number_frames(600, (170, 170, 170))[1]]
+
+    def frames(path, fps, crop=None, start=0.0, length=None):
+        for i in range(150):
+            yield i / fps, (shown[i // 15] if i < 90 else pages[(i - 90) // 30]).copy()
+
+    def prints_numbers(frame, *a):
+        return None if frame[0, 0, 0] == 1 else True
+    monkeypatch.setattr(observe, "frames", frames)
+    observe.set_paper(PAPER)
+    views = observe.views_in(None, (0, 0, 1280, 270), "dark", 18.0, PAPER, lambda t: STAFFS, 0.0, 25.0,
+                             prints_numbers=prints_numbers)[0]
+    assert [round(v.t0, 2) for v in views] == [0.0, 5.0, 10.0, 15.0, 20.0]
+
+
+def test_a_thin_black_number_moved_up_to_two_pixels_is_no_new_page_and_one_moved_three_is(monkeypatch):
+    for dx, dy in ((1, 0), (2, 0), (2, 1), (0, 2)):
+        views = two_pages(monkeypatch, thin_digits("68"), thin_digits("68", dx, dy))
+        assert [round(v.t0, 2) for v in views] == [0.0]
+    views = two_pages(monkeypatch, thin_digits("68"), thin_digits("68", 3))
+    assert [round(v.t0, 2) for v in views] == [0.0, 5.0]
+
+
+def test_a_thin_black_number_changing_in_place_tells_the_pages_apart(monkeypatch):
+    for a, b in (("3", "8"), ("12", "13"), ("68", "69"), ("9", "0")):
+        views = two_pages(monkeypatch, thin_digits(a), thin_digits(b))
+        assert [round(v.t0, 2) for v in views] == [0.0, 5.0]
+
+
+def test_a_page_drifting_by_part_of_a_pixel_or_a_red_line_cursor_moving_is_no_new_page(monkeypatch):
+    page = thin_digits("68")
+    drifted = cv2.warpAffine(page, np.float32([[1, 0, 1.5], [0, 1, 0.5]]), (page.shape[1], page.shape[0]),
+                             borderMode=cv2.BORDER_REPLICATE)
+    assert [round(v.t0, 2) for v in two_pages(monkeypatch, page, drifted)] == [0.0]
+    # A 3-pixel red cursor line from the number row down into the staff, moving 100 pixels
+    first, second = page.copy(), page.copy()
+    first[50:120, 500:503] = (40, 40, 200)
+    second[50:120, 600:603] = (40, 40, 200)
+    assert [round(v.t0, 2) for v in two_pages(monkeypatch, first, second)] == [0.0]
 
 
 def test_without_a_numbers_check_the_number_row_is_not_compared(monkeypatch):

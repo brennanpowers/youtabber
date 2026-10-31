@@ -290,15 +290,22 @@ NUMBER_DIFF = 80
 # and between these many line gaps tall; a thin line cursor is narrower, and a piece of one is taller
 NUMBER_AREA, NUMBER_W, NUMBER_H = 0.05, 0.25, (0.3, 1.0)
 # A segment's views are told apart by their number rows once one of the first this many references whose number row
-# changes prints measure numbers
+# changes and that show a staff with two measures prints measure numbers
 NUMBER_CHECKS = 3
+# A changed dark mark is the same mark moved when one frame's pixels, shifted by up to NUMBER_SHIFT_PX pixels each
+# way, leave fewer than NUMBER_AREA square line gaps of it differing, or at most NUMBER_SHIFT_SHARE of the pixels that
+# differ unshifted: video compression and a page drifting by part of a pixel move strokes a pixel or two. A digit that
+# changes stays as different at every shift
+NUMBER_SHIFT_PX, NUMBER_SHIFT_SHARE = 2, 0.5
 
 
 def number_changed(a: np.ndarray, b: np.ndarray, rect, seed, gap: float, skip: np.ndarray | None = None,
-                   tint: np.ndarray | None = None) -> bool:
+                   tint: np.ndarray | None = None, keep: np.ndarray | None = None) -> bool:
     """True when a digit-sized mark in the row of measure numbers differs between two color frames, leaving out the
-    pixels in `skip`. Pages of one riff can differ only in their numbers, which the ink compare leaves out when they
-    are colored or faint. False while a wide colored area of `tint` comes up from the staff into the row."""
+    pixels in `skip`, or counting only the pixels in `keep`. A mark counted through `keep` must also not be the same
+    mark moved by a pixel or two. Pages of one riff can differ only in their numbers, which the ink compare misses
+    when they are colored, faint, or change shape in place. False while a wide colored area of `tint` comes up from
+    the staff into the row."""
     # Kept inside the panel, so footage above it doesn't count
     y0 = max(rect[1] + 2, int(seed[1] - NUMBER_ROW_GAPS[0] * gap))
     y1 = int(seed[1] - NUMBER_ROW_GAPS[1] * gap)
@@ -313,9 +320,15 @@ def number_changed(a: np.ndarray, b: np.ndarray, rect, seed, gap: float, skip: n
         if any(stats[i][1] < y1 - y0 and stats[i][1] + stats[i][3] >= y2 - y0
                and stats[i][2] >= NUMBER_COVER_GAPS * gap for i in range(1, n)):
             return False
-    d = cv2.absdiff(a[y0:y2, x0:x1], b[y0:y2, x0:x1]).max(axis=2)
+    pa, pb = a[y0:y2, x0:x1], b[y0:y2, x0:x1]
+    if keep is not None:
+        # Dark marks are compared on brightness alone, so a pale highlight tinting them is no change
+        pa, pb = cv2.cvtColor(pa, cv2.COLOR_BGR2GRAY), cv2.cvtColor(pb, cv2.COLOR_BGR2GRAY)
+    d = channel_diff(pa, pb)
     if skip is not None:
         d[skip[y0:y2, x0:x1]] = 0
+    if keep is not None:
+        d[~keep[y0:y2, x0:x1]] = 0
     # Dilated, the 1-2 pixel strokes of a small digit join into one mark
     m = cv2.dilate((d > NUMBER_DIFF).astype(np.uint8), np.ones((3, 3), np.uint8))
     if not m[:y1 - y0].any():
@@ -323,7 +336,27 @@ def number_changed(a: np.ndarray, b: np.ndarray, rect, seed, gap: float, skip: n
     n, _, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
     return any(stats[i][1] < y1 - y0 and stats[i][1] + stats[i][3] < y2 - y0
                and stats[i][4] >= NUMBER_AREA * gap * gap and stats[i][2] >= NUMBER_W * gap
-               and NUMBER_H[0] * gap <= stats[i][3] <= NUMBER_H[1] * gap for i in range(1, n))
+               and NUMBER_H[0] * gap <= stats[i][3] <= NUMBER_H[1] * gap
+               and (keep is None or not moved(pa, pb, stats[i][:4], NUMBER_AREA * gap * gap)) for i in range(1, n))
+
+
+def moved(a: np.ndarray, b: np.ndarray, box, area: float) -> bool:
+    """True when the box (x, y, w, h) of b matches a shifted by up to NUMBER_SHIFT_PX pixels each way, leaving under
+    `area` pixels, or at most NUMBER_SHIFT_SHARE of those differing unshifted, differing by more than NUMBER_DIFF."""
+    x, y, w, h = (int(v) for v in box)
+    s = NUMBER_SHIFT_PX
+    pad = cv2.copyMakeBorder(a, s, s, s, s, cv2.BORDER_REPLICATE)
+    part = b[y:y + h, x:x + w]
+    left = min(int((channel_diff(pad[y + s + dy:y + s + dy + h, x + s + dx:x + s + dx + w], part) > NUMBER_DIFF).sum())
+               for dy in range(-s, s + 1) for dx in range(-s, s + 1))
+    unshifted = int((channel_diff(a[y:y + h, x:x + w], part) > NUMBER_DIFF).sum())
+    return left < area or left <= NUMBER_SHIFT_SHARE * unshifted
+
+
+def channel_diff(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Per pixel, the largest difference between two images over their color channels, or of gray levels."""
+    d = cv2.absdiff(a, b)
+    return d.max(axis=2) if d.ndim == 3 else d
 
 
 def significant_change(a: np.ndarray, b: np.ndarray, gap: float, radius: int = 1) -> bool:
@@ -487,7 +520,7 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
              progress: Callable[[float], None] | None = None, lead: float = 0.0,
              thresholds: tuple[float, float] | None = None,
              last_screen: bool = False, bound_at=None,
-             prints_numbers: Callable[[np.ndarray, tuple, float, float], bool] | None = None
+             prints_numbers: Callable[[np.ndarray, tuple, float, float], bool | None] | None = None
              ) -> tuple[list[View], float, float]:
     """Still views between t_start and t_end, and the ink threshold used. A brief screen in the `lead` seconds
     before t_start, which the scan's steps missed, comes first; it is read with the staffs' box at t_start and the
@@ -495,8 +528,8 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
     frame. With `last_screen`, a screen held briefly after the last view is kept even when a fade or a cut after it
     ends it before t_end. `bound_at(t)`, when given, is the box (crop coordinates) of the paper the tab is drawn on
     at time t, or None: panel rects stay inside it, except the rows of the staffs themselves.
-    `prints_numbers(frame, panel rect, thr, fthr)`, when given, says whether a frame prints measure numbers; views
-    are then also told apart by their rows of measure numbers.
+    `prints_numbers(frame, panel rect, thr, fthr)`, when given, says whether a frame prints measure numbers, or None
+    when it shows no staff with two measures; views are then also told apart by their rows of measure numbers.
 
     `seed_at(t)` gives the staffs' box at time t in crop coordinates, from the scan. `progress(t)` is called with
     each frame's time.
@@ -515,7 +548,7 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
     # The first screen held under MIN_VIEW_SECONDS since the last view. When no view follows it, it is the
     # last screen, even if a fade or a cut to black after it closed a chunk of its own
     tail: list = []
-    numbered: list[bool] = []  # whether each reference checked so far prints measure numbers
+    numbered: list[bool] = []  # whether each reference judged so far prints measure numbers
 
     def plates_of(chunk, clear: bool = True) -> tuple[np.ndarray, np.ndarray]:
         """(median, plate) of the chunk's frames: the plate is the median with footage behind the panel washed out.
@@ -671,19 +704,29 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
             mask &= ~tint
         # Two pixels of slack: a cursor passing over a note changes its soft edge
         changed = significant_change(r["ink"] & mask, ink & mask, gap, radius=2)
-        # Ink the compare above judged, with a pixel of its soft edge, is left out: solid marks above the staff
-        # shift by a pixel between frames
-        if not changed and prints_numbers is not None and number_changed(
-                r["frame"], f, r["rect"], r["seed"], gap,
-                cv2.dilate(((r["ink"] | ink) & mask).astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool), tint):
+        if not changed and prints_numbers is not None and numbers_differ(r, f, ink, mask, tint):
             changed = shows_numbers(r)
         return changed, f
 
+    def numbers_differ(r, f, ink, mask, tint) -> bool:
+        """Whether the row of measure numbers changed between reference r and frame f. Ink in either frame, with a
+        pixel of its soft edge, is left out, as solid marks above the staff shift by a pixel and change color under a
+        highlight; colored and faint numbers are told apart that way. Dark ink with no ink within a pixel of it in
+        the other frame is compared too, so a dark number that changes in place is seen; colored marks such as a
+        moving line cursor are left out of that."""
+        k = np.ones((3, 3), np.uint8)
+        union = cv2.dilate(((r["ink"] | ink) & mask).astype(np.uint8), k).astype(bool)
+        lone = cv2.dilate(unmatched(r["ink"] & mask, ink & mask), k).astype(bool) & ~tint
+        return (number_changed(r["frame"], f, r["rect"], r["seed"], gap, union, tint)
+                or number_changed(r["frame"], f, r["rect"], r["seed"], gap, tint=tint, keep=lone))
+
     def shows_numbers(r) -> bool:
-        """Whether the segment prints measure numbers, judged on the first references whose number row changes."""
+        """Whether the segment prints measure numbers, judged on the first references whose number row changes and
+        that show a staff with two measures, so count-in screens don't use up the checks."""
         if not any(numbered) and "numbered" not in r and len(numbered) < NUMBER_CHECKS:
             r["numbered"] = prints_numbers(r["frame"], r["rect"], thr, fthr)
-            numbered.append(r["numbered"])
+            if r["numbered"] is not None:
+                numbered.append(r["numbered"])
         return any(numbered)
 
     for t, f in frames(path, OBS_FPS, crop=crop, start=t_start, length=t_end - t_start):
