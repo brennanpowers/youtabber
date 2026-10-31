@@ -255,6 +255,28 @@ def test_with_no_usual_slide_a_jump_falls_back_on_the_segment_share():
     assert usual_pick(Move("slide", shifts=[400], drawn=[True], steps=5), usual=None) == (None, "prior", False)
 
 
+def playhead_pick(o_start: int, usual: float | None):
+    # Cells 200 px wide, so the playhead may carry on from 700 by -10 to 300 px
+    p, o = slid(400, False, p_end=700, o_start=o_start)
+    return choose_shift(p, o, [(598, 0.0), (398, 0.05), (198, 0.1)], 0.9, {"playhead"}, 10.0, usual=usual)
+
+
+def test_a_scrolling_segment_takes_the_shift_the_playhead_allows_nearest_the_usual_slide():
+    # From 500 the playhead allows 398 and 198 but not the best-lining-up 598
+    assert playhead_pick(500, 420.0) == (398, "playhead", False)
+    assert playhead_pick(500, 220.0) == (198, "playhead", False)
+    assert playhead_pick(500, None) == (398, "playhead", False)
+
+
+def test_a_scrolling_segment_keeps_the_best_lining_up_shift_when_the_playhead_allows_it():
+    # From 320 the playhead allows 598 and 398
+    assert playhead_pick(320, 420.0) == (598, "segment_scrolls", False)
+
+
+def test_a_playhead_that_rules_out_every_shift_settles_a_new_page():
+    assert playhead_pick(50, 420.0) == (None, "playhead", True)
+
+
 def test_drawn_near_needs_a_shift_drawn_in_several_steps_within_reach():
     assert drawn_near(Move("slide", shifts=[400], drawn=[True], steps=5), 402)
     assert not drawn_near(Move("slide", shifts=[400], drawn=[False], steps=5), 402)

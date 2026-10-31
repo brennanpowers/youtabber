@@ -474,10 +474,12 @@ def choose_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float
     The playhead decides when it was seen at both ends: after a scroll it carries on from where it was,
     which in o's coordinates is (where it was in p) - dx. Next, in a segment whose band was seen sliding by
     about `usual` px, the shift nearest that is taken, unless the slide drawn between the two views lies within
-    a gap of another of the shifts. Without either, a segment where nearly every pair lines up is taken to scroll.
+    a gap of another of the shifts. Without either, a segment where nearly every pair lines up is taken to scroll,
+    by a shift the playhead allows when it was seen.
     `confirmed` says the playhead confirmed the slides `usual` was learned from; slides drawn in several steps can be
     measured a riff's length short, so then a drawn slide agreeing with it doesn't settle the pick.
     """
+    fits = None
     if "playhead" in use and tracked(p) and tracked(o):
         a, b = playhead_at(p, at_start=False), playhead_at(o, at_start=True)
         if a is not None and b is not None:
@@ -503,6 +505,11 @@ def choose_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float
                 lone = len(shifts) == 1 and share >= SCROLL_SEGMENT_SHARE and (not drawn or agrees)
                 return near[0], "usual_slide", (agrees and confirmed) or lone
     if share >= SCROLL_SEGMENT_SHARE:
+        if fits and shifts[0][0] not in fits:
+            # The best-lining-up shift is one the playhead ruled out, so take the one it allows nearest the
+            # segment's usual slide, left unsettled
+            pick = min(fits, key=lambda dx: abs(dx - usual)) if usual is not None else fits[0]
+            return pick, "playhead", False
         return shifts[0][0], "segment_scrolls", len(shifts) == 1
     return None, "prior", False
 
