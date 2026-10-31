@@ -40,7 +40,7 @@ def test_staffs_without_measures_fail_as_tab_youtabber_cant_read(tmp_path, monke
     # Staffs are found but give no cells, as text tab's dash rows do
     parse_view = pipeline.parse_view
     monkeypatch.setattr(pipeline, "parse_view",
-                        lambda *a: [replace(ps, cells=[]) for ps in parse_view(*a)])
+                        lambda *a, **k: [replace(ps, cells=[]) for ps in parse_view(*a, **k)])
     r = pipeline.read(video)
     assert r.outcome == "fail" and r.fail_reason == "no_tab"
     assert "text tab" in r.message
@@ -303,7 +303,7 @@ def test_staffs_without_measures_beside_text_tab_fail_as_text_tab(tmp_path, monk
     video = tmp_path / "song.mp4"
     write_video(Song(measures=4), video)
     parse_view = pipeline.parse_view
-    monkeypatch.setattr(pipeline, "parse_view", lambda *a: [replace(ps, cells=[]) for ps in parse_view(*a)])
+    monkeypatch.setattr(pipeline, "parse_view", lambda *a, **k: [replace(ps, cells=[]) for ps in parse_view(*a, **k)])
     monkeypatch.setattr(pipeline, "text_tab_shown", lambda path, longer_than=0.0: True)
     r = pipeline.read(video)
     assert r.outcome == "fail" and r.fail_reason == "text_tab"

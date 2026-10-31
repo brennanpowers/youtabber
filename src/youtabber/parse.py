@@ -26,13 +26,14 @@ SIDE_LINE_SHARE = 0.45
 # A line lighter than the ink threshold is judged against its own gray level only when it is darker than the staff's
 # paper by at least this share of the way from the paper to the ink threshold: a lighter stripe is footage, not a line
 SIDE_LINE_DEPTH = 0.25
-# A barline runs from the top line to the bottom one: a stroke leaving a run of paper longer than this many line gaps
-# inside the staff is a strum arrow's shaft or a stem
-BAR_PAPER_RUN = 0.3
+# A barline runs from the top line to the bottom one: a stroke leaving a run of paper longer than this many line gaps,
+# and than BAR_PAPER_PX rows, inside the staff is a strum arrow's shaft or a stem. At small line gaps a break of a few
+# rows in a faint barline is compression noise
+BAR_PAPER_RUN, BAR_PAPER_PX = 0.3, 3
 # A stroke whose left and right edges both wave, repeating themselves with an autocorrelation swing of at least
 # BAR_WAVY_SWING, while its middle moves sideways by at least BAR_WAVY_MOVE line gaps, is a rolled-chord brace or a
 # column of parentheses
-BAR_WAVY_SWING, BAR_WAVY_MOVE = 1.4, 0.07
+BAR_WAVY_SWING, BAR_WAVY_MOVE = 1.41, 0.07
 # A column whose ink under the tab staff has a median RGB spread (brightest channel less darkest) of at least this is
 # tinted there, as a see-through cursor running on below the staff tints what it covers
 BELOW_TINT_SPREAD = 12
@@ -58,17 +59,21 @@ NOTATION_SHARE = 0.85
 FAR_PAIR_GAP_SHARE = 0.75
 # The remaining lines of a notation staff that lost a line in beams or chords measure a little wider spaced than the
 # staff does elsewhere (0.85 of the tab's spacing against 0.81-0.83), too wide for the scan to pair. An unpaired
-# staff close above tab with fewer lines pairs as its notation when spaced under NEAR_SHARE of it
+# staff close above tab with fewer lines pairs as its notation when spaced under NEAR_SHARE of it, and when it has 5
+# lines or is spaced like notation found elsewhere: a 4-line bass tab over guitar tab has neither
 NEAR_SHARE = 0.92
 
 
-def pair_far_notation(syss: list[System]) -> list[System]:
+def pair_far_notation(syss: list[System], notation_gaps: tuple[float, ...] | list[float] = ()) -> list[System]:
     """`syss` with each unpaired staff taking the unpaired staff just above it as its notation when that one is
     spaced much closer, within NOTATION_FAR_GAPS of it, and has five lines, as notation over four-string bass tab
     does, or no more lines than it. A dashed "let ring" line or a row of beams between notation and tab set far apart
     runs across them like a rule, so the scan leaves them apart. It also takes one within NOTATION_GAPS that has fewer
-    lines and is spaced under NEAR_SHARE of it. Pairing from the bottom up, as the scan does, keeps close lines above
-    a notation staff from pulling it away from its tab."""
+    lines and is spaced under NEAR_SHARE of it, when that one has five lines or is spaced within NOTATION_MATCH of a
+    notation staff already paired in `syss` or of one in `notation_gaps` (notation seen on other screens). Pairing
+    from the bottom up, as the scan does, keeps close lines above a notation staff from pulling it away from its
+    tab."""
+    known = [s.notation.gap for s in syss if s.notation is not None] + list(notation_gaps)
     out: list[System] = []
     i = len(syss) - 1
     while i >= 0:
@@ -80,7 +85,8 @@ def pair_far_notation(syss: list[System]) -> list[System]:
                and up.tab.gap < FAR_PAIR_GAP_SHARE * s.tab.gap
                and (len(up.tab.lines) == 5 or len(up.tab.lines) <= len(s.tab.lines)))
         near = (free and s.tab.top - up.tab.bottom < NOTATION_GAPS * s.tab.gap
-                and up.tab.gap < NEAR_SHARE * s.tab.gap and len(up.tab.lines) < len(s.tab.lines))
+                and up.tab.gap < NEAR_SHARE * s.tab.gap and len(up.tab.lines) < len(s.tab.lines)
+                and (len(up.tab.lines) == 5 or any(abs(up.tab.gap - g) <= NOTATION_MATCH * g for g in known)))
         if far or near:
             out.append(System(s.tab, up.tab, s.panel, s.cut_from))
             i -= 2
@@ -312,7 +318,8 @@ def barlines(gray: np.ndarray, thr: float, fthr: float, tab_top: float, tab_bott
     if hidden:
         return bars
     bars = [(p, q) for p, q in bars
-            if longest_paper_run(dark, a, b, p, q) <= BAR_PAPER_RUN * gap and not wavy_stroke(dark, a, b, p, q, gap)]
+            if longest_paper_run(dark, a, b, p, q) <= max(BAR_PAPER_RUN * gap, BAR_PAPER_PX)
+            and not wavy_stroke(dark, a, b, p, q, gap)]
     # A barline is a straight stroke with paper beside it; an arpeggio squiggle or a letter stroke has ink on
     # both sides. Beside a dark stroke, a column that is ink from a gap to half a gap above the staff and from half a
     # gap to a gap below it is the edge of a cursor or box drawn along the barline, and doesn't count
@@ -850,7 +857,8 @@ def joined_staffs(out: list, lone: list, struct: np.ndarray) -> tuple[list, list
 
 def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], polarity: str, thr: float, fthr: float,
                gap: float, print_rect: tuple[int, int, int, int] | None = None,
-               hidden_bars: bool = False, whole_lines: bool = True) -> list[ParsedSystem]:
+               hidden_bars: bool = False, whole_lines: bool = True,
+               notation_gaps: tuple[float, ...] | list[float] = ()) -> list[ParsedSystem]:
     g = to_gray(plate, polarity)
     rx0, ry0, rx1, ry1 = rect
     sub = g.copy()
@@ -863,7 +871,7 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
     # A staff with no rows inside the print area is not on the paper, such as the strings of a fretboard drawn
     # below it
     px0, py0, px1, py1 = print_rect or rect
-    syss = [s for s in pair_far_notation(systems_in(sub, whole_lines=whole_lines))
+    syss = [s for s in pair_far_notation(systems_in(sub, whole_lines=whole_lines), notation_gaps)
             if s.top < py1 and s.tab.bottom > py0]
     # Past the panel the plate is painted paper, so a border at the panel's edge passes for a staff line there; the
     # plate as it is shows what lies past it

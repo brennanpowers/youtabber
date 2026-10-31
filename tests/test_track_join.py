@@ -1127,7 +1127,7 @@ def test_the_view_after_lends_a_start_at_or_before_its_own_but_none_above_it():
 def test_a_playhead_that_carries_on_gives_way_to_a_slide_drawn_back():
     # The playhead carries on from 700 to 320 at the 398 px shift, but the band was seen sliding 1200 px back
     p, o = slid(-1200, True, p_end=700, o_start=320)
-    assert choose_shift(p, o, [(398, 0.0)], 0.5, {"playhead"}, 10.0) == (None, "drawn_back", True)
+    assert choose_shift(p, o, [(398, 0.0)], 0.5, {"playhead"}, 10.0) == (None, "drawn_back", False)
     # A backward slide not drawn in steps, one shorter than a gap, or one with another drawn near the shift
     # leaves the pick to the playhead
     for move in (Move("slide", shifts=[-1200], drawn=[False], steps=1),
@@ -1154,7 +1154,7 @@ def closing(o: Obs, bar_px: int = 6, staff_end: int = 806, bar_x: int = 800) -> 
 
 def end_evidence(bar_px: int = 6, staff_end: int = 806, furthest: int = 840):
     A = Assembly()
-    A.staff_ends = {0: furthest}
+    A.staff_ends = {(0, 0): furthest}
     p, o = closing(band_view(0, 9), bar_px, staff_end), band_view(1, 1)
     return replay_evidence(o, o.cells[:2], 0, A, 0.0, p, set(), lambda x: [])
 
@@ -1184,11 +1184,12 @@ def test_no_closing_barline_off_the_last_measure_s_end_after_a_last_cell_of_anot
 
 
 def made_slots(n: int = 10, starts=(0,), seg: int = 0):
-    """An assembly of n slots whose last two this view made, with segment starts `starts`, and the view."""
+    """An assembly of n slots whose last two this view made, with segment starts `starts`, and the view, whose three
+    cells carry no printed number."""
     A = Assembly()
     A.slots = [Slot(k, None, 0, None) for k in range(n)]
     A.segment_starts, A.seen_segments = set(starts), {0, seg}
-    return A, SimpleNamespace(seg=seg)
+    return A, SimpleNamespace(seg=seg, t0=20.0, t1=30.0, cells=[SimpleNamespace(number=None) for _ in range(3)])
 
 
 def test_measures_before_the_opening_shown_again_fold_onto_the_slots_just_before_it_in_its_segment_only():
@@ -1201,6 +1202,27 @@ def test_measures_before_the_opening_shown_again_fold_onto_the_slots_just_before
     slot_of = [8, 9, None]
     restart_before(o, slot_of, 2, 5, 8, A)
     assert slot_of == [8, 9, None] and len(A.slots) == 10
+
+
+def test_measures_before_the_opening_fold_with_the_view_s_may_repeat_notice_dropped():
+    A, o = made_slots()
+    A.maybe_repeats = [(20.0, 30.0, 3), (0.0, 10.0, 1)]
+    slot_of = [8, 9, None]
+    restart_before(o, slot_of, 2, 6, 8, A)
+    assert slot_of == [4, 5, None] and A.maybe_repeats == [(0.0, 10.0, 1)]
+
+
+def test_a_numbered_measure_before_the_opening_stays_on_its_own_slot():
+    A, o = made_slots()
+    A.maybe_repeats = [(20.0, 30.0, 3)]
+    o.cells[1].number = 12
+    slot_of = [8, 9, None]
+    restart_before(o, slot_of, 2, 6, 8, A)
+    assert slot_of == [8, 9, None] and len(A.slots) == 10 and A.maybe_repeats == [(20.0, 30.0, 3)]
+    # A number on the opening cell itself leaves the cells before it free to fold
+    o.cells[1].number, o.cells[2].number = None, 1
+    restart_before(o, slot_of, 2, 6, 8, A)
+    assert slot_of == [4, 5, None]
 
 
 def test_measures_before_the_opening_stay_when_one_is_unsure_or_was_placed_by_the_join():
@@ -1221,6 +1243,21 @@ def test_measures_before_the_opening_that_opened_their_segment_leave_it_not_yet_
     restart_before(o, slot_of, 2, 2, 8, A)
     assert slot_of == [0, 1, None] and len(A.slots) == 8
     assert A.segment_starts == {0} and A.seen_segments == {0}
+
+
+def test_a_closing_barline_is_judged_against_the_staffs_of_its_own_part():
+    # Two panels side by side in one segment: the left one's staffs end at 806, the right one's at 840
+    first, last = closing(band_view(0, 1), staff_end=840), closing(band_view(1, 5))
+    first.part, last.part = 0, 1
+    again = band_view(2, 1)
+    again.part = 1
+    A = assemble([first, last, again], 10.0, False, EVIDENCE, lambda v: [])
+    assert A.staff_ends == {(0, 0): 840, (0, 1): 806}
+    assert not any(d.basis == "end_restart" for d in A.decisions)
+    # In one part the narrower staff closes the piece
+    last.part = again.part = 0
+    A = assemble([first, last, again], 10.0, False, EVIDENCE, lambda v: [])
+    assert any(d.basis == "end_restart" for d in A.decisions)
 
 
 def test_measures_before_the_opening_shown_again_after_the_closing_barline_fold_by_position():
@@ -1245,6 +1282,10 @@ def test_a_page_shown_again_after_a_stop_before_an_end_repeat_takes_no_shift():
     assert choose_shift(p, o, [(398, 0.0)], 0.9, set(), 10.0, pages=[first, p, o]) == (398, "segment_scrolls", True)
     # The view just before is no earlier page
     assert choose_shift(p, o, [(398, 0.0)], 0.9, nav, 10.0, pages=[p, o]) == (398, "segment_scrolls", True)
+    # A page of measures 9-12 has the first page's barlines but none of its music
+    other = band_view(2, 9)
+    assert choose_shift(p, other, [(398, 0.0)], 0.9, nav, 10.0, pages=[first, p, other]) == (398, "segment_scrolls",
+                                                                                             True)
     p.repeat_end = False
     assert choose_shift(p, o, [(398, 0.0)], 0.9, nav, 10.0, pages=[first, p, o]) == (398, "segment_scrolls", True)
     # 3 px off is past a quarter of the 10 px gap
@@ -1268,7 +1309,7 @@ def test_no_page_is_shown_again_on_two_systems_with_another_cell_count_or_after_
     first, p, o = pages()
     first.cells = first.cells[:3]
     assert not shown_again(p, o, [first, p, o], 10.0)
-    for change in (dict(seg=1), dict(single=False)):
+    for change in (dict(seg=1), dict(single=False), dict(part=1)):
         first, p, o = pages()
         for k, v in change.items():
             setattr(first, k, v)

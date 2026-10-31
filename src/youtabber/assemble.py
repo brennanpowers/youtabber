@@ -211,7 +211,8 @@ class Assembly:
     # (first view, whether each measure compared showed the earlier music) of each stretch in other_music
     other_starts: list = field(default_factory=list)
     sign_folds: dict = field(default_factory=dict)   # view index -> first slot its cells folded onto by a repeat sign
-    staff_ends: dict = field(default_factory=dict)   # segment -> furthest right end of a still view's last staff
+    # (segment, part) -> furthest right end of a still view's last staff
+    staff_ends: dict = field(default_factory=dict)
     sliding: dict = field(default_factory=dict)   # segment -> its band moves on by measured slides
     stream_orders: dict = field(default_factory=dict)   # stream -> its own slots in print order
     # (t0, t1, j) of views the playhead jumped back to whose new measures look like earlier slots, the first being j
@@ -498,12 +499,15 @@ def bar_edges(o: Obs) -> list:
 
 def shown_again(p: Obs, o: Obs, pages, gap: float) -> bool:
     """Whether p ended before an end-repeat sign it hadn't reached and o, one system, has every barline within
-    SAME_BAR_GAPS of those of an earlier view of its segment than p with as many cells: that page shown again."""
+    SAME_BAR_GAPS of those of an earlier view of its segment and part than p with as many cells, and some measure
+    between the same barlines alike on both: that page shown again. Pages of equal measures share their barlines
+    whatever music they hold."""
     if not (p.repeat_end and repeat_played(p)) or not o.single or not o.cells:
         return False
     edges = bar_edges(o)
-    return any(e.index < p.index and e.seg == o.seg and e.single and len(e.cells) == len(o.cells)
-               and max(abs(x - y) for x, y in zip(bar_edges(e), edges)) <= SAME_BAR_GAPS * gap for e in pages)
+    return any(e.index < p.index and e.seg == o.seg and e.part == o.part and e.single and len(e.cells) == len(o.cells)
+               and max(abs(x - y) for x, y in zip(bar_edges(e), edges)) <= SAME_BAR_GAPS * gap
+               and any(same_cell(a, b, gap) for a, b in zip(e.cells, o.cells)) for e in pages)
 
 
 def pick_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float, usual: float | None = None,
@@ -529,7 +533,8 @@ def pick_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float, 
             fits = [dx for dx, _ in shifts if -gap <= (b[0] + dx) - a[0] <= reach and abs(b[1] - a[1]) < 3 * gap]
             if len(fits) == 1:
                 if drawn_against(o, fits[0], gap):
-                    return None, "drawn_back", True
+                    # A drawn slide can be measured short, so the page turn it says is left unsettled
+                    return None, "drawn_back", False
                 return fits[0], "playhead", True
             if not fits:
                 return None, "playhead", True
@@ -774,7 +779,7 @@ def replay_evidence(o, run, j, A, gap_before, prev, use, words_of) -> tuple[bool
     if near_start and gap_before >= RESTART_GAP_SECONDS and not slid:
         return True, "restart", True
     # The opening measures right after the piece's closing barline are the song starting over
-    if near_start and prev is not None and closes_piece(prev, A.staff_ends.get(prev.seg)):
+    if near_start and prev is not None and closes_piece(prev, A.staff_ends.get((prev.seg, prev.part))):
         return True, "end_restart", True
     # A band that moves on by sliding and instead cuts back to the opening measures was sent back to the start.
     # Settled only when the playhead went from the end of the page before straight to the first measure here
@@ -787,7 +792,7 @@ def replay_evidence(o, run, j, A, gap_before, prev, use, words_of) -> tuple[bool
 def closes_piece(p: Obs, staff_end: float | None) -> bool:
     """Whether still view p ends its last staff on a closing barline (see END_BAR_GAPS), that staff stopping
     SHORT_GAPS or more line gaps before `staff_end`, the furthest a still view's last staff reaches in p's
-    segment."""
+    segment and part."""
     if p.mosaic is not None or not p.systems or not p.cells or staff_end is None:
         return False
     ps, last = p.systems[-1], p.cells[-1]
@@ -1239,7 +1244,8 @@ def place_views(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str]
     A = Assembly(decisions=[replace(d) for d in pairs.moves], sliding=dict(pairs.sliding))
     for o in obs:
         if o.systems and o.mosaic is None:
-            A.staff_ends[o.seg] = max(A.staff_ends.get(o.seg, 0), o.systems[-1].system.tab.x1)
+            key = (o.seg, o.part)
+            A.staff_ends[key] = max(A.staff_ends.get(key, 0), o.systems[-1].system.tab.x1)
     seg_of = {o.index: o.seg for o in obs}
     prev: Obs | None = None
     prev_slots: list = []
@@ -1743,13 +1749,15 @@ def restart_before(o, slot_of, i: int, j: int, start: int, A) -> None:
     """Fold o's cells before cell i, which starts the opening measures again at slot j, onto the slots just before
     j by position, when this view gave each of them a new slot of its own and as many slots before j lie in j's
     segment: on a page shown again from the start, an overlay can change those measures' look enough that they
-    match nothing."""
+    match nothing. A printed number on any of them says where it belongs, so then nothing is folded."""
     made = slot_of[:i]
     seg_start = max((s for s in A.segment_starts if s <= j), default=0)
     if (not i or j - i < seg_start or made != list(range(start, len(A.slots)))
-            or any(s in A.unsure_slots for s in made)):
+            or any(s in A.unsure_slots for s in made) or any(c.number is not None for c in o.cells[:i])):
         return
     del A.slots[start:]
+    # The view's cells all fold onto earlier slots, so none of them is new music that may repeat earlier measures
+    A.maybe_repeats = [r for r in A.maybe_repeats if r[:2] != (o.t0, o.t1)]
     for sid in made:
         if sid in A.segment_starts:
             # That slot opened the segment, so the segment counts as not yet seen again

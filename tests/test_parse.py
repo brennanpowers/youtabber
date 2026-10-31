@@ -361,6 +361,19 @@ def test_a_stroke_leaving_paper_under_the_top_line_is_an_arrow_shaft(monkeypatch
     assert [p for p, _ in staff_bars(gray)] == [100, 250]
 
 
+def test_a_faint_barline_broken_for_three_rows_at_a_small_line_gap_is_kept(monkeypatch):
+    # Lines 8 apart from y 60 to 100; the barline at x 250 is one pixel wide and missing rows 80-82, 0.375 line gaps
+    gray = np.full((160, 400), 255, np.uint8)
+    gray[60:101:8, 20:380] = 60
+    gray[60:101, 100:102] = 0
+    gray[60:101, 250] = 120
+    gray[80:83, 250] = 255
+    bars = parse.barlines(gray, 140.0, 229.0, 60.0, 100.0, 8.0, 20, 380, None)
+    assert [p for p, _ in bars] == [100, 250]
+    monkeypatch.setattr(parse, "BAR_PAPER_PX", 0)
+    assert [p for p, _ in parse.barlines(gray, 140.0, 229.0, 60.0, 100.0, 8.0, 20, 380, None)] == [100]
+
+
 def cursor_below(rgb: tuple[int, int, int]) -> tuple[np.ndarray, np.ndarray]:
     """stroke_staff with a barline at x 250 and a see-through cursor line of color `rgb` running on below it, as
     the gray plate and the color plate."""
@@ -692,14 +705,28 @@ def test_close_lines_above_far_notation_leave_it_with_its_tab():
 
 
 def test_a_staff_close_above_tab_with_a_line_lost_is_its_notation():
-    # 17.9 is 0.852 of 21: four notation lines left, 4.4 tab gaps above six-line tab
-    (s,) = pair_far_notation(far_pair(up_gap=17.9, apart_gaps=4.4, up_lines=4))
+    # 17.9 is 0.852 of 21: four notation lines left, 4.4 tab gaps above six-line tab, with notation spaced 17.4 seen
+    # on other screens
+    (s,) = pair_far_notation(far_pair(up_gap=17.9, apart_gaps=4.4, up_lines=4), [17.4])
     assert s.tab.gap == 21.0 and s.notation.gap == 17.9
     # Its lines found over only the last 1400 of the tab's 1800 columns
     up, tab = far_pair(up_gap=17.9, apart_gaps=4.4, up_lines=4)
     up.tab = Staff(up.tab.lines, 400, 1800, 17.9, "dark")
-    (s,) = pair_far_notation([up, tab])
+    (s,) = pair_far_notation([up, tab], [17.4])
     assert s.notation is up.tab
+    # 17.9 is 0.16 wider than notation spaced 15.4, past NOTATION_MATCH
+    assert [s.notation for s in pair_far_notation(far_pair(up_gap=17.9, apart_gaps=4.4, up_lines=4), [15.4])] == [
+        None, None]
+
+
+def test_a_lone_four_line_staff_close_above_tab_stays_apart_unless_notation_elsewhere_is_spaced_like_it():
+    # 17.85 is 0.85 of 21: a 4-line bass tab over guitar tab, with no notation anywhere, is spaced like this
+    assert [s.notation for s in pair_far_notation(far_pair(up_gap=17.85, apart_gaps=4.4, up_lines=4))] == [None, None]
+    # Five-line notation spaced 17.85 over another tab staff further down the screen
+    notation = Staff([1000.0 + 17.85 * i for i in range(5)], 0, 1800, 17.85, "dark")
+    lower = System(Staff([1200.0 + 21 * i for i in range(6)], 0, 1800, 21.0, "dark"), notation)
+    first, second = pair_far_notation(far_pair(up_gap=17.85, apart_gaps=4.4, up_lines=4) + [lower])
+    assert first.notation.gap == 17.85 and len(first.notation.lines) == 4 and second is lower
 
 
 def test_a_close_staff_stays_apart_when_spaced_near_alike_too_far_or_with_as_many_lines():

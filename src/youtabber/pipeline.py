@@ -365,9 +365,13 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
         still = []
         mine = []
         fading = fading_out(read_views, seg) if si == len(segments) - 1 else set()
+        # Notation staffs the scan paired anywhere in the segment, so a screen whose notation lost a line in beams
+        # still pairs it when no other notation is on that screen
+        seg_notation = [s.notation.gap for t, syss in found.items() if seg.t0 <= t <= seg.t1 for s in syss
+                        if s.notation is not None]
         for v, part, thr, fthr in sorted(read_views, key=lambda x: (x[0].t0, x[1].rows[0], part_crop(seg, x[1])[0])):
             pcrop = part_crop(seg, part)
-            o = plate_obs(v, seg, si, thr, fthr, len(obs), pcrop[0], fading=id(v) in fading)
+            o = plate_obs(v, seg, si, thr, fthr, len(obs), pcrop[0], fading=id(v) in fading, notation_gaps=seg_notation)
             if v.brief and not o.all_cells:
                 # A first or last screen held briefly with no measures is a page coming or going, not time with tab
                 continue
@@ -1121,7 +1125,7 @@ def drop_fades(obs: list[Obs]) -> dict[int, str]:
             return None
         if sum(c.kind == "full" for c in a.all_cells) < 2:
             return "few"
-        if shown_again(a, b):
+        if measures_shown_again(a, b):
             return "shown_again"
         if misread(a):
             return "faded" if a.faded else "misread"
@@ -1210,7 +1214,7 @@ def hidden_openings(obs: list[Obs]) -> list[Obs]:
             j = next((j for j in range(k + 1, len(group)) if not gone[j]), None)
             if j is not None and all(o.move is not None and o.move.kind == "still" for o in group[k + 1:j + 1]):
                 a, b = group[k], group[j]
-                gone[k] = overlaid(a, b) or (a.brief and shown_again(a, b))
+                gone[k] = overlaid(a, b) or (a.brief and measures_shown_again(a, b))
         n = gone.index(False) if False in gone else len(group)
         out += [o for o in group[:n] if o.all_cells]
     return out
@@ -1260,7 +1264,7 @@ def overlaid(a: Obs, b: Obs) -> bool:
             and all(sb[s][0] - tol <= x <= sb[s][1] + tol for s, x in xa))
 
 
-def shown_again(a: Obs, b: Obs) -> bool:
+def measures_shown_again(a: Obs, b: Obs) -> bool:
     """Whether view b shows all of view a's whole measures again, in order and next to each other. Cells cut by the
     panel edge are left out: a page drawing in shows them blank."""
     cells = [c for c in a.all_cells if c.kind == "full"]
@@ -1666,9 +1670,10 @@ def fading_out(read_views: list, seg: Segment) -> set[int]:
 
 
 def plate_obs(v, seg: Segment, si: int, thr: float, fthr: float, index: int, col0: int | None = None,
-              fading: bool = False) -> Obs:
+              fading: bool = False, notation_gaps: list[float] | tuple[float, ...] = ()) -> Obs:
     """One still view, parsed into measure cells. `col0` is the crop's first column when it starts right of the
-    segment's; `fading` says the view is one of its part's last, darkening as the video fades out."""
+    segment's; `fading` says the view is one of its part's last, darkening as the video fades out. `notation_gaps`
+    are the line spacings of notation staffs seen elsewhere in the segment."""
     x0, y0, x1, y1 = v.rect
     fading_read = False
     level = paper_level(v, seg) if v.brief or fading else None
@@ -1686,7 +1691,8 @@ def plate_obs(v, seg: Segment, si: int, thr: float, fthr: float, index: int, col
                 v = replace(v, rect=(x0, y0, x1, y1))
                 fading_read = True
             thr, fthr = ink_threshold(to_gray(v.plate, seg.polarity)[y0:y1, x0:x1], own, seg.polarity)
-    systems = parse_view(index, v.plate, v.rect, seg.polarity, thr, fthr, seg.gap, v.print_rect)
+    systems = parse_view(index, v.plate, v.rect, seg.polarity, thr, fthr, seg.gap, v.print_rect,
+                         notation_gaps=notation_gaps)
     cells = [c for ps in systems for c in ps.cells]
     o = Obs(index, v.t0, v.t1, cells, v.playhead, si, (seg.x0 if col0 is None else col0, seg.y0),
             v.plate[y0:y1, x0:x1])
