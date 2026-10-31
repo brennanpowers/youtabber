@@ -127,8 +127,7 @@ SMALL_SECONDS, SMALL_GAP_SHARE = 10.0, 0.6
 # A segment where several parts print can't be put in order when more than TANGLED_SHARE of its joins between screens
 # are left unresolved, over at least TANGLED_JOINS joins, and so are more than TANGLED_SHARE of its folds
 TANGLED_SHARE, TANGLED_JOINS = 0.5, 10
-# A video without tab staffs shows text tab when this many of its frames, taken this many seconds apart, show a staff
-# of typed dashes
+# A video shows text tab when this many of its frames, taken this many seconds apart, show a staff of typed dashes
 TEXT_TAB_FRAMES, TEXT_TAB_STEP = 3, 5.0
 TEXT_TAB_MESSAGE = ("The video shows text tab: rows of typed dashes with fret numbers on them (e|--3--). youtabber "
                     "reads tab drawn with staff lines, not typed as text.")
@@ -603,8 +602,11 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
         return r.fail("check_failed", f"Several parts of the tab show at once at {fmt(tangle.t0)}-{fmt(tangle.t1)}, "
                                       f"and most screens there couldn't be joined to the one before, so their "
                                       f"measures can't be put in order; no PDF was written.")
-    # Short stretches of other lines can hold segments while the tab itself is typed as text
-    if not n and text_tab_shown(path):
+    # Short stretches of other lines can hold segments while the tab itself is typed as text. A typed page can also
+    # pass for a drawn staff whose only barlines are the strokes ending each typed line, one measure a line; with no
+    # line holding two measures, a video showing typed tab for longer than its segments last is text tab too
+    one_a_line = all(max(Counter(c.system for c in o.cells).values()) <= 1 for o in obs if o.cells)
+    if (not n or one_a_line) and text_tab_shown(path, longer_than=sum(s.t1 - s.t0 for s in segments) if n else 0.0):
         return r.fail("text_tab", TEXT_TAB_MESSAGE)
     if not n:
         return r.fail("no_tab", "Found lines that look like a tab staff, but no measures between barlines on them. "
@@ -1006,13 +1008,14 @@ def share_of(progress: Progress | None, stage: str, t0: float, t1: float) -> Cal
     return lambda t: progress(stage, min(1.0, max(0.0, (t - t0) / span)))
 
 
-def text_tab_shown(path: Path) -> bool:
-    """True when enough frames show a staff whose lines are typed dashes, as wide as a tab staff."""
+def text_tab_shown(path: Path, longer_than: float = 0.0) -> bool:
+    """True when enough frames show a staff whose lines are typed dashes, as wide as a tab staff, and those frames
+    stand for more than `longer_than` seconds of video."""
     seen = 0
     for _, f in frames(path, 1 / TEXT_TAB_STEP):
         g = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
         seen += any(s.dashed and s.x1 - s.x0 >= g.shape[1] / 5 for s in find_staffs(g, keep_dashed=True))
-        if seen >= TEXT_TAB_FRAMES:
+        if seen >= TEXT_TAB_FRAMES and seen * TEXT_TAB_STEP > longer_than:
             return True
     return False
 

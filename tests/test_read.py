@@ -68,7 +68,7 @@ def brief_tab(monkeypatch, t1: float, duration: float):
     monkeypatch.setattr(pipeline, "probe", lambda path: VideoInfo(640, 360, duration))
     monkeypatch.setattr(pipeline, "scan", lambda path, w, h, region=None, progress=None: ([seg], {}, []))
     monkeypatch.setattr(glide, "glides", lambda *a: False)
-    monkeypatch.setattr(pipeline, "text_tab_shown", lambda path: False)
+    monkeypatch.setattr(pipeline, "text_tab_shown", lambda path, longer_than=0.0: False)
     monkeypatch.setattr(pipeline, "views_in", lambda *a, **kw: ([still_view(0.0, t1)], 128.0, 230.0))
     return pipeline.read(Path("unused.mp4"))
 
@@ -105,6 +105,7 @@ def read_tab_for(monkeypatch, pages: int):
     monkeypatch.setattr(glide, "glides", lambda *a: False)
     monkeypatch.setattr(pipeline, "views_in", lambda *a, **kw: (held, 128.0, 230.0))
     monkeypatch.setattr(pipeline, "view_move", lambda *a: None)
+    monkeypatch.setattr(pipeline, "text_tab_shown", lambda path, longer_than=0.0: False)
     return pipeline.read(Path("unused.mp4"))
 
 
@@ -127,7 +128,7 @@ def two_bands(monkeypatch, seen: tuple[float, float]):
     monkeypatch.setattr(pipeline, "probe", lambda path: VideoInfo(640, 360, 30.0))
     monkeypatch.setattr(pipeline, "scan", lambda path, w, h, region=None, progress=None: ([seg], {}, []))
     monkeypatch.setattr(glide, "glides", lambda *a: False)
-    monkeypatch.setattr(pipeline, "text_tab_shown", lambda path: False)
+    monkeypatch.setattr(pipeline, "text_tab_shown", lambda path, longer_than=0.0: False)
     monkeypatch.setattr(pipeline, "find_parts", lambda *a: [Part(0, 0, (20, 160), "band", {}, seen[0]),
                                                            Part(1, 0, (200, 340), "band", {}, seen[1])])
     calls = iter([[still_view(0.0, 30.0)], [still_view(0.0, 5.0)]])
@@ -147,7 +148,7 @@ def test_a_second_part_that_glides_but_cant_be_put_together_is_left_out_without_
     seg = Segment(0.0, 30.0, 10.0, "dark", paper=np.array([255.0, 255.0, 255.0]), x1=640, y1=360)
     monkeypatch.setattr(pipeline, "probe", lambda path: VideoInfo(640, 360, 30.0))
     monkeypatch.setattr(pipeline, "scan", lambda path, w, h, region=None, progress=None: ([seg], {}, []))
-    monkeypatch.setattr(pipeline, "text_tab_shown", lambda path: False)
+    monkeypatch.setattr(pipeline, "text_tab_shown", lambda path, longer_than=0.0: False)
     monkeypatch.setattr(pipeline, "find_parts", lambda *a: [Part(0, 0, (20, 160), "band", {}, 30.0),
                                                            Part(1, 0, (200, 340), "band", {}, 29.0)])
     # The upper band holds still; the lower one glides, and no mosaic can be built from it
@@ -265,12 +266,44 @@ def test_a_video_showing_text_tab_fails_as_text_tab(monkeypatch):
     assert "typed as text" in r.message
 
 
+def test_typed_tab_shown_longer_than_lines_of_one_measure_fails_as_text_tab(tmp_path, monkeypatch):
+    video = tmp_path / "song.mp4"
+    write_video(Song(measures=2, measure_width=1100), video)
+    # Each line holds one measure, and typed tab shows for 60 s, longer than the drawn-looking pages hold
+    monkeypatch.setattr(pipeline, "text_tab_shown", lambda path, longer_than=0.0: 60.0 > longer_than)
+    r = pipeline.read(video)
+    assert r.outcome == "fail" and r.fail_reason == "text_tab"
+
+
+def test_typed_tab_shown_briefly_beside_lines_of_one_measure_is_not_text_tab(tmp_path, monkeypatch):
+    video = tmp_path / "song.mp4"
+    write_video(Song(measures=2, measure_width=1100), video)
+    monkeypatch.setattr(pipeline, "text_tab_shown", lambda path, longer_than=0.0: 2.0 > longer_than)
+    assert pipeline.read(video).outcome == "tab"
+
+
+def test_typed_tab_beside_lines_of_several_measures_is_not_text_tab(tmp_path, monkeypatch):
+    video = tmp_path / "song.mp4"
+    write_video(Song(measures=4), video)
+    monkeypatch.setattr(pipeline, "text_tab_shown", lambda path, longer_than=0.0: 60.0 > longer_than)
+    assert pipeline.read(video).outcome == "tab"
+
+
+def test_text_tab_needs_typed_frames_spanning_longer_than_asked(monkeypatch):
+    from test_staff import text_tab
+    page = np.dstack([text_tab()] * 3)
+    # Twelve frames 5 s apart stand for 60 s of typed tab
+    monkeypatch.setattr(pipeline, "frames", lambda path, fps, **kw: ((5.0 * k, page) for k in range(12)))
+    assert pipeline.text_tab_shown(Path("unused.mp4"), longer_than=55.0)
+    assert not pipeline.text_tab_shown(Path("unused.mp4"), longer_than=60.0)
+
+
 def test_staffs_without_measures_beside_text_tab_fail_as_text_tab(tmp_path, monkeypatch):
     # Some lines on screen pass for a staff but give no measures, and the video's tab is typed as text
     video = tmp_path / "song.mp4"
     write_video(Song(measures=4), video)
     parse_view = pipeline.parse_view
     monkeypatch.setattr(pipeline, "parse_view", lambda *a: [replace(ps, cells=[]) for ps in parse_view(*a)])
-    monkeypatch.setattr(pipeline, "text_tab_shown", lambda path: True)
+    monkeypatch.setattr(pipeline, "text_tab_shown", lambda path, longer_than=0.0: True)
     r = pipeline.read(video)
     assert r.outcome == "fail" and r.fail_reason == "text_tab"
