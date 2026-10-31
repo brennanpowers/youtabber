@@ -2,6 +2,7 @@
 from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 import heapq
 import threading
 from dataclasses import dataclass, field, replace
@@ -21,7 +22,7 @@ from youtabber.check import (DUP_RESEMBLE, dwell, empty_stretches, fmt, glide_fa
 from youtabber.match import resemble, resemble_scaled
 from youtabber.observe import (ABOVE_GAPS, BELOW_GAPS, OBS_FPS, PRINT_ABOVE_GAPS, ink_map, ink_threshold, set_paper,
                                to_gray, views_in)
-from youtabber.parse import Cell, bare_header, line_darkness, parse_view, staff_ink
+from youtabber.parse import Cell, bare_header, line_darkness, numbers_printed, parse_view, staff_ink
 from youtabber.panel import panel_bounds
 from youtabber.parts import Part, find_parts, merge_order, stream_of
 from youtabber.scan import SCAN_FPS, Segment, scan
@@ -328,7 +329,8 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
             # after it, so only the last segment keeps such a screen
             views, thr, fthr = views_in(path, pcrop, seg.polarity, seg.gap, seg.paper, part_seed, seg.t0, seg.t1,
                                         "playhead" in EVIDENCE, progress=reached, lead=lead_before(segments, si),
-                                        last_screen=si == len(segments) - 1, bound_at=bound_at)
+                                        last_screen=si == len(segments) - 1, bound_at=bound_at,
+                                        prints_numbers=partial(numbers_printed, polarity=seg.polarity, gap=seg.gap))
             held = sum(v.t1 - v.t0 for v in views)
             shown = part.seen if part.kind == "band" else seg.t1 - seg.t0
             if shown >= GLIDE_MIN_SECONDS and held < HELD_SHARE * shown:
@@ -1415,7 +1417,8 @@ def unsplit_held(path: Path, crop, seg: Segment, whole: Part, seed_at, lead: flo
     if bound_at is not None:
         seed = bounded_seed(seed, bound_at)
     views, _, _ = views_in(path, crop, seg.polarity, seg.gap, seg.paper, seed, seg.t0, seg.t1, "playhead" in EVIDENCE,
-                           lead=lead, last_screen=last, bound_at=bound_at)
+                           lead=lead, last_screen=last, bound_at=bound_at,
+                           prints_numbers=partial(numbers_printed, polarity=seg.polarity, gap=seg.gap))
     return sum(v.t1 - v.t0 for v in views), shown
 
 

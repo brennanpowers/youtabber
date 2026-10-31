@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
+from youtabber import ocr
 from youtabber.observe import PRINT_ABOVE_GAPS, PRINT_BELOW_GAPS, PRINT_MARGIN_GAPS, colored, gray_pixels, ink_map, to_gray
 from youtabber.scan import System, line_columns, systems_in
 from youtabber.staff import without_border
@@ -827,3 +828,14 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
                 mark_header(cell)
             ps.cells.append(cell)
     return out
+
+
+def numbers_printed(frame: np.ndarray, rect: tuple[int, int, int, int], thr: float, fthr: float, polarity: str,
+                    gap: float) -> bool:
+    """True when two neighboring measures of a staff in the frame read as measure numbers one apart. Chord names,
+    counts and cursor marks above the staff don't."""
+    for ps in parse_view(0, frame, rect, polarity, thr, fthr, gap):
+        reads = [None if c.number_crop is None else ocr.read_number(c.number_crop) for c in ps.cells]
+        if any(a is not None and b == a + 1 for a, b in zip(reads, reads[1:])):
+            return True
+    return False

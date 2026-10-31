@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import cv2
 import numpy as np
 
-from youtabber import ocr
+from youtabber import ocr, parse
 from youtabber.parse import end_repeats, parse_view
 
 
@@ -508,3 +508,15 @@ def test_a_panel_ending_just_below_a_staff_of_fewer_lines_does_not_cut_it():
 def test_a_staff_of_as_many_lines_as_the_others_at_the_plate_s_bottom_edge_is_whole():
     img = guitar_over_cut_staff(below=14, lower=6)
     assert completeness(img, img.shape[0]) == [[True, True], [True, True]]
+
+
+def test_numbers_are_printed_when_neighboring_measures_of_one_staff_read_one_apart(monkeypatch):
+    def system(*reads):
+        return SimpleNamespace(cells=[SimpleNamespace(number_crop=None if r is None else np.full((1, 1), r))
+                                      for r in reads])
+    pages = {"apart": [system(7, None, 9)], "next": [system(None, 7, 8)], "two staffs": [system(3), system(4)]}
+    monkeypatch.setattr(ocr, "read_number", lambda crop: int(crop[0, 0]))
+    for name, want in (("apart", False), ("next", True), ("two staffs", False)):
+        monkeypatch.setattr(parse, "parse_view", lambda *a, systems=pages[name]: systems)
+        frame = np.full((10, 10, 3), 255, np.uint8)
+        assert parse.numbers_printed(frame, (0, 0, 10, 10), 120.0, 230.0, "dark", 18.0) is want

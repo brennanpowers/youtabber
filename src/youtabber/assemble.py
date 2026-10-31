@@ -1166,9 +1166,14 @@ def place_views(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str]
         # carry counter numbers
         joined = prev is not None and prev.seg == o.seg and not glided_on(o)
         tj = track_joins.get(o.index) if joined else None
+        # A view whose first number is one past the last number of the view before is the next page, even when it
+        # looks like the same page held still
+        page_ahead = (bool(prev_slots) and prev_slots[-1] is not None and cells[0].number is not None
+                      and A.slots[prev_slots[-1]].number is not None
+                      and cells[0].number == A.slots[prev_slots[-1]].number + 1)
         # Only the main reading clears numbers: a view the folded reading folded without evidence may sit on the
         # wrong numbered measures
-        if not fold_unresolved and tj is not None and "?" not in tj[1] and any(
+        if not fold_unresolved and tj is not None and "?" not in tj[1] and not page_ahead and any(
                 cells[i].number is not None and prev_slots[j] is not None
                 and A.slots[prev_slots[j]].number not in (None, cells[i].number) for i, j in tj[0].items()):
             # The playhead confirmed these measures are the ones shown before, so numbers that differ from theirs
@@ -1370,6 +1375,10 @@ def place_numbered(o, slot_of, A, prev, prev_slots, gap, seg_of, held: dict, oth
     by_number = {s.number: s.id for s in A.slots
                  if s.number is not None and (s.id >= A.number_floor or s.id in prev_slots)}
     other_part = other or switched_part(o, A, by_number, prev, prev_slots, gap, seg_of, held)
+    if other_part and not other and (prev is None or prev.seg != o.seg):
+        # Other music starting a segment is a section of its own, so its later pages don't fold onto earlier
+        # measures with the same numbers
+        A.number_floor = len(A.slots)
     if other_part:
         A.switches.append((o.t0, o.t1))
     # A glide piece shares no measure with the piece before, so none of its numbers is an expected overlap

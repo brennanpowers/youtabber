@@ -1017,3 +1017,14 @@ def test_views_of_a_screen_the_band_held_still_on_leave_the_scroll_share():
     still = {1: ({}, "still"), 2: ({}, "still?")}
     assert scroll_shares(obs, shift_cache, still) == {0: 1.0}
     assert scroll_shares(obs, shift_cache, {}) == {0: 0.5}
+
+
+def test_a_held_look_alike_page_numbered_a_page_ahead_keeps_its_numbers():
+    # The playhead carries on over a page drawn like measures 1-4: numbered 5-8 it is the next page, numbered 6-9
+    # its numbers are taken as misread and it joins the page before
+    for first, want in ((5, [4, 5, 6, 7]), (6, [0, 1, 2, 3])):
+        p, o = held(p_end=300, o_start=320)
+        for k, (a, b) in enumerate(zip(p.cells, o.cells)):
+            a.number, b.number = 1 + k, first + k
+        A = assemble([p, o], 10.0, False, EVIDENCE, lambda v: [])
+        assert A.view_slots[1] == want

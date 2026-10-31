@@ -379,3 +379,135 @@ def test_a_pixel_up_to_twelve_levels_darker_than_its_neighbors_is_washed():
         stack = faint_line_stack(line, 254)
         plate = np.median(stack, axis=0).astype(np.uint8)
         assert observe.clear_footage(stack, plate, "dark", 120.0, 245.0, 10.0, WHOLE)[10, 45, 0] == want
+
+
+PANEL = (0, 25, 1280, 214)
+
+
+def number_frames(x: int, level: tuple[int, int, int] = (0, 0, 230)) -> tuple[np.ndarray, np.ndarray]:
+    """PAGE, and PAGE with a 10x15 mark of the given color at column x in the row of measure numbers above STAFFS
+    (rows 39-67 at an 18-pixel line gap)."""
+    b = PAGE.copy()
+    b[45:60, x:x + 10] = level
+    return PAGE, b
+
+
+def test_a_colored_digit_changing_in_the_number_row_is_a_change():
+    assert observe.number_changed(*number_frames(300), PANEL, STAFFS, 18.0)
+
+
+def test_the_number_row_counts_a_channel_differing_by_more_than_80():
+    # White paper against gray 175 differs by 80, against 174 by 81
+    assert not observe.number_changed(*number_frames(300, (175, 175, 175)), PANEL, STAFFS, 18.0)
+    assert observe.number_changed(*number_frames(300, (174, 174, 174)), PANEL, STAFFS, 18.0)
+
+
+def test_a_line_cursor_or_a_speck_in_the_number_row_is_no_change():
+    a = PAGE
+    line = PAGE.copy()
+    line[40:67, 300:302] = (0, 0, 230)
+    speck = PAGE.copy()
+    speck[50:53, 300:303] = (0, 0, 230)
+    # Dilated, the line is 4 pixels wide against 4.5 for a digit, the speck 5 tall against 5.4
+    assert not observe.number_changed(a, line, PANEL, STAFFS, 18.0)
+    assert not observe.number_changed(a, speck, PANEL, STAFFS, 18.0)
+
+
+def test_a_cursor_reaching_up_from_the_staff_into_the_number_row_is_no_change():
+    # 10 pixels wide, from row 60 in the number row down past the top staff line at row 70: the compare follows it to
+    # row 79, taller than a line gap
+    b = PAGE.copy()
+    b[60:100, 300:310] = (230, 60, 30)
+    assert not observe.number_changed(PAGE, b, PANEL, STAFFS, 18.0)
+    # Ending at row 72, just past the top staff line, it is a digit sitting on the line
+    b = PAGE.copy()
+    b[60:72, 300:310] = (230, 60, 30)
+    assert observe.number_changed(PAGE, b, PANEL, STAFFS, 18.0)
+
+
+def test_a_number_row_change_in_skipped_pixels_is_no_change():
+    a, b = number_frames(300)
+    skip = np.zeros(PAGE.shape[:2], bool)
+    skip[40:65, 295:315] = True
+    assert not observe.number_changed(a, b, PANEL, STAFFS, 18.0, skip)
+
+
+def test_a_colored_box_coming_up_from_the_staff_over_the_number_row_stops_the_number_compare():
+    # A pale highlight box over rows 50-120, 55 levels from the paper, recolors a gray number under it by 90 levels
+    a = PAGE.copy()
+    a[50:62, 300:308] = (150, 150, 150)
+    b = a.copy()
+    b[50:120, 280:500] = (200, 240, 245)
+    b[50:62, 300:308] = (60, 100, 110)
+    tint = np.zeros(PAGE.shape[:2], bool)
+    tint[48:122, 278:502] = True
+    assert observe.number_changed(a, b, PANEL, STAFFS, 18.0)
+    assert not observe.number_changed(a, b, PANEL, STAFFS, 18.0, tint=tint)
+    # A colored line cursor 17 pixels wide, under the 18 of a line gap, leaves the number row compared
+    tint[48:122, 278:502] = False
+    tint[30:122, 600:617] = True
+    assert observe.number_changed(a, b, PANEL, STAFFS, 18.0, tint=tint)
+
+
+def test_a_mark_taller_than_a_line_gap_in_the_number_row_is_no_digit():
+    # 6 pixels wide; dilated a pixel each way, 16 rows measure the 18 of a line gap and 17 rows are a piece of a cursor
+    for rows, want in ((16, True), (17, False)):
+        b = PAGE.copy()
+        b[42:42 + rows, 300:306] = (0, 0, 230)
+        assert observe.number_changed(PAGE, b, PANEL, STAFFS, 18.0) is want
+
+
+def test_a_mark_changing_below_the_number_row_is_no_number_change():
+    b = PAGE.copy()
+    b[68:83, 300:310] = (0, 0, 230)
+    assert not observe.number_changed(PAGE, b, PANEL, STAFFS, 18.0)
+
+
+def test_a_mark_changing_above_the_panel_is_no_number_change():
+    # The mark covers rows 45-59; the panel starts at row 60, inside the number row
+    assert not observe.number_changed(*number_frames(300), (0, 60, 1280, 214), STAFFS, 18.0)
+
+
+def look_alike_views(monkeypatch, printed: bool, calls: list) -> list:
+    """Views of two pages held 5 s each that differ only in a light-gray measure number, lighter than ink."""
+    first, second = number_frames(300, (170, 170, 170))[1], number_frames(600, (170, 170, 170))[1]
+
+    def frames(path, fps, crop=None, start=0.0, length=None):
+        for i in range(60):
+            yield i / fps, (first if i < 30 else second).copy()
+
+    def prints_numbers(*a):
+        calls.append(a)
+        return printed
+    monkeypatch.setattr(observe, "frames", frames)
+    observe.set_paper(PAPER)
+    return observe.views_in(None, (0, 0, 1280, 270), "dark", 18.0, PAPER, lambda t: STAFFS, 0.0, 10.0,
+                            prints_numbers=prints_numbers)[0]
+
+
+def test_pages_differing_only_in_their_numbers_are_told_apart_when_the_segment_prints_numbers(monkeypatch):
+    calls: list = []
+    views = look_alike_views(monkeypatch, True, calls)
+    assert [round(v.t0, 2) for v in views] == [0.0, 5.0]
+    assert len(calls) == 1
+
+
+def test_a_number_row_change_is_no_change_where_no_measure_numbers_are_printed(monkeypatch):
+    calls: list = []
+    views = look_alike_views(monkeypatch, False, calls)
+    assert [round(v.t0, 2) for v in views] == [0.0]
+    # Each reference whose number row changed is checked once, up to NUMBER_CHECKS of them
+    assert 1 <= len(calls) <= observe.NUMBER_CHECKS
+
+
+
+def test_without_a_numbers_check_the_number_row_is_not_compared(monkeypatch):
+    first, second = number_frames(300, (170, 170, 170))[1], number_frames(600, (170, 170, 170))[1]
+
+    def frames(path, fps, crop=None, start=0.0, length=None):
+        for i in range(60):
+            yield i / fps, (first if i < 30 else second).copy()
+    monkeypatch.setattr(observe, "frames", frames)
+    observe.set_paper(PAPER)
+    views = observe.views_in(None, (0, 0, 1280, 270), "dark", 18.0, PAPER, lambda t: STAFFS, 0.0, 10.0)[0]
+    assert [round(v.t0, 2) for v in views] == [0.0]

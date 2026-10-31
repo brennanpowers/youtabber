@@ -199,3 +199,30 @@ def test_sightings_of_the_notation_staff_alone_cast_no_vote_for_a_switch():
     # Tab drawn with other music on both screens is a switch
     assert switch([plain(n) for n in (1, 2, 3)], [replace(notation(n), notation_only=False) for n in (1, 2, 3)],
                   True)
+
+
+def test_another_part_starting_a_layout_numbers_its_later_screens_on_its_own():
+    # Guitar measures 1-5, then the bass after a card shows 1-3 and next 4-5: the bass's 4-5 are new measures
+    guitar = view(0, [cell(n, 6, index=n) for n in range(1, 6)], 0)
+    A = Assembly(slots=[Slot(k, c, 0, k + 1) for k, c in enumerate(guitar.cells)],
+                 sightings={k: [(0, c)] for k, c in enumerate(guitar.cells)})
+    seg_of = {0: 0, 1: 1, 2: 1}
+    bass = view(1, [cell(n, 4, index=n) for n in (1, 2, 3)], 1)
+    first: dict = {}
+    place_numbered(bass, first, A, guitar, [0, 1, 2, 3, 4], 10.0, seg_of, {0: True, 1: True})
+    assert A.number_floor == 5 and sorted(first.values()) == [5, 6, 7]
+    more = view(2, [cell(n, 4, index=n) for n in (4, 5)], 1)
+    later: dict = {}
+    place_numbered(more, later, A, bass, [5, 6, 7], 10.0, seg_of, {0: True, 1: True})
+    assert sorted(later.values()) == [8, 9]
+
+
+def test_another_part_within_a_layout_keeps_the_numbering_floor():
+    guitar = view(0, [cell(1, 6), cell(2, 6), cell(3, 6)], 0)
+    A = Assembly(slots=[Slot(k, c, 0, k + 1) for k, c in enumerate(guitar.cells)],
+                 sightings={k: [(0, c)] for k, c in enumerate(guitar.cells)})
+    bass = view(1, [cell(1, 4), cell(2, 4), cell(3, 4)], 0)
+    for c in guitar.cells + bass.cells:
+        c.tint = np.zeros_like(c.ink)
+    place_numbered(bass, {}, A, guitar, [0, 1, 2], 10.0, {0: 0, 1: 0}, {0: True, 1: True})
+    assert A.switches == [(10.0, 15.0)] and A.number_floor == 0
