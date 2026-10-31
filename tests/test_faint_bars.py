@@ -140,14 +140,19 @@ def test_ends_is_the_lesser_share_of_the_top_and_bottom_line_spaces_the_line_fil
 
 
 @pytest.mark.parametrize("beside", [397, 402])
-def test_side_is_the_faint_ink_on_the_columns_where_the_paper_beside_is_looked_for(beside):
-    # With the faint-ink level at 230, a lighter stroke 2 pixels left or right of the pair 399-400 is faint ink
+def test_side_is_the_ink_on_the_columns_where_the_paper_beside_is_looked_for(beside):
+    # With the faint-ink level at 230, a stroke 2 pixels left or right of the pair 399-400 is ink beside the line of
+    # 170 where it is darker than 0.45 of the way from the line to the paper, 204: at 200 over rows 103-115 it is,
+    # and with the six staff-line rows that is 19 of the 71
+    g = gray(staff(), shade=170)
+    g[103:116, beside] = 200
+    ((x, f),) = candidates(g, fthr=230.0)
+    assert x == 399 and f["side"] == pytest.approx(19 / 71)
+    # At 225 over the whole staff it is lighter, footage seen through the panel
     g = gray(staff(), shade=170)
     g[60:131, beside] = 225
     ((x, f),) = candidates(g, fthr=230.0)
-    assert x == 399 and f["side"] == 1.0
-    ((_, f),) = candidates(gray(staff(), shade=170), fthr=230.0)
-    assert f["side"] == pytest.approx(6 / 71)
+    assert x == 399 and f["side"] == pytest.approx(6 / 71)
 
 
 def test_below_and_above_are_the_shares_of_a_line_running_on_past_the_staff():
@@ -301,3 +306,64 @@ def test_one_faint_bar_notice_per_stretch_of_screens_a_turn_apart_or_less():
     assert notes[1].text == ("A faint line on the tab at 0:10 was not read as a barline, but may be one. If it is, "
                              "two measures there are printed as one.")
     assert faint_bar_notices([screen(0.0, 5.0, False)]) == []
+
+
+def test_a_light_line_is_judged_against_ink_beside_it_darker_than_most_of_the_way_from_the_line_to_the_paper():
+    # Line 120 on paper 245: 0.45 of the way to the paper is 176, under the faint-ink level 200. A break across rows
+    # 77-82 keeps it under BAR_COVER on the faint-ink mask. Strokes beside it over rows 60-90 cover too few rows to be
+    # candidates of their own
+    g = gray(staff(), shade=120)
+    g[77:83, 400] = 245
+    g[60:91, [397, 402]] = 190
+    ((x, f),) = candidates(g)
+    # Only the three staff-line rows below the strokes count
+    assert x == 399 and f["side"] == pytest.approx(3 / 71) and faint_rule(f) == "bar"
+    g[60:91, [397, 402]] = 175
+    ((x, f),) = candidates(g)
+    assert x == 399 and f["side"] == pytest.approx(34 / 71) and faint_rule(f) == ""
+
+
+def test_side_ink_counts_rows_darker_than_the_faint_level_and_0_45_of_the_way_from_the_line_to_the_paper():
+    col = np.array([[100], [180], [190], [205], [240]], np.uint8)
+    # 0.45 of the way from 160 to 240 is 196; the faint level 195 is lower
+    assert parse.side_ink(col, 0, 4, 0, 160.0, 240.0, 195.0) == pytest.approx(3 / 5)
+    assert parse.side_ink(col, 0, 4, 0, 160.0, 240.0, 230.0) == pytest.approx(3 / 5)
+    # 0.45 of the way from 100 to 240 is 163
+    assert parse.side_ink(col, 0, 4, 0, 100.0, 240.0, 230.0) == pytest.approx(1 / 5)
+
+
+def side_page(line: int, side: int) -> np.ndarray:
+    """Paper 242 with a line of gray `line` at column 400 over rows 60-130, and columns 398 and 402 of gray `side` on
+    three rows of every five."""
+    g = np.full((200, 800), 242, np.uint8)
+    g[60:131, 400] = line
+    rows = [y for y in range(60, 131) if y % 5 < 3]
+    g[rows, 398] = side
+    g[rows, 402] = side
+    return g
+
+
+def found(g: np.ndarray) -> list[tuple[int, int]]:
+    return parse.barlines(g, 150.0, 218.0, 60, 130, 14.0, 20, 780, None)
+
+
+def test_a_light_barline_keeps_footage_lighter_than_0_45_of_the_way_to_the_paper_beside_it():
+    # 0.45 of the way from 180 to 242 is 208: side ink at 214 is footage seen through the panel, at 205 it is drawn
+    assert found(side_page(180, 214)) == [(400, 400)]
+    assert found(side_page(180, 205)) == []
+
+
+def test_a_dark_stroke_with_faint_ink_beside_it_is_no_barline():
+    # A stroke darker than the ink threshold has soft edges of its own, so any faint ink on both sides counts
+    assert found(side_page(40, 214)) == []
+    assert found(side_page(40, 230)) == [(400, 400)]
+
+
+def test_a_light_stripe_hardly_darker_than_the_paper_is_no_barline_whatever_lies_beside_it():
+    # On paper 214 the ink threshold 150 is 64 below it, a quarter of that is 16: a stripe of 200 is darker by 14, so
+    # it stays dropped though its sides at 210 are lighter than 0.45 of the way to the paper; one of 198 is darker by 16
+    g = side_page(200, 210)
+    g[g == 242] = 214
+    assert parse.barlines(g, 150.0, 213.0, 60, 130, 14.0, 20, 780, None) == []
+    g[60:131, 400] = 198
+    assert parse.barlines(g, 150.0, 213.0, 60, 130, 14.0, 20, 780, None) == [(400, 400)]

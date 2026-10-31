@@ -18,6 +18,12 @@ BAR_MERGE = 0.7
 BAR_SIDE_GAPS = 0.12
 # ...and a stroke with more than this share of the tab staff's rows inked there on both sides is not a barline
 BAR_SIDE_INK = 0.45
+# A pixel beside a line counts as ink there only when it is darker than the faint-ink threshold and than the line's
+# own gray level plus this share of the way to the paper: footage seen through a panel is much lighter than the line
+SIDE_LINE_SHARE = 0.45
+# A line lighter than the ink threshold is judged against its own gray level only when it is darker than the staff's
+# paper by at least this share of the way from the paper to the ink threshold: a lighter stripe is footage, not a line
+SIDE_LINE_DEPTH = 0.25
 # A measure is at least this many gaps wide
 MIN_CELL = 1.5
 # A staff that starts or ends this many line gaps inside the panel starts or ends there, not at the panel edge
@@ -110,6 +116,11 @@ CUT_STAFF_GAPS = 1.5
 HIDDEN_BAR_COVER, THIN_BESIDE = 0.85, 0.5
 
 
+def side_ink(gray: np.ndarray, a: int, b: int, x: int, level: float, paper: float, fthr: float) -> float:
+    """Share of rows a..b where column x is ink beside a line of gray `level` on paper of gray `paper`."""
+    return float((gray[a:b + 1, x] < min(fthr, level + SIDE_LINE_SHARE * (paper - level))).mean())
+
+
 def digit_sized(mask: np.ndarray, gap: float) -> np.ndarray:
     """The parts of a mask that are separate marks no bigger than a digit printed over a staff."""
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
@@ -118,13 +129,14 @@ def digit_sized(mask: np.ndarray, gap: float) -> np.ndarray:
     return small[labels]
 
 
-def barlines(dark: np.ndarray, tab_top: float, tab_bottom: float, gap: float, x0: int, x1: int,
+def barlines(gray: np.ndarray, thr: float, fthr: float, tab_top: float, tab_bottom: float, gap: float, x0: int, x1: int,
              notation: tuple[float, float] | None, hidden: bool = False) -> list[tuple[int, int]]:
-    """(first, last) columns of each barline across the tab staff.
+    """(first, last) columns of each barline across the tab staff, found on the gray plate's faint-ink mask (`fthr`).
 
     With a notation staff, a barline also crosses the middle of that staff (its outer lines may be ledger or
     beam rows found as lines). With `hidden`, thin lines partly covered by notes count as barlines too.
     """
+    dark = gray < fthr
     a, b = int(round(tab_top)), int(round(tab_bottom))
     band = dark[a:b + 1, x0:x1]
     if band.size == 0:
@@ -164,9 +176,21 @@ def barlines(dark: np.ndarray, tab_top: float, tab_bottom: float, gap: float, x0
     # A barline is a straight stroke with paper beside it; an arpeggio squiggle or a letter stroke has ink on
     # both sides
     d = max(2, int(round(BAR_SIDE_GAPS * gap)))
-    return [(p, q) for p, q in bars
-            if not (p - d >= 0 and q + d < dark.shape[1] and dark[a:b + 1, p - d].mean() > BAR_SIDE_INK
-                    and dark[a:b + 1, q + d].mean() > BAR_SIDE_INK)]
+    paper = float(np.median(gray[a:b + 1, x0:x1]))
+
+    def squiggle(p: int, q: int) -> bool:
+        if not (p - d >= 0 and q + d < dark.shape[1] and dark[a:b + 1, p - d].mean() > BAR_SIDE_INK
+                and dark[a:b + 1, q + d].mean() > BAR_SIDE_INK):
+            return False
+        # The soft edges of a dark stroke are lighter than the stroke itself, so only a line drawn lighter than the
+        # ink threshold is judged against its own gray level. A light stripe of footage hardly darker than the paper
+        # around it is no line, whatever lies beside it
+        level = float(np.median(gray[a:b + 1, p:q + 1].min(axis=1)))
+        if level < thr or paper - level < SIDE_LINE_DEPTH * (paper - thr):
+            return True
+        return (side_ink(gray, a, b, p - d, level, paper, fthr) > BAR_SIDE_INK
+                and side_ink(gray, a, b, q + d, level, paper, fthr) > BAR_SIDE_INK)
+    return [(p, q) for p, q in bars if not squiggle(p, q)]
 
 
 # A barline whose dark pixels across the tab staff are more than this share strongly colored may be the side of a
@@ -477,8 +501,9 @@ def faint_candidates(gray: np.ndarray, st, bars: list[tuple[int, int]], notation
              "fcover": float(max(faint_mask[:, x].mean(), faint_mask[:, x + 1].mean())),
              # Darkness against the paper, in units of the staff lines' darkness
              "dark": (paper - level) / contrast,
-             # Share of faint ink on the columns just beside it: a cursor or shading is wider than a line
-             "side": float(max(faint_mask[:, x - d].mean(), faint_mask[:, min(x + 1 + d, gray.shape[1] - 1)].mean())),
+             # Share of ink on the columns just beside it: a cursor or shading is wider than a line
+             "side": max(side_ink(gray, a, b, x - d, level, paper, fthr),
+                         side_ink(gray, a, b, min(x + 1 + d, gray.shape[1] - 1), level, paper, fthr)),
              # Rhythm stems run on below the staff, a playhead line above it
              "below": share(b + 0.5 * gap, b + 2.0 * gap),
              "above": share(a - 2.0 * gap, a - 0.5 * gap),
@@ -495,8 +520,8 @@ def faint_candidates(gray: np.ndarray, st, bars: list[tuple[int, int]], notation
 # the top and the bottom line space. One reaching only FAINT_UNSURE_RUN and FAINT_UNSURE_ENDS is left out with a notice
 FAINT_RUN, FAINT_ENDS = 0.6, 0.7
 FAINT_UNSURE_RUN, FAINT_UNSURE_ENDS = 0.5, 0.6
-# Any line is turned down when the columns beside it hold FAINT_SIDE or more faint ink, when it runs on below or above
-# the staff for FAINT_BELOW or FAINT_ABOVE of that stretch, or when its color covers FAINT_COLORED of the staff
+# Any line is turned down when the columns beside it hold FAINT_SIDE or more ink (side_ink), when it runs on below or
+# above the staff for FAINT_BELOW or FAINT_ABOVE of that stretch, or when its color covers FAINT_COLORED of the staff
 FAINT_SIDE, FAINT_BELOW, FAINT_ABOVE, FAINT_COLORED = 0.3, 0.5, 0.5, 0.5
 # ...or when it crosses less than FAINT_NOTATION of the notation staff above the tab
 FAINT_NOTATION = 0.9
@@ -705,7 +730,7 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
             prev.y1 = min(prev.y1, mid)
         st.x0, st.x1 = staff_extent(faint_struct, st.lines, max(st.x0, rx0), min(st.x1, rx1), st.gap)
         notation = (s.notation.lines[1], s.notation.lines[-2]) if s.notation else None
-        bars = barlines(faint_struct, st.top, st.bottom, st.gap, max(rx0, st.x0 - 2), min(rx1, st.x1 + 3), notation,
+        bars = barlines(sub, thr, fthr, st.top, st.bottom, st.gap, max(rx0, st.x0 - 2), min(rx1, st.x1 + 3), notation,
                         hidden_bars)
         bar_sub = sub
         # The panel's edge search stops at a double or thick closing barline, so a staff that runs to the panel's
@@ -714,7 +739,7 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
             x_end = min(g.shape[1], rx1 + int(EDGE_BAR_GAPS * st.gap))
             bar_sub = sub.copy()
             bar_sub[ry0:ry1, rx1:x_end] = g[ry0:ry1, rx1:x_end]
-            found = barlines(bar_sub < fthr, st.top, st.bottom, st.gap, max(rx0, st.x0 - 2), x_end, notation)
+            found = barlines(bar_sub, thr, fthr, st.top, st.bottom, st.gap, max(rx0, st.x0 - 2), x_end, notation)
             closing = [bar for bar in found if bar[1] >= rx1 and bar[1] - bar[0] >= EDGE_BAR_MIN * st.gap
                        and paper_after(g, st, bar, fthr)]
             if closing:

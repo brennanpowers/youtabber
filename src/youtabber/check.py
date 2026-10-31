@@ -14,6 +14,10 @@ DUP_LOOKBACK_VIEWS = 3
 DWELL_RATIO = 3.0
 # ...if it is held at least this long
 DWELL_MIN_SECONDS = 4.0
+# A still view held this many times as long as its segment's usual view, while the playhead went from its last
+# measure back to its first, may be two pages that look alike read as one. A playhead that goes back more often
+# than the view's length leaves room for is lost, not playing the page again
+PLAYED_TWICE_RATIO = 1.8
 # No measure is played for longer than this: a 4/4 bar at 40 bpm takes 6 s. A screen or a video holding
 # its measures longer than this on average has lost measures, whatever the rest of the video does.
 MAX_SECONDS_PER_MEASURE = 15.0
@@ -91,7 +95,33 @@ def dwell(obs, A) -> list[dict]:
             out.append({"t0": round(t0, 2), "t1": round(t1, 2), "kind": "few_measures",
                         "text": f"The tab at {fmt(t0)}-{fmt(t1)} stays on screen a long time for the "
                                 f"{n} measure{'' if n == 1 else 's'} read from it; measures may be missing there."})
+    for seg in sorted({o.seg for o in obs}):
+        still = [o for o in obs if o.seg == seg and o.mosaic is None and o.cells]
+        usual = float(np.median([o.t1 - o.t0 for o in still])) if still else 0.0
+        for o in still:
+            held = o.t1 - o.t0
+            if (usual > 0 and held >= PLAYED_TWICE_RATIO * usual and 1 <= returns(o) <= round(held / usual) - 1
+                    and not any(w["t0"] <= o.t0 and o.t1 <= w["t1"] for w in out)):
+                out.append({"t0": round(o.t0, 2), "t1": round(o.t1, 2), "kind": "few_measures",
+                            "text": f"The page at {fmt(o.t0)}-{fmt(o.t1)} stays on screen longer than the others and "
+                                    f"the playhead goes back over it; it may be several pages that look alike, and measures "
+                                    f"may be missing there."})
     return out
+
+
+def returns(o) -> int:
+    """How many times the playhead went from the view's last measure back to its first."""
+    n, reached_end, count = len(o.cells), False, 0
+    if n < 2:
+        return 0
+    for t, x, y in playhead_track(o):
+        i = cell_at(o, (x, y))
+        if i == n - 1:
+            reached_end = True
+        elif i == 0 and reached_end:
+            count += 1
+            reached_end = False
+    return count
 
 
 def fmt(t: float) -> str:

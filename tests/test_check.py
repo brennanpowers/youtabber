@@ -273,6 +273,7 @@ def test_a_slow_measure_narrower_than_the_views_typical_measure_is_not_named():
 class HeldView:
     def __init__(self, t0: float, t1: float, n: int, wrapped: bool = False, index: int = 0):
         self.t0, self.t1, self.cells, self.wrapped, self.seg, self.index = t0, t1, [None] * n, wrapped, 0, index
+        self.mosaic, self.track = None, []
 
 
 def held_twice(last_slots: list[int]) -> list[dict]:
@@ -465,3 +466,42 @@ def test_a_glide_before_the_segment_is_passed_over_for_the_still_screen_before_i
            view(2, 0, 50.0, 54.0, None, measures=20, mosaic=object()), view(3, 1, 55.0, 59.0, 21)]
     (w,) = numbers_restart(numbered_to_25(), obs)
     assert (w["t0"], w["t1"]) == (50.0, 59.0)
+
+
+def page_views(held: float, entries: list[float]) -> list[Obs]:
+    """Four pages of three measures held 8 s each, then one held `held` s whose playhead enters measures 0, 1, 2, 0,
+    1, 2 at the times in `entries` (fewer for a single sweep)."""
+    obs = [played(i, [200, 200, 200], [8.0 * i, 8.0 * i + 2.7, 8.0 * i + 5.3]) for i in range(4)]
+    for o in obs:
+        o.t1 = o.t0 + 8.0
+    last = played(4, [200, 200, 200], [32.0, 34.7, 37.3])
+    last.t1 = 32.0 + held
+    last.track = [(t, last.cells[k % 3].x0 + 5, 30.0) for k, t in enumerate(entries)]
+    return obs + [last]
+
+
+def test_a_page_held_twice_as_long_as_usual_and_played_twice_warns():
+    twice = [32.0, 34.7, 37.3, 40.0, 42.7, 45.3]
+    (w,) = dwell(page_views(16.0, twice), SimpleNamespace(view_slots={}))
+    assert (w["kind"], w["t0"], w["t1"]) == ("few_measures", 32.0, 48.0)
+    assert "the playhead goes back over it" in w["text"]
+    # 1.8 times the usual 8 s is 14.4 s
+    assert len(dwell(page_views(14.5, twice), SimpleNamespace(view_slots={}))) == 1
+    assert dwell(page_views(14.3, twice), SimpleNamespace(view_slots={})) == []
+
+
+def test_a_long_page_the_playhead_crosses_once_does_not_warn():
+    assert dwell(page_views(16.0, [32.0, 37.3, 42.7]), SimpleNamespace(view_slots={})) == []
+
+
+def test_a_playhead_that_goes_back_more_often_than_the_page_time_allows_is_lost_and_does_not_warn():
+    # Held 16 s against the usual 8 s leaves room for one return to the first measure; this one comes back three times
+    lost = [32.0 + 1.25 * k for k in range(12)]
+    assert dwell(page_views(16.0, lost), SimpleNamespace(view_slots={})) == []
+    # Played three times in 16 s, it returns twice: one more than the page time leaves room for
+    thrice = [32.0 + 1.75 * k for k in range(9)]
+    assert dwell(page_views(16.0, thrice), SimpleNamespace(view_slots={})) == []
+    # Held 24 s, three times the usual, a page played three times returns twice
+    thrice = [32.0 + 2.7 * k for k in range(9)]
+    (w,) = dwell(page_views(24.0, thrice), SimpleNamespace(view_slots={}))
+    assert (w["t0"], w["t1"]) == (32.0, 56.0) and "the playhead goes back over it" in w["text"]
