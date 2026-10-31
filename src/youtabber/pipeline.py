@@ -445,7 +445,8 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
     typical = float(np.median(full_widths)) if full_widths else 0.0
     for o in obs:
         o.cells = kept_cells(o.all_cells, typical)
-        o.bars = sorted({c.x0 for c in o.all_cells if c.kind != "lead"} | {c.x1 for c in o.all_cells if c.kind != "tail"})
+        o.bars = sorted({c.x0 for c in o.all_cells if c.kind != "lead"}
+                        | {c.x1 for c in o.all_cells if c.kind != "tail"})
     carry_on(r.parts, obs, ocr.read_number)
     # Each stream is numbered and assembled on its own
     streams = sorted({o.stream for o in obs}) or [0]
@@ -1007,9 +1008,9 @@ def unsure_notices(A: Assembly, obs: list[Obs], printed: list[Measure]) -> list[
         o = obs[vi]
         t0, t1 = (o.t0, o.t1) if o.mosaic is None else (min(ts), max(ts))
         notices.append(Notice(round(t0, 2), round(t1, 2), "unsure_repeat",
-                              f"Some measures printed from {fmt(t0)}-{fmt(t1)} may repeat earlier ones: they were first "
-                              f"shown where the video may have gone back, with no sign whether the song plays them "
-                              f"again. Check whether they repeat.", True))
+                              f"Some measures printed from {fmt(t0)}-{fmt(t1)} may repeat earlier ones: they were "
+                              f"first shown where the video may have gone back, with no sign whether the song plays "
+                              f"them again. Check whether they repeat.", True))
     return notices
 
 

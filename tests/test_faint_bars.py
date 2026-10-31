@@ -367,3 +367,18 @@ def test_a_light_stripe_hardly_darker_than_the_paper_is_no_barline_whatever_lies
     assert parse.barlines(g, 150.0, 213.0, 60, 130, 14.0, 20, 780, None) == []
     g[60:131, 400] = 198
     assert parse.barlines(g, 150.0, 213.0, 60, 130, 14.0, 20, 780, None) == [(400, 400)]
+
+
+def test_a_light_line_is_judged_against_the_staffs_paper_when_footage_darkens_it_past_the_faint_threshold():
+    # Footage at 205 behind most of the staff makes its paper 205, between the ink threshold 150 and the faint
+    # threshold 213. A quarter of the 55 from paper to ink threshold is 13.75: a line of 191 is 14 darker and is
+    # judged by its own level, which its sides at 210 are lighter than; a line of 192 is 13 darker and is dropped
+    def page(line: int) -> np.ndarray:
+        g = np.full((200, 800), 242, np.uint8)
+        g[60:131, 300:780] = 205
+        g[60:131, 150] = line
+        rows = [y for y in range(60, 131) if y % 5 < 3]
+        g[rows, 148] = g[rows, 152] = 210
+        return g
+    assert parse.barlines(page(191), 150.0, 213.0, 60, 130, 14.0, 20, 780, None) == [(150, 150)]
+    assert parse.barlines(page(192), 150.0, 213.0, 60, 130, 14.0, 20, 780, None) == []

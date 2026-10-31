@@ -5,7 +5,8 @@ import cv2
 import numpy as np
 
 from youtabber import ocr
-from youtabber.observe import PRINT_ABOVE_GAPS, PRINT_BELOW_GAPS, PRINT_MARGIN_GAPS, colored, gray_pixels, ink_map, to_gray
+from youtabber.observe import (PRINT_ABOVE_GAPS, PRINT_BELOW_GAPS, PRINT_MARGIN_GAPS, colored, gray_pixels, ink_map,
+                               to_gray)
 from youtabber.scan import NOTATION_FAR_GAPS, NOTATION_GAPS, System, line_columns, systems_in
 from youtabber.staff import without_border
 
@@ -55,7 +56,7 @@ NOTATION_SHARE = 0.85
 # Two neighbor staffs left unpaired pair as notation over tab, whatever lies between them, when the upper one's lines
 # are spaced under this share of the lower one's
 FAR_PAIR_GAP_SHARE = 0.75
-# The lines left of a notation staff that lost a line in beams or chords measure a little wider spaced than the
+# The remaining lines of a notation staff that lost a line in beams or chords measure a little wider spaced than the
 # staff does elsewhere (0.85 of the tab's spacing against 0.81-0.83), too wide for the scan to pair. An unpaired
 # staff close above tab with fewer lines pairs as its notation when spaced under NEAR_SHARE of it
 NEAR_SHARE = 0.92
@@ -220,7 +221,8 @@ def edge_swing(edge: np.ndarray, ys: np.ndarray, gap: float) -> float:
 
 
 def wavy_stroke(dark: np.ndarray, a: int, b: int, p: int, q: int, gap: float) -> bool:
-    """True when the stroke's edges wave in step, as a brace's or a parenthesis column's do (BAR_WAVY_SWING)."""
+    """True when the stroke's edges wave in step while its middle moves sideways, as a brace's or a parenthesis
+    column's do."""
     left, right, ys = stroke_edges(dark, a, b, p, q, gap)
     if left.size < 10:
         return False
@@ -229,9 +231,9 @@ def wavy_stroke(dark: np.ndarray, a: int, b: int, p: int, q: int, gap: float) ->
     return move >= BAR_WAVY_MOVE * gap and min(edge_swing(left, ys, gap), edge_swing(right, ys, gap)) >= BAR_WAVY_SWING
 
 
-def tinted_below(plate: np.ndarray, below: np.ndarray, r0: int, r1: int, x0: int, x1: int) -> np.ndarray:
-    """Columns x0..x1 whose ink in rows r0..r1 (`below`) is tinted (BELOW_TINT_SPREAD)."""
-    px = plate[r0:r1, x0:x1].astype(np.int16)
+def tinted_below(plate: np.ndarray, below: np.ndarray, r0: int, r1: int, xs: np.ndarray) -> np.ndarray:
+    """Which of columns `xs` have their ink in rows r0..r1 (`below`) tinted (BELOW_TINT_SPREAD)."""
+    px = plate[r0:r1, xs].astype(np.int16)
     spread = np.ma.masked_array(px.max(axis=2) - px.min(axis=2), ~below)
     return np.ma.median(spread, axis=0).filled(0) >= BELOW_TINT_SPREAD
 
@@ -264,22 +266,32 @@ def barlines(gray: np.ndarray, thr: float, fthr: float, tab_top: float, tab_bott
         # top string runs on down to its beam
         r0, r1 = int(round(b + 0.5 * gap)), int(round(b + 2.0 * gap))
         below = dark[r0:r1, x0:x1]
-        if below.size:
-            # In two kinds of column, a pixel under the staff counts as a stem only when about as dark as the column
-            # on the staff, as in the side test. One is a faint line, lighter than the ink threshold like its two
-            # neighbors, with paper on both sides, as footage seen through the panel under it is lighter than the
-            # line (the soft edge of a darker stroke or of a wide light shape is no such line). The other is a column
-            # tinted under the staff, where a see-through cursor runs on below a barline
-            level = np.median(gray[a:b + 1, x0:x1], axis=0)
-            inked = dark[a:b + 1].mean(axis=0) > BAR_SIDE_INK
-            xs = np.arange(x0, x1)
-            open_sides = ~inked[np.clip(xs - d, 0, inked.size - 1)] & ~inked[np.clip(xs + d, 0, inked.size - 1)]
-            own_level = (cv2.erode(level.astype(np.float32)[None], np.ones((1, 3), np.uint8))[0] >= thr) & open_sides
+        # Only columns covering the staff can be barlines, so only they are judged
+        cols = np.flatnonzero(full)
+        if below.size and cols.size:
+            # In two kinds of column, a pixel under the staff counts as a stem only when nearer the column's darkness
+            # on the staff than the paper, as in the side test. One is a faint line, lighter than the ink threshold
+            # like its two neighbors, with paper on both sides, as footage seen through the panel under it is lighter
+            # than the line (the soft edge of a darker stroke or of a wide light shape is no such line). The other is
+            # a column tinted under the staff, where a see-through cursor runs on below a barline
+            n = full.size
+            near = np.unique(np.clip(np.concatenate((cols - 1, cols, cols + 1)), 0, n - 1))
+            med = np.median(gray[a:b + 1, x0 + near], axis=0)
+            level = np.zeros(n, med.dtype)
+            level[near] = med
+            lv = level.astype(np.float32)
+            darkest = np.minimum(np.minimum(lv[np.maximum(cols - 1, 0)], lv[cols]), lv[np.minimum(cols + 1, n - 1)])
+            xs = x0 + cols
+            w = dark.shape[1] - 1
+            inked = [dark[a:b + 1, np.clip(xs + s, 0, w)].mean(axis=0) > BAR_SIDE_INK for s in (-d, d)]
+            own_level = (darkest >= thr) & ~inked[0] & ~inked[1]
+            below = below[:, cols]
             if plate is not None and plate.shape[:2] == gray.shape:
-                own_level |= tinted_below(plate, below, r0, r1, x0, x1)
-            stem = gray[r0:r1, x0:x1] < np.minimum(fthr, level + SIDE_LINE_SHARE * (paper - level))
+                own_level |= tinted_below(plate, below, r0, r1, xs)
+            lc = level[cols]
+            stem = gray[r0:r1, xs] < np.minimum(fthr, lc + SIDE_LINE_SHARE * (paper - lc))
             below = np.where(own_level[None, :], stem, below)
-            full &= below.mean(axis=0) < 0.5
+            full[cols] = below.mean(axis=0) < 0.5
     else:
         # Barlines cross the notation staff too (drawn through the space between the staffs or not)
         n0, n1 = int(round(notation[0])), int(round(notation[1]))
@@ -312,14 +324,14 @@ def barlines(gray: np.ndarray, thr: float, fthr: float, tab_top: float, tab_bott
         side = dark & ~edge[None, :]
 
     def squiggle(p: int, q: int) -> bool:
-        sd = side if float(np.median(gray[a:b + 1, p:q + 1].min(axis=1))) < thr else dark
+        level = float(np.median(gray[a:b + 1, p:q + 1].min(axis=1)))
+        sd = side if level < thr else dark
         if not (p - d >= 0 and q + d < dark.shape[1] and sd[a:b + 1, p - d].mean() > BAR_SIDE_INK
                 and sd[a:b + 1, q + d].mean() > BAR_SIDE_INK):
             return False
         # The soft edges of a dark stroke are lighter than the stroke itself, so only a line drawn lighter than the
         # ink threshold is judged against its own gray level. A light stripe of footage hardly darker than the paper
         # around it is no line, whatever lies beside it
-        level = float(np.median(gray[a:b + 1, p:q + 1].min(axis=1)))
         if level < thr or paper - level < SIDE_LINE_DEPTH * (paper - thr):
             return True
         return (side_ink(gray, a, b, p - d, level, paper, fthr) > BAR_SIDE_INK

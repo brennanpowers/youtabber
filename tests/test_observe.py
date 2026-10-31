@@ -433,6 +433,16 @@ def test_a_line_cursor_or_a_speck_in_the_number_row_is_no_change():
     assert not observe.number_changed(a, speck, PANEL, STAFFS, 18.0)
 
 
+def test_a_digit_sized_mark_reaching_the_bottom_of_the_compared_rows_is_no_change():
+    # At an 18-pixel gap the compare looks from the number row down to row 78; dilated, a mark over rows 64-78 is 16
+    # tall, the size of a digit, and reaches that row; one over rows 62-74 stops short of it
+    low, high = PAGE.copy(), PAGE.copy()
+    low[64:79, 300:310] = (0, 0, 230)
+    high[62:75, 300:310] = (0, 0, 230)
+    assert not observe.number_changed(PAGE, low, PANEL, STAFFS, 18.0)
+    assert observe.number_changed(PAGE, high, PANEL, STAFFS, 18.0)
+
+
 def test_a_cursor_reaching_up_from_the_staff_into_the_number_row_is_no_change():
     # 10 pixels wide, from row 60 in the number row down past the top staff line at row 70: the compare follows it to
     # row 79, taller than a line gap
@@ -518,7 +528,6 @@ def test_a_number_row_change_is_no_change_where_no_measure_numbers_are_printed(m
     assert [round(v.t0, 2) for v in views] == [0.0]
     # Each reference whose number row changed is checked once, up to NUMBER_CHECKS of them
     assert 1 <= len(calls) <= observe.NUMBER_CHECKS
-
 
 
 def test_without_a_numbers_check_the_number_row_is_not_compared(monkeypatch):

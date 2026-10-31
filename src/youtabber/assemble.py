@@ -881,7 +881,8 @@ def track_join(p: Obs, o: Obs, gap: float, cands=()) -> tuple[dict[int, int], st
     the two plates up, or a band that held still while only a cursor moved. None when they don't. `cands` are the
     shifts the plates register at (`scroll_shifts`). A basis ending in "?" was not confirmed by the playhead."""
     m = o.move
-    if m is None or m.kind not in ("slide", "still") or p.band is None or o.band is None or p.band.shape != o.band.shape:
+    if (m is None or m.kind not in ("slide", "still") or p.band is None or o.band is None
+            or p.band.shape != o.band.shape):
         return None
     # Whether the band slid comes from the shift nearest the plain sum of the steps: steps back and forth that sum
     # to nothing can still unwrap into a long drawn shift, which ranks first

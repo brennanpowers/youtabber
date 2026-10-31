@@ -277,7 +277,8 @@ def faint_change(a: np.ndarray, b: np.ndarray, gap: float) -> bool:
 # The row of measure numbers lies this many line gaps above the top staff line (from, to)
 NUMBER_ROW_GAPS = (1.7, 0.15)
 # The compare follows marks starting in the number row down to this many line gaps below the top staff line, so a
-# digit sitting on the line is whole and a colored area coming up from the staff is seen reaching the row
+# digit sitting on the line is whole and a colored area coming up from the staff is seen reaching the row. A mark
+# reaching down that far is a cursor or a highlight coming up from the staff, not a digit
 NUMBER_STAFF_GAPS = 0.5
 # A colored area at least this many line gaps wide reaching up from the staff into the number row is a cursor head or
 # a highlight box
@@ -320,7 +321,8 @@ def number_changed(a: np.ndarray, b: np.ndarray, rect, seed, gap: float, skip: n
     if not m[:y1 - y0].any():
         return False
     n, _, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
-    return any(stats[i][1] < y1 - y0 and stats[i][4] >= NUMBER_AREA * gap * gap and stats[i][2] >= NUMBER_W * gap
+    return any(stats[i][1] < y1 - y0 and stats[i][1] + stats[i][3] < y2 - y0
+               and stats[i][4] >= NUMBER_AREA * gap * gap and stats[i][2] >= NUMBER_W * gap
                and NUMBER_H[0] * gap <= stats[i][3] <= NUMBER_H[1] * gap for i in range(1, n))
 
 
@@ -393,9 +395,9 @@ def grow(ok: np.ndarray, i: int, step: int, slack: int = 3) -> int:
 
 def flat_band_top(frame: np.ndarray, paper: np.ndarray, sx0: int, sx1: int, sy0: int, sy1: int, gap: float,
                   above: float) -> int:
-    """The first row of a dark band above the staffs (rows sy0 to sy1, columns sx0 to sx1): the row below the lowest
-    stretch of rows that aren't flat, FLAT_RUN_GAPS line gaps tall, which starts within `above` line gaps of the
-    staffs. 0 when there is none."""
+    """The first row of a dark band above the staffs (rows sy0 to sy1, columns sx0 to sx1): the row below the stretch
+    of rows that aren't flat, FLAT_RUN_GAPS line gaps tall, nearest the staffs, which starts within `above` line gaps
+    of them. 0 when there is none."""
     run = max(1, int(FLAT_RUN_GAPS * gap))
     top = max(0, int(sy0 - above * gap) - run)
     if sy1 <= sy0 or sy0 <= top:

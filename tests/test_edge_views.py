@@ -476,7 +476,7 @@ def held_page(index, edges, brief=False, move="still", lead=False, tail=False):
     cells = []
     for i, (x0, x1) in enumerate(zip(edges, edges[1:])):
         kind = "lead" if lead and i == 0 else "tail" if tail and i == len(edges) - 2 else "full"
-        # Barlines a few pixels apart bound the same music on every view
+        # Barlines in the same 20 px column bound the same music on every view
         ink = music("a", 1000 * (x0 // 20) + x1 // 20)
         cells.append(Cell(index, 0, i, x0, x1, kind, ink, np.zeros_like(ink), 0, gap=20.0, mid_y=30.0,
                           tint=np.zeros_like(ink)))
@@ -511,6 +511,8 @@ def test_a_first_screen_with_barlines_hidden_by_a_card_over_the_still_page_after
     other = held_page(1, PAGE_ONE)
     other.all_cells[0].ink = music("b", 1)
     assert hidden_openings([card, other]) == []
+    # A screen whose cells each span two of the page's shares no cell with it, so there is no music to compare
+    assert hidden_openings([held_page(0, [0, 600, 1200], move=None), held_page(1, [0, 300, 600, 900, 1200])]) == []
     # Only the views at the start of a segment's part are judged
     assert hidden_openings([held_page(0, [70, 900, 1721], move=None), held_page(1, [70, 321, 538, 1183, 1721]), page]) == []
 
