@@ -126,3 +126,32 @@ def test_registration_leaves_out_marks_high_above_the_staffs(monkeypatch):
     o = pipeline.plate_obs(View(0.0, 5.0, plate, rect=rect, print_rect=rect), seg, 0, 128.0, 230.0, 0)
     assert o.band[100:120, 100:110].all() and not o.tall[100:120, 100:110].any()
     assert o.tall[140:160, 300:310].all()
+
+
+def test_registration_leaves_out_a_caption_under_the_staff_but_keeps_it_in_the_whole_marks(monkeypatch):
+    # The staff's bottom line is at row 300 with a 20 px gap: marks at rows 300-310 are digits on it, 330-345 a
+    # caption
+    system = SimpleNamespace(top=200.0, tab=SimpleNamespace(gap=20.0, top=200.0, bottom=300.0))
+    monkeypatch.setattr(pipeline, "parse_view", lambda *a, **kw: [SimpleNamespace(
+        system=system, cells=[], repeat_end=False, repeat_bars=[])])
+    monkeypatch.setattr(pipeline, "line_darkness", lambda *a: (100.0, 250.0))
+    plate = np.full((360, 640, 3), 255, np.uint8)
+    plate[300:310, 100:110] = 0
+    for x in range(300, 400, 12):
+        plate[330:345, x:x + 6] = 0
+    seg = Segment(t0=0, t1=10, gap=20, polarity="dark", y0=0, y1=360, x0=0, x1=640)
+    rect = (0, 0, 640, 360)
+    o = pipeline.plate_obs(View(0.0, 5.0, plate, rect=rect, print_rect=rect), seg, 0, 128.0, 230.0, 0)
+    assert o.tall[300:310, 100:110].all() and not o.tall[330:, :].any()
+    assert o.whole_tall[330:345, 300:306].all() and o.whole_tall[330:345, 396:402].all()
+
+
+def test_a_view_with_no_staff_found_registers_on_all_its_marks(monkeypatch):
+    monkeypatch.setattr(pipeline, "parse_view", lambda *a, **kw: [])
+    plate = np.full((360, 640, 3), 255, np.uint8)
+    for x in range(300, 400, 12):
+        plate[330:345, x:x + 6] = 0
+    seg = Segment(t0=0, t1=10, gap=20, polarity="dark", y0=0, y1=360, x0=0, x1=640)
+    rect = (0, 0, 640, 360)
+    o = pipeline.plate_obs(View(0.0, 5.0, plate, rect=rect, print_rect=rect), seg, 0, 128.0, 230.0, 0)
+    assert o.tall[330:345, 300:306].all() and o.whole_tall[330:345, 300:306].all()

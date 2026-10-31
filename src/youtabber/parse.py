@@ -222,6 +222,10 @@ EDGE_BAR_GAPS = 2.0
 EDGE_BAR_MIN = 0.4
 # ...and in every column just past it, less than this share of the staff is ink
 EDGE_PAPER_INK = 0.5
+# A thinner barline there also closes the staff when paper follows it up to the frame's last EDGE_FRAME_BORDER columns,
+# under EDGE_LINE_INK of the staff line rows just past it are ink, as the lines stop at a staff's end, and under
+# EDGE_OUTSIDE_INK of its columns are ink from half a gap to a gap above and below the staff, as a panel border's are
+EDGE_FRAME_BORDER, EDGE_LINE_INK, EDGE_OUTSIDE_INK = 2, 0.2, 0.2
 
 
 def paper_after(gray: np.ndarray, st, bar: tuple[int, int], fthr: float) -> bool:
@@ -232,6 +236,24 @@ def paper_after(gray: np.ndarray, st, bar: tuple[int, int], fthr: float) -> bool
     if x1 > gray.shape[1]:
         return False
     return bool(((gray[a:b + 1, x0:x1] < fthr).mean(axis=0) < EDGE_PAPER_INK).all())
+
+
+def thin_closing(gray: np.ndarray, st, bar: tuple[int, int], fthr: float) -> bool:
+    """True when a barline too thin for EDGE_BAR_MIN still ends the staff at the frame's right edge: paper follows
+    it, the staff lines stop at it, and its columns are paper above and below the staff."""
+    a, b = int(round(st.top)), int(round(st.bottom))
+    x0 = bar[1] + 1
+    x1 = min(gray.shape[1] - EDGE_FRAME_BORDER, x0 + max(2, int(0.5 * st.gap)))
+    if x1 - x0 < 2 or not ((gray[a:b + 1, x0:x1] < fthr).mean(axis=0) < EDGE_PAPER_INK).all():
+        return False
+    rows = [int(round(y)) for y in st.lines]
+    if (gray[rows, x0:x1] < fthr).mean() >= EDGE_LINE_INK:
+        return False
+    cols = gray[:, bar[0]:bar[1] + 1]
+    off = int(0.5 * st.gap)
+    above = cols[max(0, a - 2 * off):max(0, a - off)]
+    below = cols[b + off:b + 2 * off]
+    return all(part.size == 0 or (part < fthr).mean() < EDGE_OUTSIDE_INK for part in (above, below))
 
 
 def staff_extent(struct: np.ndarray, lines: list[float], x0: int, x1: int, gap: float) -> tuple[int, int]:
@@ -741,8 +763,9 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
             bar_sub = sub.copy()
             bar_sub[ry0:ry1, rx1:x_end] = g[ry0:ry1, rx1:x_end]
             found = barlines(bar_sub, thr, fthr, st.top, st.bottom, st.gap, max(rx0, st.x0 - 2), x_end, notation)
-            closing = [bar for bar in found if bar[1] >= rx1 and bar[1] - bar[0] >= EDGE_BAR_MIN * st.gap
-                       and paper_after(g, st, bar, fthr)]
+            closing = [bar for bar in found if bar[1] >= rx1 and (
+                paper_after(g, st, bar, fthr) if bar[1] - bar[0] >= EDGE_BAR_MIN * st.gap
+                else thin_closing(g, st, bar, fthr))]
             if closing:
                 bars = [bar for bar in bars if bar[1] < closing[0][0]] + closing[:1]
         kept = drawn_bars(bar_sub, st, bars)

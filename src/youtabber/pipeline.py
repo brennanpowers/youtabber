@@ -89,6 +89,10 @@ TURN_SECONDS = 1.0
 # system's top staff line: a title banner above the music holds still while the page slides, and its text changes
 # between pages
 MOVE_ABOVE_GAPS = 3.5
+# Registering a view on the one before also tries it without rows more than this many line gaps below the lowest tab
+# staff line, as a caption can fade in under a page that holds still. Digits on the bottom line reach about half a gap
+# below it
+REGISTER_BELOW_GAPS = 0.8
 # Opening segments lasting INTRO_SECONDS at most are an intro when they end INTRO_BREAK_SECONDS before tab in another
 # layout (panels overlapping under INTRO_OVERLAP of their union, line gaps INTRO_GAP_SHARE or more apart) that holds
 # INTRO_REST_SECONDS of tab. Opening pieces drawn in one layout count as one opening
@@ -1615,8 +1619,12 @@ def plate_obs(v, seg: Segment, si: int, thr: float, fthr: float, index: int, col
     keep[y0:y1, x0:x1] = True
     o.band = band & keep
     o.tall = cv2.morphologyEx(o.band.astype(np.uint8), cv2.MORPH_OPEN, np.ones((5, 1), np.uint8)).astype(bool)
+    o.whole_tall = o.tall
     if systems:
         o.tall[:max(0, min(move_top(ps) for ps in systems))] = False
+        o.tall = o.tall.copy()
+        below = max(ps.system.tab.bottom + REGISTER_BELOW_GAPS * ps.system.tab.gap for ps in systems)
+        o.tall[max(0, int(below)):] = False
     o.image = v.plate
     o.systems = systems
     o.print_rect = v.print_rect

@@ -9,8 +9,9 @@ from youtabber.assemble import (RESTART_GAP_SECONDS, Assembly, Decision, Obs, Sl
                                 choose_shift, compare_cells, drawn_near, find_run, forget_compared, jumped_back,
                                 keeps_widths, measure_time, page_flip_join, place_rest, playhead_at, playhead_join,
                                 playhead_restarts,
-                                playhead_track, register, repeat_played, replay_evidence, rest_of, same_cell,
-                                scroll_shares, scroll_shifts, split_measure, still_links, track_join, usual_slides)
+                                playhead_track, register, register_marks, repeat_played, replay_evidence, rest_of,
+                                same_cell, scroll_shares, scroll_shifts, split_measure, still_links, track_join,
+                                usual_slides)
 from youtabber.observe import unmatched
 from youtabber.parse import Cell
 from youtabber.pipeline import Measure, Notice, edge_notices, join_notices, readings, repeat_notices
@@ -80,6 +81,30 @@ def test_a_held_page_whose_playhead_starts_over_is_not_joined():
 def test_a_still_band_showing_other_music_is_not_joined():
     p, o = held(first=5)
     assert track_join(p, o, 10.0) is None
+
+
+def below_staff(o: Obs) -> Obs:
+    """o with 30 rows of paper added below its staff, in both the cut and the whole map of its marks."""
+    o.band = np.vstack([o.band, np.zeros((30, o.band.shape[1]), bool)])
+    o.tall, o.whole_tall, o.fixed = o.band.copy(), o.band.copy(), np.zeros_like(o.band)
+    o.rect = (0, 0, o.band.shape[1], o.band.shape[0])
+    return o
+
+
+def test_a_held_page_joins_in_place_though_a_caption_fades_in_below_its_staff():
+    p, o = (below_staff(v) for v in held(p_end=300, o_start=320))
+    o.whole_tall[70:85, 100:300] = True
+    assert register_marks(p, o, p.whole_tall, o.whole_tall, 0, 10.0, 2)[1] > 0.2
+    assert track_join(p, o, 10.0) == ({0: 0, 1: 1, 2: 2, 3: 3}, "still")
+
+
+def test_matching_marks_below_the_staff_count_toward_a_held_page_s_registration():
+    p, o = (below_staff(v) for v in held(p_end=300, o_start=320))
+    # Cursor residue on the staff, and the same text below the staff in both views
+    o.tall[5:55, 600:640] = o.whole_tall[5:55, 600:640] = True
+    p.whole_tall[70:85, 0:400] = o.whole_tall[70:85, 0:400] = True
+    assert register_marks(p, o, p.tall, o.tall, 0, 10.0, 2)[1] > 0.2
+    assert track_join(p, o, 10.0) == ({0: 0, 1: 1, 2: 2, 3: 3}, "still")
 
 
 def test_a_view_cut_at_a_playhead_jump_joins_when_the_playhead_on_the_music_carries_on():

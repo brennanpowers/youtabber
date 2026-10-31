@@ -127,6 +127,7 @@ class Obs:
     wrapped: bool = False
     band: np.ndarray | None = None       # ink without staff lines, panel only (crop coordinates)
     tall: np.ndarray | None = None       # the band's marks at least a few pixels tall (no staff-line remnants)
+    whole_tall: np.ndarray | None = None  # those marks with the rows below the staffs kept
     fixed: np.ndarray | None = None      # ink that sits still on screen in every view (a fixed clef panel)
     rect: tuple = (0, 0, 0, 0)
     single: bool = False                 # one system on screen
@@ -735,14 +736,26 @@ def repeat_played(p: Obs) -> bool:
 
 def register(p: Obs, o: Obs, dx: int, gap: float, reach: int) -> tuple[int, float] | None:
     """(shift, mismatch) of the best registration of o on p within `reach` pixels of shift dx, or None when the
-    two panels share too little music there."""
+    two panels share too little music there. Marks below the staffs are left out, as a caption may come and go
+    there, unless keeping them registers better: matching marks below the staffs count too."""
+    best = register_marks(p, o, p.tall, o.tall, dx, gap, reach)
+    if p.whole_tall is not None and o.whole_tall is not None:
+        whole = register_marks(p, o, p.whole_tall, o.whole_tall, dx, gap, reach)
+        if whole is not None and (best is None or whole[1] < best[1]):
+            best = whole
+    return best
+
+
+def register_marks(p: Obs, o: Obs, marks_p: np.ndarray, marks_o: np.ndarray, dx: int, gap: float,
+                   reach: int) -> tuple[int, float] | None:
+    """`register` on the given maps of the two views' marks."""
     best = None
     for d in range(dx - reach, dx + reach + 1):
         lo, hi = max(p.rect[0], o.rect[0] + d), min(p.rect[2], o.rect[2] + d)
         if hi - lo < MIN_OVERLAP_GAPS * gap:
             continue
-        a = (p.tall & ~p.fixed)[:, lo:hi]
-        b = (o.tall & ~o.fixed)[:, lo - d:hi - d]
+        a = (marks_p & ~p.fixed)[:, lo:hi]
+        b = (marks_o & ~o.fixed)[:, lo - d:hi - d]
         total = int(a.sum() + b.sum())
         if total < 20 * gap:
             continue

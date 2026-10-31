@@ -279,6 +279,42 @@ def test_a_line_past_the_panel_edge_with_footage_after_it_is_no_barline():
     assert last.kind == "tail" and not last.complete
 
 
+def edge_staff(lines_past: bool = False, border: bool = False) -> np.ndarray:
+    """Barlines at 100 and 400 and a thin closing barline at 708-710 with a faint column each side, seven columns of
+    paper before the frame's faint last two columns. The staff lines may run on past the barline, and the barline
+    may run the frame's whole height as a panel border does."""
+    img = np.full((200, 720, 3), 255, np.uint8)
+    for i in range(6):
+        cv2.line(img, (20, 60 + i * 14), (717 if lines_past else 710, 60 + i * 14), (60, 60, 60), 1)
+    for x in (100, 400):
+        cv2.line(img, (x, 60), (x, 130), (0, 0, 0), 2)
+    rows = slice(0, 200) if border else slice(60, 131)
+    img[rows, 708:711] = 0
+    img[rows, 707] = img[rows, 711] = 200
+    img[:, 718:] = 200
+    return img
+
+
+def edge_last_cell(img: np.ndarray):
+    # The panel stops at the barline's dark columns, as a panel's edge search does at a closing barline
+    return parse_view(0, img, (0, 0, 708, 200), "dark", 140.0, 229.0, 14.0)[0].cells[-1]
+
+
+def test_a_thin_closing_barline_at_the_frames_edge_ends_the_last_measure():
+    last = edge_last_cell(edge_staff())
+    assert last.kind == "full" and last.complete and abs(last.x0 - 400) <= 2 and abs(last.x1 - 707) <= 2
+
+
+def test_a_thin_barline_at_the_frames_edge_with_the_staff_lines_running_on_is_no_closing_barline():
+    last = edge_last_cell(edge_staff(lines_past=True))
+    assert last.kind == "tail" and not last.complete
+
+
+def test_a_thin_line_at_the_frames_edge_running_past_the_staff_is_a_panel_border():
+    last = edge_last_cell(edge_staff(border=True))
+    assert last.kind == "tail" and not last.complete
+
+
 def test_a_barline_partly_behind_a_note_tile_counts_in_a_glide():
     img = plate(light_line=False)
     # A note tile, paper-colored inside, drawn over the middle barline on one string
