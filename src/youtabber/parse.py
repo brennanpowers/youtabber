@@ -25,6 +25,16 @@ SIDE_LINE_SHARE = 0.45
 # A line lighter than the ink threshold is judged against its own gray level only when it is darker than the staff's
 # paper by at least this share of the way from the paper to the ink threshold: a lighter stripe is footage, not a line
 SIDE_LINE_DEPTH = 0.25
+# A barline runs from the top line to the bottom one: a stroke leaving a run of paper longer than this many line gaps
+# inside the staff is a strum arrow's shaft or a stem
+BAR_PAPER_RUN = 0.3
+# A stroke whose left and right edges both wave, repeating themselves with an autocorrelation swing of at least
+# BAR_WAVY_SWING, while its middle moves sideways by at least BAR_WAVY_MOVE line gaps, is a rolled-chord brace or a
+# column of parentheses
+BAR_WAVY_SWING, BAR_WAVY_MOVE = 1.4, 0.07
+# A column whose ink under the tab staff has a median RGB spread (brightest channel less darkest) of at least this is
+# tinted there, as a see-through cursor running on below the staff tints what it covers
+BELOW_TINT_SPREAD = 12
 # A measure is at least this many gaps wide
 MIN_CELL = 1.5
 # A staff that starts or ends this many line gaps inside the panel starts or ends there, not at the panel edge
@@ -130,12 +140,74 @@ def digit_sized(mask: np.ndarray, gap: float) -> np.ndarray:
     return small[labels]
 
 
+def longest_paper_run(dark: np.ndarray, a: int, b: int, p: int, q: int) -> int:
+    """Rows in the longest run where columns p..q hold no ink, from 2 rows below the top line a to 1 row above the
+    bottom line b."""
+    inked = dark[a + 2:b - 1, p:q + 1].any(axis=1)
+    ends = np.flatnonzero(np.diff(np.concatenate(([True], inked, [True])).astype(np.int8)))
+    return int((ends[1::2] - ends[::2]).max()) if ends.size else 0
+
+
+def stroke_edges(dark: np.ndarray, a: int, b: int, p: int, q: int, gap: float) -> tuple[np.ndarray, np.ndarray,
+                                                                                         np.ndarray]:
+    """Left and right ends of the ink run through the stroke's middle column on each row a..b, and those rows. Rows
+    where the run reaches half a line gap from the middle are a staff line and are left out."""
+    c = (p + q) // 2
+    cap = int(round(0.5 * gap))
+    rows = dark[a:b + 1]
+    # Columns c-cap..c+cap, padded with paper past the plate's edges
+    win = np.zeros((rows.shape[0], 2 * cap + 1), bool)
+    lo, hi = max(0, c - cap), min(rows.shape[1], c + cap + 1)
+    win[:, lo - (c - cap):hi - (c - cap)] = rows[:, lo:hi]
+    # Ink columns running on from the middle to each side, up to cap
+    left = np.cumprod(win[:, cap - 1::-1], axis=1).sum(axis=1)
+    right = np.cumprod(win[:, cap + 1:], axis=1).sum(axis=1)
+    ok = win[:, cap] & (left < cap) & (right < cap)
+    return c - left[ok], c + right[ok], np.flatnonzero(ok) + a
+
+
+def edge_swing(edge: np.ndarray, ys: np.ndarray, gap: float) -> float:
+    """Spread between the highest and lowest autocorrelation of an edge over lags of 2 rows to a line gap: an edge
+    that waves repeats itself, a straight one with noise doesn't."""
+    if edge.size < 10 or edge.std() == 0:
+        return 0.0
+    full = np.full(int(ys.max()) + 1, np.nan)
+    full[ys] = edge - edge.mean()
+    var = np.nanmean(full ** 2)
+    cs = []
+    for k in range(2, max(3, int(gap)) + 1):
+        u, w = full[:-k], full[k:]
+        ok = ~np.isnan(u) & ~np.isnan(w)
+        if ok.sum() >= 10:
+            cs.append(float(np.mean(u[ok] * w[ok]) / var))
+    return max(cs) - min(cs) if cs else 0.0
+
+
+def wavy_stroke(dark: np.ndarray, a: int, b: int, p: int, q: int, gap: float) -> bool:
+    """True when the stroke's edges wave in step, as a brace's or a parenthesis column's do (BAR_WAVY_SWING)."""
+    left, right, ys = stroke_edges(dark, a, b, p, q, gap)
+    if left.size < 10:
+        return False
+    mid = (left + right) / 2
+    move = float(np.percentile(mid, 90) - np.percentile(mid, 10))
+    return move >= BAR_WAVY_MOVE * gap and min(edge_swing(left, ys, gap), edge_swing(right, ys, gap)) >= BAR_WAVY_SWING
+
+
+def tinted_below(plate: np.ndarray, below: np.ndarray, r0: int, r1: int, x0: int, x1: int) -> np.ndarray:
+    """Columns x0..x1 whose ink in rows r0..r1 (`below`) is tinted (BELOW_TINT_SPREAD)."""
+    px = plate[r0:r1, x0:x1].astype(np.int16)
+    spread = np.ma.masked_array(px.max(axis=2) - px.min(axis=2), ~below)
+    return np.ma.median(spread, axis=0).filled(0) >= BELOW_TINT_SPREAD
+
+
 def barlines(gray: np.ndarray, thr: float, fthr: float, tab_top: float, tab_bottom: float, gap: float, x0: int, x1: int,
-             notation: tuple[float, float] | None, hidden: bool = False) -> list[tuple[int, int]]:
+             notation: tuple[float, float] | None, hidden: bool = False,
+             plate: np.ndarray | None = None) -> list[tuple[int, int]]:
     """(first, last) columns of each barline across the tab staff, found on the gray plate's faint-ink mask (`fthr`).
 
     With a notation staff, a barline also crosses the middle of that staff (its outer lines may be ledger or
-    beam rows found as lines). With `hidden`, thin lines partly covered by notes count as barlines too.
+    beam rows found as lines). With `hidden`, thin lines partly covered by notes count as barlines too. The color
+    `plate`, when given, shows which columns are tinted under the staff.
     """
     dark = gray < fthr
     a, b = int(round(tab_top)), int(round(tab_bottom))
@@ -149,11 +221,28 @@ def barlines(gray: np.ndarray, thr: float, fthr: float, tab_top: float, tab_bott
         left, right = ((sum((band & np.roll(band, d, axis=1)).sum(axis=0) for d in side) / (2 * inked))
                        for side in ((2, 3), (-2, -3)))
         full |= (cover >= HIDDEN_BAR_COVER) & (np.maximum(left, right) < THIN_BESIDE)
+    paper = float(np.median(gray[a:b + 1, x0:x1]))
+    d = max(2, int(round(BAR_SIDE_GAPS * gap)))
     if notation is None:
         # In tab with rhythm stems below it, a barline stops at the bottom line; a stem that starts on the
         # top string runs on down to its beam
-        below = dark[int(round(b + 0.5 * gap)):int(round(b + 2.0 * gap)), x0:x1]
+        r0, r1 = int(round(b + 0.5 * gap)), int(round(b + 2.0 * gap))
+        below = dark[r0:r1, x0:x1]
         if below.size:
+            # In two kinds of column, a pixel under the staff counts as a stem only when about as dark as the column
+            # on the staff, as in the side test. One is a faint line, lighter than the ink threshold like its two
+            # neighbors, with paper on both sides, as footage seen through the panel under it is lighter than the
+            # line (the soft edge of a darker stroke or of a wide light shape is no such line). The other is a column
+            # tinted under the staff, where a see-through cursor runs on below a barline
+            level = np.median(gray[a:b + 1, x0:x1], axis=0)
+            inked = dark[a:b + 1].mean(axis=0) > BAR_SIDE_INK
+            xs = np.arange(x0, x1)
+            open_sides = ~inked[np.clip(xs - d, 0, inked.size - 1)] & ~inked[np.clip(xs + d, 0, inked.size - 1)]
+            own_level = (cv2.erode(level.astype(np.float32)[None], np.ones((1, 3), np.uint8))[0] >= thr) & open_sides
+            if plate is not None and plate.shape[:2] == gray.shape:
+                own_level |= tinted_below(plate, below, r0, r1, x0, x1)
+            stem = gray[r0:r1, x0:x1] < np.minimum(fthr, level + SIDE_LINE_SHARE * (paper - level))
+            below = np.where(own_level[None, :], stem, below)
             full &= below.mean(axis=0) < 0.5
     else:
         # Barlines cross the notation staff too (drawn through the space between the staffs or not)
@@ -174,14 +263,22 @@ def barlines(gray: np.ndarray, thr: float, fthr: float, tab_top: float, tab_bott
     # In a glide the note tiles crowd the barlines, so ink beside a line proves nothing there
     if hidden:
         return bars
+    bars = [(p, q) for p, q in bars
+            if longest_paper_run(dark, a, b, p, q) <= BAR_PAPER_RUN * gap and not wavy_stroke(dark, a, b, p, q, gap)]
     # A barline is a straight stroke with paper beside it; an arpeggio squiggle or a letter stroke has ink on
-    # both sides
-    d = max(2, int(round(BAR_SIDE_GAPS * gap)))
-    paper = float(np.median(gray[a:b + 1, x0:x1]))
+    # both sides. Beside a dark stroke, a column that is ink from a gap to half a gap above the staff and from half a
+    # gap to a gap below it is the edge of a cursor or box drawn along the barline, and doesn't count
+    side = dark
+    u0, u1 = max(0, int(round(a - 1.0 * gap))), max(0, int(round(a - 0.5 * gap)))
+    w0, w1 = int(round(b + 0.5 * gap)), int(round(b + 1.0 * gap))
+    if u1 > u0 and w1 > w0 and w1 <= dark.shape[0]:
+        edge = (dark[u0:u1].mean(axis=0) >= 0.5) & (dark[w0:w1].mean(axis=0) >= 0.5)
+        side = dark & ~edge[None, :]
 
     def squiggle(p: int, q: int) -> bool:
-        if not (p - d >= 0 and q + d < dark.shape[1] and dark[a:b + 1, p - d].mean() > BAR_SIDE_INK
-                and dark[a:b + 1, q + d].mean() > BAR_SIDE_INK):
+        sd = side if float(np.median(gray[a:b + 1, p:q + 1].min(axis=1))) < thr else dark
+        if not (p - d >= 0 and q + d < dark.shape[1] and sd[a:b + 1, p - d].mean() > BAR_SIDE_INK
+                and sd[a:b + 1, q + d].mean() > BAR_SIDE_INK):
             return False
         # The soft edges of a dark stroke are lighter than the stroke itself, so only a line drawn lighter than the
         # ink threshold is judged against its own gray level. A light stripe of footage hardly darker than the paper
@@ -222,9 +319,10 @@ EDGE_BAR_GAPS = 2.0
 EDGE_BAR_MIN = 0.4
 # ...and in every column just past it, less than this share of the staff is ink
 EDGE_PAPER_INK = 0.5
-# A thinner barline there also closes the staff when paper follows it up to the frame's last EDGE_FRAME_BORDER columns,
-# under EDGE_LINE_INK of the staff line rows just past it are ink, as the lines stop at a staff's end, and under
-# EDGE_OUTSIDE_INK of its columns are ink from half a gap to a gap above and below the staff, as a panel border's are
+# A thinner barline there also closes the staff when paper follows it up to the frame's last EDGE_FRAME_BORDER
+# columns (a video's edge column is often dark), under EDGE_LINE_INK of the staff line rows just past it are ink,
+# as the lines stop at a staff's end, and under EDGE_OUTSIDE_INK of its columns are ink from half a gap to a gap
+# above and below the staff, where a panel border runs on
 EDGE_FRAME_BORDER, EDGE_LINE_INK, EDGE_OUTSIDE_INK = 2, 0.2, 0.2
 
 
@@ -249,11 +347,14 @@ def thin_closing(gray: np.ndarray, st, bar: tuple[int, int], fthr: float) -> boo
     rows = [int(round(y)) for y in st.lines]
     if (gray[rows, x0:x1] < fthr).mean() >= EDGE_LINE_INK:
         return False
-    cols = gray[:, bar[0]:bar[1] + 1]
+    # Ink counts only where the columns a line gap to the left are paper, so a horizontal edge of footage or of the
+    # panel crossing the bar's columns isn't taken for a border running on
+    sh = int(round(st.gap))
+    border = (gray[:, bar[0]:bar[1] + 1] < fthr) & (gray[:, bar[0] - sh:bar[1] + 1 - sh] >= fthr)
     off = int(0.5 * st.gap)
-    above = cols[max(0, a - 2 * off):max(0, a - off)]
-    below = cols[b + off:b + 2 * off]
-    return all(part.size == 0 or (part < fthr).mean() < EDGE_OUTSIDE_INK for part in (above, below))
+    above = border[max(0, a - 2 * off):max(0, a - off)]
+    below = border[b + off:b + 2 * off]
+    return all(part.size == 0 or part.mean() < EDGE_OUTSIDE_INK for part in (above, below))
 
 
 def staff_extent(struct: np.ndarray, lines: list[float], x0: int, x1: int, gap: float) -> tuple[int, int]:
@@ -754,7 +855,7 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
         st.x0, st.x1 = staff_extent(faint_struct, st.lines, max(st.x0, rx0), min(st.x1, rx1), st.gap)
         notation = (s.notation.lines[1], s.notation.lines[-2]) if s.notation else None
         bars = barlines(sub, thr, fthr, st.top, st.bottom, st.gap, max(rx0, st.x0 - 2), min(rx1, st.x1 + 3), notation,
-                        hidden_bars)
+                        hidden_bars, plate)
         bar_sub = sub
         # The panel's edge search stops at a double or thick closing barline, so a staff that runs to the panel's
         # right edge may end on a barline just past it: those columns are read from the plate as it is
@@ -762,7 +863,8 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
             x_end = min(g.shape[1], rx1 + int(EDGE_BAR_GAPS * st.gap))
             bar_sub = sub.copy()
             bar_sub[ry0:ry1, rx1:x_end] = g[ry0:ry1, rx1:x_end]
-            found = barlines(bar_sub, thr, fthr, st.top, st.bottom, st.gap, max(rx0, st.x0 - 2), x_end, notation)
+            found = barlines(bar_sub, thr, fthr, st.top, st.bottom, st.gap, max(rx0, st.x0 - 2), x_end, notation,
+                             plate=plate)
             closing = [bar for bar in found if bar[1] >= rx1 and (
                 paper_after(g, st, bar, fthr) if bar[1] - bar[0] >= EDGE_BAR_MIN * st.gap
                 else thin_closing(g, st, bar, fthr))]

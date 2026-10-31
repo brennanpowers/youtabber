@@ -61,6 +61,26 @@ def test_a_cursor_going_back_over_part_of_the_page_starts_a_new_view(monkeypatch
     assert [v.wrapped for v in views] == [False] + [True] * 5
 
 
+def test_a_box_cursor_riding_lower_just_after_going_back_still_starts_a_new_view(monkeypatch):
+    sweep = held_page(180, 30, [], span=(600, 900))
+
+    def frames(path, fps, crop=None, start=0.0, length=None):
+        # The frame after each jump back shows the cursor only from y 120 down, its middle 2.6 line gaps lower
+        for i, (t, f) in enumerate(sweep(path, fps)):
+            if i % 30 == 1:
+                f[:120] = PAGE[:120]
+            yield t, f
+    monkeypatch.setattr(observe, "frames", frames)
+    observe.set_paper(PAPER)
+
+    def starts():
+        views = observe.views_in(None, (0, 0, 1280, 270), "dark", 18.0, PAPER, lambda t: STAFFS, 0.0, 30.0)[0]
+        return [round(v.t0, 2) for v in views]
+    assert starts() == [0.0, 5.0, 10.0, 15.0, 20.0, 25.0]
+    monkeypatch.setattr(observe, "WRAP_STEADY_GAPS", 2.0)
+    assert starts() == [0.0]
+
+
 def test_a_cursor_going_back_after_less_than_a_view_does_not_cut(monkeypatch):
     # A beat cursor stepping over one measure every 5 frames, under a second, never sweeps as long as a view lasts
     monkeypatch.setattr(observe, "frames", held_page(60, 5, [], span=(600, 900)))

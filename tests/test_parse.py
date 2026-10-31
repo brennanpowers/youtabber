@@ -280,15 +280,15 @@ def test_a_line_past_the_panel_edge_with_footage_after_it_is_no_barline():
 
 
 def edge_staff(lines_past: bool = False, border: bool = False) -> np.ndarray:
-    """Barlines at 100 and 400 and a thin closing barline at 708-710 with a faint column each side, seven columns of
+    """Barlines at 100 and 400 and a thin closing barline at 708-710 with a faint column each side, six columns of
     paper before the frame's faint last two columns. The staff lines may run on past the barline, and the barline
-    may run the frame's whole height as a panel border does."""
+    may run about a gap past the staff above and below, as a panel border does."""
     img = np.full((200, 720, 3), 255, np.uint8)
     for i in range(6):
         cv2.line(img, (20, 60 + i * 14), (717 if lines_past else 710, 60 + i * 14), (60, 60, 60), 1)
     for x in (100, 400):
         cv2.line(img, (x, 60), (x, 130), (0, 0, 0), 2)
-    rows = slice(0, 200) if border else slice(60, 131)
+    rows = slice(46, 145) if border else slice(60, 131)
     img[rows, 708:711] = 0
     img[rows, 707] = img[rows, 711] = 200
     img[:, 718:] = 200
@@ -310,9 +310,103 @@ def test_a_thin_barline_at_the_frames_edge_with_the_staff_lines_running_on_is_no
     assert last.kind == "tail" and not last.complete
 
 
-def test_a_thin_line_at_the_frames_edge_running_past_the_staff_is_a_panel_border():
+def test_a_thin_line_at_the_frames_edge_running_past_the_staff_is_a_panel_border(monkeypatch):
     last = edge_last_cell(edge_staff(border=True))
     assert last.kind == "tail" and not last.complete
+    # With the test above and below the staff turned off, the same line closes the staff
+    monkeypatch.setattr(parse, "EDGE_OUTSIDE_INK", 1.01)
+    last = edge_last_cell(edge_staff(border=True))
+    assert last.kind == "full" and last.complete
+
+
+def test_a_horizontal_edge_above_a_thin_closing_barline_is_no_panel_border():
+    img = edge_staff()
+    # The bottom edge of footage drawn across the frame's right side, just above the staff
+    img[47:50, 600:] = 0
+    last = edge_last_cell(img)
+    assert last.kind == "full" and last.complete
+
+
+def stroke_staff() -> np.ndarray:
+    """A gray tab staff, lines at y 60 to 160 with gap 20, and a straight barline at x 100."""
+    gray = np.full((240, 400), 255, np.uint8)
+    gray[60:161:20, 20:380] = 60
+    gray[60:161, 100:102] = 0
+    return gray
+
+
+def staff_bars(gray: np.ndarray) -> list[tuple[int, int]]:
+    return parse.barlines(gray, 140.0, 229.0, 60.0, 160.0, 20.0, 20, 380, None)
+
+
+def test_a_stroke_whose_edges_wave_in_step_is_a_brace_not_a_barline(monkeypatch):
+    gray = stroke_staff()
+    # A rolled-chord brace at x 250: 4 columns wide, stepping a column left and right every few rows
+    for y in range(60, 161):
+        s = int(round(0.8 * np.sin(2 * np.pi * y / 10)))
+        gray[y, 250 + s:254 + s] = 0
+    assert [p for p, _ in staff_bars(gray)] == [100]
+    monkeypatch.setattr(parse, "BAR_WAVY_SWING", 9.0)
+    assert [p for p, _ in staff_bars(gray)] == [100, 251]
+
+
+def test_a_stroke_leaving_paper_under_the_top_line_is_an_arrow_shaft(monkeypatch):
+    gray = stroke_staff()
+    # A strum arrow's shaft at x 250, starting 0.45 gaps under the top line
+    gray[69:161, 250:252] = 0
+    assert [p for p, _ in staff_bars(gray)] == [100]
+    monkeypatch.setattr(parse, "BAR_PAPER_RUN", 1.0)
+    assert [p for p, _ in staff_bars(gray)] == [100, 250]
+
+
+def cursor_below(rgb: tuple[int, int, int]) -> tuple[np.ndarray, np.ndarray]:
+    """stroke_staff with a barline at x 250 and a see-through cursor line of color `rgb` running on below it, as
+    the gray plate and the color plate."""
+    gray = stroke_staff()
+    gray[60:161, 250:252] = 0
+    gray[161:200, 250:252] = 196
+    plate = np.repeat(gray[:, :, None], 3, axis=2)
+    plate[161:200, 250:252] = rgb
+    return gray, plate
+
+
+def test_a_barline_with_a_tinted_cursor_running_on_below_it_is_no_stem():
+    gray, plate = cursor_below((230, 180, 180))
+    bars = parse.barlines(gray, 140.0, 229.0, 60.0, 160.0, 20.0, 20, 380, None, plate=plate)
+    assert [p for p, _ in bars] == [100, 250]
+    assert [p for p, _ in staff_bars(gray)] == [100]
+
+
+def test_a_stroke_running_on_below_the_staff_in_gray_is_a_stem():
+    gray, plate = cursor_below((196, 196, 196))
+    bars = parse.barlines(gray, 140.0, 229.0, 60.0, 160.0, 20.0, 20, 380, None, plate=plate)
+    assert [p for p, _ in bars] == [100]
+
+
+def faint_line_over_footage(level: int) -> np.ndarray:
+    """stroke_staff with a line of gray `level` at x 250-252 and footage of gray 220 seen through the panel below
+    the staff."""
+    gray = stroke_staff()
+    gray[60:161, 250:253] = level
+    gray[161:200, 200:300] = 220
+    return gray
+
+
+def test_a_faint_barline_over_footage_below_the_staff_is_no_stem():
+    assert [p for p, _ in staff_bars(faint_line_over_footage(183))] == [100, 251]
+    # A line darker than the ink threshold keeps the plain test, and the footage under it reads as a stem
+    assert [p for p, _ in staff_bars(faint_line_over_footage(0))] == [100]
+
+
+def test_a_box_edge_beside_a_barline_makes_no_squiggle():
+    gray = stroke_staff()
+    gray[60:161, 250:252] = 0
+    # The sides of a box cursor drawn along the barline, running a gap past the staff above and below
+    gray[30:191, 248] = gray[30:191, 253] = 200
+    assert [p for p, _ in staff_bars(gray)] == [100, 250]
+    # Faint columns that start on the staff are a squiggle's or a stem's ink
+    gray[30:60, 248] = gray[30:60, 253] = 255
+    assert [p for p, _ in staff_bars(gray)] == [100]
 
 
 def test_a_barline_partly_behind_a_note_tile_counts_in_a_glide():

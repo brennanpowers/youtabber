@@ -28,6 +28,9 @@ CURSOR_DIFF = 45
 # A playhead that sweeps at least this many line gaps, then jumps back as many into its sweep's left half, starts
 # the page over
 WRAP_GAPS = 6
+# Just after the jump back, the playhead's next sample sits within this many line gaps of it, up or down: a box
+# cursor's middle rides up and down a system with its notes
+WRAP_STEADY_GAPS = 3.0
 # On dark paper a staff area can show too little ink to measure; the ink is then taken to be at least this share
 # of the way from the paper to white, so a see-through cursor bar a little lighter than the paper isn't ink
 DARK_INK_REACH = 0.6
@@ -595,7 +598,7 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
             lo, hi = min(x for _, x, _ in sweep), max(x for _, x, _ in sweep)
             jumped = xb < xa - WRAP_GAPS * gap and yb < ya + 2 * gap
             back = jumped and xa >= hi - 0.25 * (hi - lo) and xb <= lo + 0.5 * (hi - lo)
-            steady = abs(yc - yb) < 2 * gap and abs(xc - xb) < 0.2 * width
+            steady = abs(yc - yb) < WRAP_STEADY_GAPS * gap and abs(xc - xb) < 0.2 * width
             frames_since = (ta - sweep[0][0]) * OBS_FPS + 1
             # A sweep lasts as long as a view must, so the cut leaves a view before it
             swept = (len(sweep) >= 0.6 * frames_since and hi - lo >= WRAP_GAPS * gap
