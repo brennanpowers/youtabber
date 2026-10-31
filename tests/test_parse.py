@@ -5,6 +5,8 @@ import numpy as np
 
 from youtabber import ocr, parse
 from youtabber.parse import end_repeats, pair_far_notation, parse_view
+from youtabber.parts import Part
+from youtabber.pipeline import part_notation
 from youtabber.scan import System
 from youtabber.staff import Staff
 
@@ -715,7 +717,7 @@ def test_a_staff_close_above_tab_with_a_line_lost_is_its_notation():
     up.tab = Staff(up.tab.lines, 400, 1800, 17.9, "dark")
     (s,) = pair_far_notation([up, tab], [17.4])
     assert s.notation is up.tab
-    # 17.9 is 0.16 wider than notation spaced 15.4, past NOTATION_MATCH
+    # 17.9 is 0.16 wider than notation spaced 15.4, past NEAR_MATCH
     assert [s.notation for s in pair_far_notation(far_pair(up_gap=17.9, apart_gaps=4.4, up_lines=4), [15.4])] == [
         None, None]
 
@@ -728,6 +730,12 @@ def test_a_lone_four_line_staff_close_above_tab_stays_apart_unless_notation_else
     lower = System(Staff([1200.0 + 21 * i for i in range(6)], 0, 1800, 21.0, "dark"), notation)
     first, second = pair_far_notation(far_pair(up_gap=17.85, apart_gaps=4.4, up_lines=4) + [lower])
     assert first.notation.gap == 17.85 and len(first.notation.lines) == 4 and second is lower
+
+
+def test_a_four_line_bass_staff_spaced_a_little_wider_than_notation_elsewhere_stays_apart():
+    # 18.9 is 0.90 of 21 and 0.084 wider than notation spaced 17.43 (0.83 of 21), past NEAR_MATCH
+    assert [s.notation for s in pair_far_notation(far_pair(up_gap=18.9, apart_gaps=4.4, up_lines=4), [17.43])] == [
+        None, None]
 
 
 def test_a_close_staff_stays_apart_when_spaced_near_alike_too_far_or_with_as_many_lines():
@@ -743,3 +751,17 @@ def test_a_staff_already_paired_takes_no_far_notation():
     up, tab = far_pair()
     tab.notation = Staff([300.0 + 14 * i for i in range(5)], 0, 1800, 14.0, "dark")
     assert pair_far_notation([up, tab]) == [up, tab]
+
+
+def test_notation_seen_in_one_part_is_not_counted_for_another_part():
+    seg = SimpleNamespace(t0=0.0, t1=10.0)
+    notation = Staff([100.0 + 17 * i for i in range(5)], 0, 1800, 17.0, "dark")
+    upper = System(Staff([200.0 + 21 * i for i in range(6)], 0, 1800, 21.0, "dark"), notation)
+    lower = System(Staff([600.0 + 21 * i for i in range(6)], 0, 1800, 21.0, "dark"), None)
+    found = {1.0: [upper, lower]}
+    top = Part(0, 0, (100, 305), "band", {1.0: [upper]})
+    bottom = Part(1, 0, (600, 705), "band", {1.0: [lower]})
+    assert part_notation(found, seg, top) == [17.0] and part_notation(found, seg, bottom) == []
+    # A page part takes the segment's staffs within its rows
+    assert part_notation(found, seg, Part(0, 0, (0, 1000), "page", found)) == [17.0]
+    assert part_notation(found, seg, Part(0, 0, (500, 1000), "page", found)) == []

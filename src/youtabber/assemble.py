@@ -99,8 +99,7 @@ EDGE_DWELL = 0.6
 # makes REST_SPAN of a typical measure, holds the rest of that measure
 LEAD_SHARE, REST_SPAN = 0.5, (0.85, 1.4)
 # After a page flip the playhead can't place, a new page's cut first cell narrower than this share of the previous
-# page's typical whole measure is the rest of that page's cut last measure. A blank opening piece left unread is a
-# cut lead too, so a playhead on one lies at most this share of a measure left of the page's first cell
+# page's typical whole measure is the rest of that page's cut last measure
 FLIP_LEAD_SHARE = 0.7
 # A page's first measure starts at most this many line gaps right of the staff start (clef, key, time signature)
 STAFF_START_GAPS = 10
@@ -1088,9 +1087,8 @@ def playhead_join(p: Obs, o: Obs, beat: float | None, gap: float) -> tuple[dict[
 
 def page_flip_join(p: Obs, o: Obs) -> tuple[dict[int, int], bool, bool] | None:
     """(links, continues, edge) tying o's first cell to p's last cell, cut by the page edge, when the playhead can't
-    say where the page changed. o's first cell is either a narrow cut piece holding the rest of that measure, or a
-    whole measure after a blank opening piece that wasn't read as a cell: the playhead was on the cut measure as p
-    ended and left of o's first cell as o began. Either join may leave out notes. None otherwise."""
+    say where the page changed and o's first cell is a narrow cut piece holding the rest of that measure. The join
+    may leave out notes. None otherwise."""
     if not p.cells or not o.cells:
         return None
     h, t = o.cells[0], p.cells[-1]
@@ -1105,12 +1103,6 @@ def page_flip_join(p: Obs, o: Obs) -> tuple[dict[int, int], bool, bool] | None:
     # A page with no whole measure can't size a piece, and its pieces can't be stitched into one measure
     if h.kind == "lead" and not h.complete and widths and h.x1 - h.x0 < FLIP_LEAD_SHARE * float(np.median(widths)):
         return {0: last}, True, True
-    # A playhead on p's cut last cell as p ended, then on o's system left of o's whole first cell as o began, past the
-    # slack that would put it on that cell, was on a blank opening piece of the cut measure
-    xy = playhead_at(o, at_start=True)
-    if (h.kind == "full" and h.complete and xy is not None and widths and e == last and on_system(h, xy[1])
-            and CELL_SLACK_PX < h.x0 - xy[0] < FLIP_LEAD_SHARE * float(np.median(widths))):
-        return {0: last}, False, True
     return None
 
 
@@ -1278,10 +1270,11 @@ def place_views(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str]
                       and A.slots[prev_slots[-1]].number is not None
                       and cells[0].number == A.slots[prev_slots[-1]].number + 1)
         # Only the main reading clears numbers: a view the folded reading folded without evidence may sit on the
-        # wrong numbered measures
-        if not fold_unresolved and tj is not None and "?" not in tj[1] and not page_ahead and any(
-                cells[i].number is not None and prev_slots[j] is not None
-                and A.slots[prev_slots[j]].number not in (None, cells[i].number) for i, j in tj[0].items()):
+        # wrong numbered measures. A view before whose own reads disagree with its count had barlines misread, so its
+        # slots' numbers can't overrule this view's reads
+        if (not fold_unresolved and tj is not None and "?" not in tj[1] and not page_ahead and not prev.number_conflicts
+                and any(cells[i].number is not None and prev_slots[j] is not None
+                        and A.slots[prev_slots[j]].number not in (None, cells[i].number) for i, j in tj[0].items())):
             # The playhead confirmed these measures are the ones shown before, so numbers that differ from theirs
             # were misread and the view is placed by the join. Its reads stay as they were
             for c in cells:
@@ -1756,7 +1749,7 @@ def restart_before(o, slot_of, i: int, j: int, start: int, A) -> None:
             or any(s in A.unsure_slots for s in made) or any(c.number is not None for c in o.cells[:i])):
         return
     del A.slots[start:]
-    # The view's cells all fold onto earlier slots, so none of them is new music that may repeat earlier measures
+    # The cells before the opening fold onto earlier slots, so the view's may-repeat notice for them is dropped
     A.maybe_repeats = [r for r in A.maybe_repeats if r[:2] != (o.t0, o.t1)]
     for sid in made:
         if sid in A.segment_starts:

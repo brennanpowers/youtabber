@@ -142,3 +142,12 @@ def test_a_lone_thin_digit_in_a_wide_tail_is_a_measure():
     digit[64:70, 500:502] = True
     one = Cell(0, 0, 5, 100, 1100, "tail", digit, np.zeros_like(digit), 0, gap=GAP, ref_y=60, mid_y=85.0, top_y=15)
     assert kept_cells([blank, one], typical=300) == [one]
+
+
+def test_a_blank_tail_the_playhead_was_seen_on_twice_is_a_measure():
+    # The tail spans x 100-400 on a system whose tab staff centers at y 85
+    blank = tail(0)
+    assert kept_cells([blank], typical=300, playhead=[(1.0, 150, 85)]) == []
+    assert kept_cells([blank], typical=300, playhead=[(1.0, 150, 85), (1.2, 200, 85)]) == [blank]
+    # Samples right of the tail, or far below its system, don't count
+    assert kept_cells([blank], typical=300, playhead=[(1.0, 450, 85), (1.2, 200, 400)]) == []

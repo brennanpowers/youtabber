@@ -535,6 +535,18 @@ def test_a_slide_the_playhead_confirmed_clears_numbers_that_disagree_with_the_me
     assert [(d.chosen, d.basis) for d in joins] == [("slide 398", "track")]
 
 
+def test_a_confirmed_slide_from_a_view_whose_reads_disagree_with_its_count_keeps_the_numbers_as_read():
+    p, o = slid(400, True, 700, 320)
+    for n, c in enumerate(p.cells, 1):
+        c.number = c.read = n
+    # Measure 2 read as 3: a barline was missed or added on that view, so its slots may be counted wrong
+    p.number_conflicts = [(p.cells[1], 3)]
+    for n, c in enumerate(o.cells, 11):
+        c.number = c.read = n
+    assemble([p, o], 10.0, False, EVIDENCE, lambda v: [])
+    assert [c.number for c in o.cells] == [11, 12, 13, 14]
+
+
 def test_an_unconfirmed_slide_keeps_the_numbers_as_read():
     A, o = numbered_slide()
     assert [c.number for c in o.cells] == [11, 12, 13, 14]
@@ -810,33 +822,14 @@ def test_no_page_flip_join_when_the_playhead_left_the_page_two_or_more_cells_bef
     assert page_flip_join(p, o) == ({0: 3}, True, True)
 
 
-def test_a_playhead_left_of_a_next_pages_whole_first_measure_joins_it_to_the_cut_measure_without_continuing_it():
+def test_a_next_page_whole_first_measure_after_a_blank_piece_is_not_joined_by_shape():
     p, o = cut_pair(120, 9.0)
     o.cells = [replace(c, x0=c.x0 + 40, x1=c.x1 + 40) for c in o.cells]
-    # The playhead at x 30 sat on a blank opening piece left of the first cell, which starts at x 40
-    assert playhead_join(p, o, 2.0, 10.0) == ({0: 3}, False, True)
-    played(o, (0.1, 38, 30))
-    assert page_flip_join(p, o) is None
-    # At y 300 the playhead is far below the first cell's system, on another row
-    played(o, (0.1, 30, 300))
-    assert page_flip_join(p, o) is None
-    played(o)
-    assert page_flip_join(p, o) is None
-    # A playhead that ended p on the whole measure before the cut one says nothing about a blank piece: the cut
-    # cell may be an empty staff end
+    # The playhead at x 30 sits left of the whole first cell, which starts at x 40: the blank piece there may be the
+    # cut measure's rest or the start of the first measure, so the shapes don't say which
     played(o, (0.1, 30, 30))
-    played(p, (9.9, 590, 30))
     assert page_flip_join(p, o) is None
-
-
-def test_a_blank_opening_piece_is_narrower_than_the_cut_piece_limit():
-    p, o = cut_pair(120, 9.0)
-    # The first cell starts at x 160, 150 px right of the playhead: more than 0.7 of a 200 px measure
-    o.cells = [replace(c, x0=c.x0 + 160, x1=c.x1 + 160) for c in o.cells]
-    played(o, (0.1, 10, 30))
-    assert page_flip_join(p, o) is None
-    played(o, (0.1, 30, 30))
-    assert page_flip_join(p, o) == ({0: 3}, False, True)
+    assert playhead_join(p, o, 2.0, 10.0) is None
 
 
 def test_a_narrow_last_cell_played_as_long_as_a_whole_measure_is_not_joined_by_shape():

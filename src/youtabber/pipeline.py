@@ -13,7 +13,7 @@ import numpy as np
 
 from youtabber import counter, glide, ocr, track
 from youtabber.assemble import (GLIDE_CONTINUE, Assembly, Obs, assemble, cell_at, forget_compared, number_views,
-                                same_cell)
+                                on_system, same_cell)
 from youtabber.check import (DUP_RESEMBLE, dwell, empty_stretches, fmt, glide_fade, glide_gaps, glide_number_gaps,
                              glide_piece_cuts, glide_repeats, glide_rows, glide_steps, layout_changes, number_checks,
                              no_barlines, numbers_against_cells, numbers_restart, odd_widths, part_switch, pieces,
@@ -60,6 +60,9 @@ FADE_SHARE, FADE_LINE_SHARE = 0.85, 0.8
 FADED_BAR_GAPS = 0.25
 # ...and when at least this share of the neighbour's barlines have one of its barlines that close
 FADED_BAR_SHARE = 0.2
+# A brief screen shows a neighbouring page again when at least this many of its whole measures stand between that
+# page's barlines and hold the same music
+SHOWN_AGAIN_BOUND = 2
 # A brief screen with more than this share of its cells narrower than EDGE_SHARE of a measure had its barlines misread
 BRIEF_SLIVER_SHARE = 0.5
 # Only a segment at least this long is tested for gliding; shorter moves are page-turn animations
@@ -79,6 +82,9 @@ MOSAIC_OVERLAP = 8000
 # BLANK_TAIL_TALL square line gaps of marks at least TALL_MARK_GAPS line gaps (and 3 px) tall, is blank staff, not a
 # measure. What the staff lines leave behind is flat, while a lone fret digit stands tall
 BLANK_TAIL_INK, BLANK_TAIL_TALL, TALL_MARK_GAPS = 0.02, 0.02, 0.25
+# A blank tail the playhead was seen on in at least this many frames is played: a measure of rests cut by the panel
+# edge, not staff running on past the end
+TAIL_PLAYED_SAMPLES = 2
 # A part's last longer views whose paper is more than this many gray levels darker than its usual paper are
 # fading out
 FADE_PAPER_DROP = 20
@@ -367,11 +373,11 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
         fading = fading_out(read_views, seg) if si == len(segments) - 1 else set()
         # Notation staffs the scan paired anywhere in the segment, so a screen whose notation lost a line in beams
         # still pairs it when no other notation is on that screen
-        seg_notation = [s.notation.gap for t, syss in found.items() if seg.t0 <= t <= seg.t1 for s in syss
-                        if s.notation is not None]
+        notation_of = {id(part): part_notation(found, seg, part) for part in seg_parts}
         for v, part, thr, fthr in sorted(read_views, key=lambda x: (x[0].t0, x[1].rows[0], part_crop(seg, x[1])[0])):
             pcrop = part_crop(seg, part)
-            o = plate_obs(v, seg, si, thr, fthr, len(obs), pcrop[0], fading=id(v) in fading, notation_gaps=seg_notation)
+            o = plate_obs(v, seg, si, thr, fthr, len(obs), pcrop[0], fading=id(v) in fading,
+                          notation_gaps=notation_of[id(part)])
             if v.brief and not o.all_cells:
                 # A first or last screen held briefly with no measures is a page coming or going, not time with tab
                 continue
@@ -448,7 +454,7 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
     full_widths = [c.x1 - c.x0 for o in obs for c in o.all_cells if c.kind == "full"]
     typical = float(np.median(full_widths)) if full_widths else 0.0
     for o in obs:
-        o.cells = kept_cells(o.all_cells, typical)
+        o.cells = kept_cells(o.all_cells, typical, o.playhead)
         o.bars = sorted({c.x0 for c in o.all_cells if c.kind != "lead"}
                         | {c.x1 for c in o.all_cells if c.kind != "tail"})
     carry_on(r.parts, obs, ocr.read_number)
@@ -578,9 +584,7 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
     for w in (empty_stretches(r.tab_spans, played, lone_fold_times(main, stream_obs, primary))
               + (tab_in_pieces(segments, played) if clips is None else [])):
         notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
-    # A view counts as read when a staff was found on it; a glide's mosaic covers its whole time
-    read = [(o.t0, o.t1) for o in obs if o.systems or o.mosaic is not None]
-    for w in unread_stretches(r.tab_spans, read):
+    for w in unread_stretches(r.tab_spans, read_spans(obs)):
         notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
     notices += last_screen_notice(obs, len(segments) - 1, held, cleared) + passed_notices(segments)
     # Parts shown at once count their measures apart, so each stream's numbers are checked on their own
@@ -1265,15 +1269,22 @@ def overlaid(a: Obs, b: Obs) -> bool:
 
 
 def measures_shown_again(a: Obs, b: Obs) -> bool:
-    """Whether view b shows all of view a's whole measures again, in order and next to each other. Cells cut by the
-    panel edge are left out: a page drawing in shows them blank."""
+    """Whether view b shows all of view a's whole measures again, in order and next to each other, or shows again
+    the two or more whole measures of a that b bounds at the same barlines (within FADED_BAR_GAPS line gaps), which
+    leaves out a measure of a page wiping in whose edge passed for a barline. Cells cut by the panel edge are left
+    out: a page drawing in shows them blank."""
     cells = [c for c in a.all_cells if c.kind == "full"]
     other = [c for c in b.all_cells if c.kind == "full"]
     if not cells:
         return False
     gap = cells[0].gap
-    return any(all(same_cell(c, other[k + i], gap) for i, c in enumerate(cells))
-               for k in range(len(other) - len(cells) + 1))
+    if any(all(same_cell(c, other[k + i], gap) for i, c in enumerate(cells))
+           for k in range(len(other) - len(cells) + 1)):
+        return True
+    tol = FADED_BAR_GAPS * gap
+    bound = [(c, d) for c in cells for d in other
+             if c.system == d.system and abs(c.x0 - d.x0) <= tol and abs(c.x1 - d.x1) <= tol]
+    return len(bound) >= SHOWN_AGAIN_BOUND and all(same_cell(c, d, gap) for c, d in bound)
 
 
 def covered(p: Obs, o: Obs) -> bool:
@@ -1442,11 +1453,21 @@ def placed_notation(cells: list[Cell]) -> list[Cell]:
     return [c for c in cells if not c.notation_only or (c.number is not None and c.system not in stems)]
 
 
-def kept_cells(cells: list[Cell], typical: float) -> list[Cell]:
+def read_spans(obs: list[Obs]) -> list[tuple[float, float]]:
+    """(t0, t1) of the views that count as read: those where a staff was found, and glides, whose mosaic covers their
+    whole time. A last screen read from its own darker paper counts only when it gave cells, as a fade can leave
+    staff lines with no notes to find."""
+    return [(o.t0, o.t1) for o in obs if (o.systems and (o.all_cells or not o.fading_out)) or o.mosaic is not None]
+
+
+def kept_cells(cells: list[Cell], typical: float, playhead: list = ()) -> list[Cell]:
     """The cells that are measures: those at least EDGE_SHARE of a typical measure wide, short bars on still screens,
-    and empty bars however short. A clef and key header standing alone is no measure."""
+    and empty bars however short. A clef and key header standing alone is no measure, and neither is a blank tail
+    unless the view's `playhead` samples (t, x, y) show it played."""
+    def played(c: Cell) -> bool:
+        return sum(c.x0 <= x <= c.x1 and on_system(c, y) for _, x, y in playhead) >= TAIL_PLAYED_SAMPLES
     return [c for i, c in enumerate(cells)
-            if not c.header and not blank_tail(c)
+            if not c.header and not (blank_tail(c) and not played(c))
             and (c.x1 - c.x0 >= EDGE_SHARE * typical or short_bar(c, typical) or empty_bar(c) or rest_run(cells, i))]
 
 
@@ -1553,6 +1574,14 @@ def unsplit_held(path: Path, crop, seg: Segment, whole: Part, seed_at, lead: flo
                            lead=lead, last_screen=last, bound_at=bound_at,
                            prints_numbers=partial(numbers_printed, polarity=seg.polarity, gap=seg.gap))
     return sum(v.t1 - v.t0 for v in views), shown
+
+
+def part_notation(found: dict, seg: Segment, part: Part) -> list[float]:
+    """Line spacings of the notation staffs the scan paired during the segment on the part's own staffs: another
+    part's notation says nothing about how this part's staffs are spaced."""
+    return [s.notation.gap for t, syss in (found if part.kind == "page" else part.found).items()
+            if seg.t0 <= t <= seg.t1 for s in syss
+            if s.notation is not None and s.top < part.rows[1] and s.tab.bottom > part.rows[0]]
 
 
 def part_crop(seg: Segment, part: Part) -> tuple[int, int, int, int]:

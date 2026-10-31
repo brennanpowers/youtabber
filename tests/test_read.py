@@ -178,7 +178,7 @@ def test_a_gliding_band_is_read_as_a_glide_and_a_still_band_beside_it_as_still_v
     from youtabber.parts import Part
 
     def staff(top, bottom):
-        return SimpleNamespace(top=top, tab=SimpleNamespace(x0=20, x1=620, bottom=bottom))
+        return SimpleNamespace(top=top, tab=SimpleNamespace(x0=20, x1=620, bottom=bottom), notation=None)
     upper = {t / 6: [staff(100, 203)] for t in range(180)}
     lower = {t / 6: [staff(600, 699)] for t in range(180)}
     seg = Segment(0.0, 30.0, 10.0, "dark", paper=np.array([255.0, 255.0, 255.0]), x1=640, y1=720)

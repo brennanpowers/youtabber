@@ -60,8 +60,9 @@ FAR_PAIR_GAP_SHARE = 0.75
 # The remaining lines of a notation staff that lost a line in beams or chords measure a little wider spaced than the
 # staff does elsewhere (0.85 of the tab's spacing against 0.81-0.83), too wide for the scan to pair. An unpaired
 # staff close above tab with fewer lines pairs as its notation when spaced under NEAR_SHARE of it, and when it has 5
-# lines or is spaced like notation found elsewhere: a 4-line bass tab over guitar tab has neither
-NEAR_SHARE = 0.92
+# lines or is spaced within NEAR_MATCH of notation found elsewhere. A 4-line bass tab over guitar tab can be spaced
+# only a little wider than notation, so the match is kept tight
+NEAR_SHARE, NEAR_MATCH = 0.92, 0.05
 
 
 def pair_far_notation(syss: list[System], notation_gaps: tuple[float, ...] | list[float] = ()) -> list[System]:
@@ -69,7 +70,7 @@ def pair_far_notation(syss: list[System], notation_gaps: tuple[float, ...] | lis
     spaced much closer, within NOTATION_FAR_GAPS of it, and has five lines, as notation over four-string bass tab
     does, or no more lines than it. A dashed "let ring" line or a row of beams between notation and tab set far apart
     runs across them like a rule, so the scan leaves them apart. It also takes one within NOTATION_GAPS that has fewer
-    lines and is spaced under NEAR_SHARE of it, when that one has five lines or is spaced within NOTATION_MATCH of a
+    lines and is spaced under NEAR_SHARE of it, when that one has five lines or is spaced within NEAR_MATCH of a
     notation staff already paired in `syss` or of one in `notation_gaps` (notation seen on other screens). Pairing
     from the bottom up, as the scan does, keeps close lines above a notation staff from pulling it away from its
     tab."""
@@ -86,7 +87,7 @@ def pair_far_notation(syss: list[System], notation_gaps: tuple[float, ...] | lis
                and (len(up.tab.lines) == 5 or len(up.tab.lines) <= len(s.tab.lines)))
         near = (free and s.tab.top - up.tab.bottom < NOTATION_GAPS * s.tab.gap
                 and up.tab.gap < NEAR_SHARE * s.tab.gap and len(up.tab.lines) < len(s.tab.lines)
-                and (len(up.tab.lines) == 5 or any(abs(up.tab.gap - g) <= NOTATION_MATCH * g for g in known)))
+                and (len(up.tab.lines) == 5 or any(abs(up.tab.gap - g) <= NEAR_MATCH * g for g in known)))
         if far or near:
             out.append(System(s.tab, up.tab, s.panel, s.cut_from))
             i -= 2
