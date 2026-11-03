@@ -170,12 +170,23 @@ def barred(index, xs, brief=False):
     return o
 
 
-def test_same_barlines_needs_a_fifth_of_the_barlines_within_a_quarter_line_gap():
+def test_same_barlines_needs_a_fifth_of_the_inner_barlines_within_a_quarter_line_gap():
     page = barred(0, [0, 100, 200, 300, 400])
     assert same_barlines(page, barred(1, [2, 101, 202, 298, 400]))
     assert not same_barlines(page, barred(1, [50, 150, 250, 350, 450]))
-    assert same_barlines(page, barred(1, [2, 150, 250, 350, 450]))
-    assert not same_barlines(page, barred(1, [5, 150, 250, 350, 450]))
+    assert same_barlines(page, barred(1, [50, 102, 250, 350, 450]))
+    assert not same_barlines(page, barred(1, [50, 105, 250, 350, 450]))
+    # A system's ends stand at the panel's edges on any page, so sharing them alone is no match
+    assert not same_barlines(page, barred(1, [0, 150, 250, 400]))
+    # Each system's ends are left out, also those of a shorter second system
+    two = barred(1, [0, 150, 250, 400])
+    second = barred(2, [100, 170, 300])
+    for c in second.all_cells:
+        c.system = 1
+    two.all_cells = two.all_cells + second.all_cells
+    assert not same_barlines(page, two)
+    second.all_cells[0].x1 = second.all_cells[1].x0 = 198
+    assert same_barlines(page, two)
 
 
 def test_a_faded_brief_last_screen_gives_none_when_it_shows_the_barlines_of_the_screen_before():
@@ -399,6 +410,25 @@ def test_a_fading_last_screen_is_read_from_its_own_paper_in_a_panel_grown_from_i
         assert used[-1] == ((0, 100, 640, 160), 128.0, fthr) and not o.fading_out
 
 
+def test_a_screen_on_paper_darker_than_the_ink_level_is_read_from_its_own_paper_anywhere_in_the_video(monkeypatch):
+    seg = Segment(0.0, 10.0, 10.0, "dark", paper=np.array([255.0, 255.0, 255.0]), x1=640, y1=360)
+    used = []
+
+    def parse_view(index, image, rect, polarity, thr, fthr, *a, **kw):
+        used.append((rect, thr, fthr))
+        return []
+    monkeypatch.setattr(pipeline, "parse_view", parse_view)
+    v = flat(2.0, 6.0, 100)
+    own = ink_threshold(to_gray(v.plate, "dark")[75:190], np.array([100.0, 100.0, 100.0]), "dark")
+    o = pipeline.plate_obs(v, seg, 0, 128.0, 230.0, 0)
+    assert used[-1][0] == o.rect == (0, 75, 640, 190) and used[-1][1:] == pytest.approx(own)
+    # Only the part's last screens are marked as fading out
+    assert not o.fading_out
+    # Paper between the ink and faint-ink levels is read with the segment's thresholds
+    o = pipeline.plate_obs(flat(2.0, 6.0, 140), seg, 0, 128.0, 230.0, 0)
+    assert used[-1] == ((0, 100, 640, 160), 128.0, 230.0) and not o.fading_out
+
+
 def contrasted(index, ink, line, brief=False):
     o = screen(index, [1, 2, 3], brief)
     o.contrast, o.line_contrast = ink, line
@@ -444,6 +474,11 @@ def test_a_fading_last_screen_caught_in_the_fade_keeps_its_measures_when_its_bar
         mark_fades(obs + [o], parts, segments, 0)
         return len(o.all_cells), o.faded
     assert last(True, 100) == (3, False)
+    # Ending at the panel's right edge like the page before is no sign of the same page
+    o = timed(at(contrasted(3, 50.0, 20.0), [100, 300, 500, 600]), 6.0, 9.0)
+    o.fading_out = True
+    mark_fades(obs + [o], parts, segments, 0)
+    assert len(o.all_cells) == 3
     # Over the barlines of the page before, it is that page fading; not read from its own paper, it is cleared
     assert last(True, 0) == (0, False)
     assert last(False, 100) == (0, False)

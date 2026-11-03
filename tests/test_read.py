@@ -62,13 +62,14 @@ def test_a_long_segment_that_neither_holds_still_nor_glides_fails(monkeypatch):
     assert "holds still for only 5 of 30 s" in r.message
 
 
-def brief_tab(monkeypatch, t1: float, duration: float):
-    """A video of `duration` s whose only tab is one still segment from 0 to `t1` s."""
+def brief_tab(monkeypatch, t1: float, duration: float, typed: bool = False):
+    """A video of `duration` s whose only tab is one still segment from 0 to `t1` s; `typed` says it shows text
+    tab."""
     seg = Segment(0.0, t1, 10.0, "dark", paper=np.array([255.0, 255.0, 255.0]), x1=640, y1=360)
     monkeypatch.setattr(pipeline, "probe", lambda path: VideoInfo(640, 360, duration))
     monkeypatch.setattr(pipeline, "scan", lambda path, w, h, region=None, progress=None: ([seg], {}, []))
     monkeypatch.setattr(glide, "glides", lambda *a: False)
-    monkeypatch.setattr(pipeline, "text_tab_shown", lambda path, longer_than=0.0: False)
+    monkeypatch.setattr(pipeline, "text_tab_shown", lambda path, longer_than=0.0: typed)
     monkeypatch.setattr(pipeline, "views_in", lambda *a, **kw: ([still_view(0.0, t1)], 128.0, 230.0))
     return pipeline.read(Path("unused.mp4"))
 
@@ -77,6 +78,11 @@ def test_tab_shown_too_briefly_in_a_long_video_is_no_tab(monkeypatch):
     r = brief_tab(monkeypatch, 8.0, 330.0)
     assert r.outcome == "fail" and r.fail_reason == "no_tab"
     assert "only 8 s of 330 s" in r.message
+
+
+def test_tab_shown_too_briefly_in_a_video_of_typed_tab_is_text_tab(monkeypatch):
+    r = brief_tab(monkeypatch, 3.0, 380.0, typed=True)
+    assert r.outcome == "fail" and r.fail_reason == "text_tab"
 
 
 def test_brief_tab_holding_enough_of_a_short_video_is_not_refused_as_brief(monkeypatch):

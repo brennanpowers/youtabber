@@ -241,6 +241,9 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
                                 f"drawn see-through over the video either.")
     held = sum(s.t1 - s.t0 for s in segments)
     if held < BRIEF_SECONDS and held < BRIEF_SHARE * info.duration:
+        # A video of typed tab can still show a staff briefly, such as a page on its end card
+        if text_tab_shown(path):
+            return r.fail("text_tab", TEXT_TAB_MESSAGE)
         return r.fail("no_tab", f"No tab to read: lines like a tab staff show for only {held:.0f} s of "
                                 f"{info.duration:.0f} s of video, too briefly for the song to be played from them. "
                                 f"They are likely a small picture of a page, such as on a promo card, or lines "
@@ -1188,9 +1191,14 @@ def last_screen_notice(obs: list[Obs], last_seg: int, held: set[int], why: dict[
 
 def same_barlines(a: Obs, b: Obs) -> bool:
     """Whether at least FADED_BAR_SHARE of view b's barlines lie within FADED_BAR_GAPS line gaps of one of view a's.
-    A fade adds false barlines and loses real ones, but a page that moved on has its barlines elsewhere."""
+    A fade adds false barlines and loses real ones, but a page that moved on has its barlines elsewhere. Only the
+    barlines inside each system count: its two ends stand at the panel's edges on every page."""
     def bars(o: Obs) -> list[int]:
-        return sorted({c.x0 for c in o.all_cells if c.kind != "lead"} | {c.x1 for c in o.all_cells if c.kind != "tail"})
+        xs: set[int] = set()
+        for s in {c.system for c in o.all_cells}:
+            cells = sorted((c for c in o.all_cells if c.system == s), key=lambda c: c.x0)
+            xs |= {c.x0 for c in cells[1:]} | {c.x1 for c in cells[:-1]}
+        return sorted(xs)
     xa, xb = bars(a), bars(b)
     if not xa or not xb:
         return False
@@ -1706,12 +1714,13 @@ def plate_obs(v, seg: Segment, si: int, thr: float, fthr: float, index: int, col
     are the line spacings of notation staffs seen elsewhere in the segment."""
     x0, y0, x1, y1 = v.rect
     fading_read = False
-    level = paper_level(v, seg) if v.brief or fading else None
+    level = paper_level(v, seg)
     if level is not None:
         # A screen shown briefly while the page fades, or one of the last screens as the video fades out, can have
         # paper darker than the segment's faint-ink level, which would make all of it ink; it is read with
-        # thresholds set from its own paper
-        if level < fthr:
+        # thresholds set from its own paper. So is any screen whose paper is darker than the ink level, as when an
+        # overlay dims the page
+        if level < (fthr if v.brief or fading else thr):
             own = paper_color(v)
             if not v.brief:
                 # The panel found from the segment's paper shrinks to the staff rows as the paper darkens, so its
@@ -1727,7 +1736,9 @@ def plate_obs(v, seg: Segment, si: int, thr: float, fthr: float, index: int, col
     o = Obs(index, v.t0, v.t1, cells, v.playhead, si, (seg.x0 if col0 is None else col0, seg.y0),
             v.plate[y0:y1, x0:x1])
     o.all_cells = cells
-    o.fading_out = fading_read
+    # Only the part's last screens, darkening as the video fades out, count as fading out; a screen dimmed
+    # earlier is judged like any other
+    o.fading_out = fading and fading_read
     o.wrapped = v.wrapped
     o.frames = len(v.times)
     o.rect = v.rect
