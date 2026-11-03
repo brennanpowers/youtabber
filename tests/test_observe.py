@@ -143,6 +143,19 @@ def test_dark_paper_rows_above_the_staffs_end_at_a_line_gap_of_rows_that_are_not
     assert observe.panel_rect(frame, dark, seed, 10.0, polarity="light") == (0, 25, 60, 100)
 
 
+def test_dark_paper_rows_below_the_staffs_end_at_a_line_gap_of_rows_that_are_not_flat():
+    dark = np.array([19.0, 19.0, 19.0])
+    frame = np.full((100, 60, 3), 19, np.uint8)
+    frame[60:] = dark_footage(40, 60, 2)
+    seed = (10, 30, 50, 50)
+    assert observe.panel_rect(frame, dark, seed, 10.0) == (0, 5, 60, 80)
+    assert observe.panel_rect(frame, dark, seed, 10.0, polarity="light") == (0, 5, 60, 60)
+    # Marks under the tab staff less than a line gap tall don't end the band
+    frame[60:] = 19
+    frame[55:62, ::3] = 230
+    assert observe.panel_rect(frame, dark, seed, 10.0, polarity="light") == (0, 5, 60, 80)
+
+
 def test_a_dark_band_lightening_toward_its_top_stays_flat():
     dark = np.array([19.0, 19.0, 19.0])
     frame = np.full((100, 60, 3), 19, np.uint8)

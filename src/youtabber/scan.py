@@ -113,6 +113,19 @@ def paper_between_lines(gray: np.ndarray, st: Staff) -> bool:
     return good >= len(st.lines) - 1 - 1  # one row may be crowded with digits
 
 
+def on_paper_of(gray: np.ndarray, st: Staff, under: Staff) -> bool:
+    """True when the rows midway between a staff's lines are mostly the paper seen between the lines of the staff
+    `under` it, as notation printed on its tab's sheet is: PAPER_SHARE of each row within PAPER_SPREAD gray levels of
+    that paper, with one row allowed to be crowded."""
+    paper = np.median([np.median(gray[int(round((a + b) / 2)), under.x0:under.x1])
+                       for a, b in zip(under.lines, under.lines[1:])])
+    good = 0
+    for a, b in zip(st.lines, st.lines[1:]):
+        row = gray[int(round((a + b) / 2)), st.x0:st.x1].astype(int)
+        good += row.size > 0 and np.mean(np.abs(row - paper) <= PAPER_SPREAD) >= PAPER_SHARE
+    return good >= len(st.lines) - 1 - 1
+
+
 def inside(s: System, region: tuple[int, int, int, int]) -> bool:
     """True when the tab staff's middle lies inside region (x, y, w, h)."""
     rx, ry, rw, rh = region
@@ -302,7 +315,9 @@ def systems_in(gray: np.ndarray, whole_lines: bool = False) -> list[System]:
                      and open_between(gray, above, s))
                 and (len(above.lines) == 5 and above.gap <= 1.1 * s.gap and not twin
                      or above.gap < 0.85 * s.gap and len(above.lines) <= len(s.lines))):
-            out.append(System(s, above))
+            # Strings in the footage above a tab band can pass for notation; they lie on the footage, not on the
+            # tab's paper, so they are dropped
+            out.append(System(s, above if on_paper_of(gray, above, s) else None))
             used.update({i, i - 1})
         else:
             out.append(System(s, None))

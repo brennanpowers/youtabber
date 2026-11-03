@@ -36,6 +36,20 @@ def test_pairs_notation_over_tab():
     assert system.notation is not None and len(system.notation.lines) == 5
 
 
+def test_lines_over_footage_above_a_dark_tab_band_are_no_notation():
+    # Light lines on paper at gray 21, and closer light lines above them on footage of another gray
+    for backdrop, paired in ((43, True), (44, False)):
+        img = np.full((360, 800), 21, np.uint8)
+        img[70:130] = backdrop
+        for i in range(6):
+            cv2.line(img, (50, 200 + i * 14), (750, 200 + i * 14), 230, 1)
+        for i in range(5):
+            cv2.line(img, (50, 80 + i * 10), (750, 80 + i * 10), 230, 1)
+        systems = systems_in(img)
+        assert len(systems) == 1 and len(systems[0].tab.lines) == 6
+        assert (systems[0].notation is not None) == paired
+
+
 def test_a_close_line_group_above_the_notation_does_not_steal_it():
     img = staff_image(notation=True)
     for i in range(4):

@@ -415,10 +415,11 @@ def significant_change(a: np.ndarray, b: np.ndarray, gap: float, radius: int = 1
 
 
 PAPER_TOL = 40
-# On dark paper, dark footage above a band passes PAPER_TOL, but the band is drawn flat. A row is flat when its middle
-# color is within PAPER_TOL of the paper and its share of pixels within FLAT_TOL of that color is at least FLAT_SHARE
-# of the staff rows' share; judged against each row's own color, a gradient band stays flat. The panel's rows above
-# the staffs end at the first stretch of rows that aren't flat, FLAT_RUN_GAPS line gaps tall; chord names are shorter
+# On dark paper, dark footage above or below a band passes PAPER_TOL, but the band is drawn flat. A row is flat when
+# its middle color is within PAPER_TOL of the paper and its share of pixels within FLAT_TOL of that color is at least
+# FLAT_SHARE of the staff rows' share; judged against each row's own color, a gradient band stays flat. The panel's
+# rows above and below the staffs end at the first stretch of rows that aren't flat, FLAT_RUN_GAPS line gaps tall;
+# chord names and marks under the tab are shorter
 FLAT_TOL, FLAT_SHARE, FLAT_RUN_GAPS = 12, 0.75, 1.0
 # Every FLAT_STEP-th column is enough to judge a row's flatness
 FLAT_STEP = 4
@@ -487,6 +488,14 @@ def flat_band_top(frame: np.ndarray, paper: np.ndarray, sx0: int, sx1: int, sy0:
     return 0
 
 
+def flat_band_bottom(frame: np.ndarray, paper: np.ndarray, sx0: int, sx1: int, sy0: int, sy1: int, gap: float,
+                     below: float) -> int:
+    """The row after a dark band below the staffs, found as flat_band_top finds its top, on the frame upside down.
+    The frame's height when there is none."""
+    h = frame.shape[0]
+    return h - flat_band_top(frame[::-1], paper, sx0, sx1, h - sy1, h - sy0, gap, below)
+
+
 def panel_rect(frame: np.ndarray, paper: np.ndarray, seed: tuple[int, int, int, int], gap: float,
                above: float = ABOVE_GAPS, below: float = BELOW_GAPS,
                for_print: bool = False, polarity: str = "dark") -> tuple[int, int, int, int]:
@@ -505,11 +514,12 @@ def panel_rect(frame: np.ndarray, paper: np.ndarray, seed: tuple[int, int, int, 
     sy0, sy1 = max(0, sy0), min(h, sy1)
     rows = m[:, sx0:sx1].mean(axis=1) >= PANEL_SHARE
     flat_top = flat_band_top(frame, p, sx0, sx1, sy0, sy1, gap, above) if polarity == "light" else 0
+    flat_bottom = flat_band_bottom(frame, p, sx0, sx1, sy0, sy1, gap, below) if polarity == "light" else h
     slack = max(3, int(gap / 2))
     # Chord names, numbers and beams stay within a few line gaps of the staffs; past that, paper-colored
     # rows are footage that happens to match (dark rooms behind a dark theme)
     y0 = max(grow(rows, sy0, -1, slack), int(sy0 - above * gap), flat_top)
-    y1 = min(grow(rows, sy1 - 1, 1, slack) + 1, int(sy1 + below * gap))
+    y1 = min(grow(rows, sy1 - 1, 1, slack) + 1, int(sy1 + below * gap), flat_bottom)
     if for_print:
         # Digits sit centered on the outer staff lines, so the print area always reaches past them
         y0 = max(0, min(y0, int(sy0 - PRINT_MARGIN_GAPS * gap)))
