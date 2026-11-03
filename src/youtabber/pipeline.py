@@ -449,8 +449,8 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
             fixed = np.zeros_like(group[0].band)
         for o in group:
             o.fixed = fixed
-    # Views with two or more whole measures, counted before drop_fades may clear a brief last screen
-    held = {id(o) for o in obs if sum(c.kind == "full" for c in o.all_cells) >= 2}
+    # Each view's whole measures, counted before drop_fades may clear a brief last screen
+    wholes = {id(o): sum(c.kind == "full" for c in o.all_cells) for o in obs}
     cleared = drop_fades(obs)
     # A cell much narrower than a typical measure is not one: a clef and key signature before a
     # start-repeat barline, or a sliver cut by the panel edge
@@ -589,7 +589,7 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
         notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
     for w in unread_stretches(r.tab_spans, read_spans(obs)):
         notices.append(Notice(w["t0"], w["t1"], w["kind"], w["text"], True))
-    notices += last_screen_notice(obs, len(segments) - 1, held, cleared) + passed_notices(segments)
+    notices += last_screen_notice(obs, len(segments) - 1, wholes, cleared) + passed_notices(segments)
     # Parts shown at once count their measures apart, so each stream's numbers are checked on their own
     for k in streams:
         for w in stream_number_checks(k, primary, r.parts, stream_obs[k]):
@@ -1171,19 +1171,29 @@ def passed_notices(segments: list[Segment]) -> list[Notice]:
             for p0, p1 in (s.passed for s in segments if s.passed is not None)]
 
 
-def last_screen_notice(obs: list[Obs], last_seg: int, held: set[int], why: dict[int, str]) -> list[Notice]:
-    """A notice when the video ends on a brief screen with two or more whole measures (its id in `held`) that
-    drop_fades kept or cleared as misread (`why`): it may hide measures or print a passing picture. Of parts shown
-    at once, only the one ending latest is named. It spans the screen before it of its part and its own time."""
+def last_screen_notice(obs: list[Obs], last_seg: int, wholes: dict[int, int], why: dict[int, str]) -> list[Notice]:
+    """A notice when the video ends on a brief screen with two or more whole measures (`wholes`, counted by view id
+    before drop_fades) that drop_fades kept or cleared as misread (`why`): it may hide measures or print a passing
+    picture. One cleared as shown again is named only when it has fewer whole measures than its part's screen before:
+    a page fading out keeps as many, so fewer may be another page that only looks alike, such as the end of the piece.
+    Of parts shown at once, only the one ending latest is named. It spans the screen before it of its part and its own
+    time."""
     still = sorted((o for o in obs if o.seg == last_seg and o.mosaic is None), key=lambda o: o.t0)
     last = {o.part: o for o in still}
-    named = [o for o in last.values()
-             if o.brief and id(o) in held and why.get(id(o)) in (None, "misread")]
+
+    def before(o: Obs) -> list[Obs]:
+        return [v for v in still if v.part == o.part and v.t0 < o.t0]
+
+    def fewer(o: Obs) -> bool:
+        b = before(o)
+        return bool(b) and wholes.get(id(o), 0) < wholes.get(id(b[-1]), 0)
+    named = [o for o in last.values() if o.brief and wholes.get(id(o), 0) >= 2
+             and (why.get(id(o)) in (None, "misread") or why.get(id(o)) == "shown_again" and fewer(o))]
     if not named:
         return []
     o = max(named, key=lambda v: v.t1)
-    before = [v for v in still if v.part == o.part and v.t0 < o.t0]
-    t0 = before[-1].t0 if before else o.t0
+    b = before(o)
+    t0 = b[-1].t0 if b else o.t0
     return [Notice(round(t0, 2), round(o.t1, 2), "last_screen",
                    f"The last screen at {fmt(o.t0)} shows only briefly as the video fades or cuts away; its measures "
                    f"may be missing, or printed from a passing picture.", True)]
@@ -1466,9 +1476,11 @@ def placed_notation(cells: list[Cell]) -> list[Cell]:
 
 def read_spans(obs: list[Obs]) -> list[tuple[float, float]]:
     """(t0, t1) of the views that count as read: those where a staff was found, and glides, whose mosaic covers their
-    whole time. A screen read from its own darker paper counts only when it kept cells as measures, as a fade or a
-    dimming overlay can leave staff lines with no notes to find."""
-    return [(o.t0, o.t1) for o in obs if (o.systems and (o.cells or not o.own_paper)) or o.mosaic is not None]
+    whole time. A screen held past the brief time and read from its own darker paper counts only when it kept cells
+    as measures, as a dimming overlay or a fade can leave staff lines with no notes to find. A brief screen is mostly
+    the page before on its way to black, already read."""
+    return [(o.t0, o.t1) for o in obs
+            if (o.systems and (o.cells or o.brief or not o.own_paper)) or o.mosaic is not None]
 
 
 def kept_cells(cells: list[Cell], typical: float, playhead: list = ()) -> list[Cell]:

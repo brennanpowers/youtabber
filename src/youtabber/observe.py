@@ -689,9 +689,9 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
             return
         first = not views and cur[0][0] <= t_start + EDGE_VIEW_SECONDS
         seconds = held_for(cur)
-        # A fading page can hold still for a moment on its way to black, so a view of fading frames is never a brief
-        # screen. It can still be the tail: a new page that turns in during the fade and ends the segment is its last
-        # screen
+        # A view of fading frames needs the full view time, as a fading page can hold still for a moment on its way
+        # to black. Held briefly it can still be the tail: a new page that turns in during the fade and ends the
+        # segment is the last screen
         edge = (first or last) and not ref["dim"]
         if seconds < (EDGE_VIEW_SECONDS if edge else MIN_VIEW_SECONDS):
             if seconds >= EDGE_VIEW_SECONDS and not tail:

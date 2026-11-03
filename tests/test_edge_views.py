@@ -228,14 +228,10 @@ def timed(o, t0, t1, seg=0):
     return o
 
 
-def held(obs):
-    return {id(o) for o in obs if sum(c.kind == "full" for c in o.all_cells) >= 2}
-
-
 def ending(obs, last_seg=0):
     """The last-screen notices for `obs` after drop_fades has judged its brief screens."""
-    kept = held(obs)
-    return last_screen_notice(obs, last_seg, kept, drop_fades(obs))
+    wholes = {id(o): sum(c.kind == "full" for c in o.all_cells) for o in obs}
+    return last_screen_notice(obs, last_seg, wholes, drop_fades(obs))
 
 
 def at(o, xs):
@@ -260,9 +256,14 @@ def test_a_video_ending_on_a_brief_screen_with_whole_measures_is_named():
     assert ending(obs, 1) == []
 
 
-def test_a_brief_last_screen_cleared_as_shown_again_is_not_named_but_one_cleared_as_misread_is():
-    before, last = timed(screen(0, [1, 2, 3, 4]), 20.0, 30.0), timed(screen(1, [2, 3, 4], brief=True), 30.0, 30.8)
+def test_a_brief_last_screen_cleared_as_shown_again_is_named_only_with_fewer_measures_and_one_misread_is():
+    # As many whole measures as the screen before: that page fading or sliding out
+    before, last = timed(screen(0, [2, 3, 4]), 20.0, 30.0), timed(screen(1, [2, 3, 4], brief=True), 30.0, 30.8)
     assert ending([before, last]) == [] and last.all_cells == []
+    # Fewer: its measures may be the end of the piece that only look like the page before's
+    before, last = timed(screen(0, [1, 2, 3, 4]), 20.0, 30.0), timed(screen(1, [2, 3, 4], brief=True), 30.0, 30.8)
+    assert [(n.t0, n.t1, n.kind) for n in ending([before, last])] == [(20.0, 30.8, "last_screen")]
+    assert last.all_cells == []
     # Barlines misread into slivers may hide the measures the screen shows
     before = timed(screen(0, [1, 2, 3, 4]), 20.0, 30.0)
     last = timed(barred(1, [0, 40, 80, 120, 320], brief=True), 30.0, 30.8)
@@ -319,12 +320,12 @@ def test_parts_shown_at_once_judge_each_last_screen_against_the_screen_before_it
     # Part 1's brief last screen shows measures its own screen before shows again, so only part 0's is named
     obs = [part(timed(screen(0, [1, 2, 3, 4]), 20.0, 30.0), 0), part(timed(screen(1, [11, 12, 13]), 20.02, 30.02), 1),
            part(timed(screen(2, [5, 6, 7], brief=True), 30.0, 30.8), 0),
-           part(timed(screen(3, [12, 13], brief=True), 30.02, 30.8), 1)]
+           part(timed(screen(3, [11, 12, 13], brief=True), 30.02, 30.8), 1)]
     assert [(n.t0, n.t1) for n in ending(obs)] == [(20.0, 30.8)]
     # Neither part's last screen calls for a notice
     obs = [part(timed(screen(0, [1, 2, 3, 4]), 20.0, 30.0), 0), part(timed(screen(1, [11, 12, 13]), 20.02, 30.02), 1),
-           part(timed(screen(2, [3, 4], brief=True), 30.0, 30.8), 0),
-           part(timed(screen(3, [12, 13], brief=True), 30.02, 30.8), 1)]
+           part(timed(screen(2, [1, 2, 3, 4], brief=True), 30.0, 30.8), 0),
+           part(timed(screen(3, [11, 12, 13], brief=True), 30.02, 30.8), 1)]
     assert ending(obs) == []
 
 
@@ -669,3 +670,7 @@ def test_a_screen_read_from_its_own_paper_counts_as_read_only_when_it_kept_cells
     assert pipeline.read_spans([screen_on(True, False)]) == []
     # A screen read with the segment's paper counts once a staff is found on it
     assert pipeline.read_spans([screen_on(False, False)]) == [(6.0, 9.0)]
+    # A brief screen in a fade counts once a staff is found on it
+    brief = screen_on(True, False)
+    brief.brief = True
+    assert pipeline.read_spans([brief]) == [(6.0, 9.0)]
