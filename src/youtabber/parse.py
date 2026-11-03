@@ -509,19 +509,49 @@ MIN_DIGIT_AREA = 6
 # A mark not taken for a digit, level with a number and this many digit heights or less from its side, may hold the
 # number's first or last digit merged with a stem or a line
 MERGED_DIGIT_GAP = 0.6
+# A time signature opening a measure is one solid mark (two digits stacked, joined at the middle line) starting at most
+# TIME_SIG_START line gaps right of the barline, TIME_SIG_WIDTH line gaps wide, ending within TIME_SIG_ENDS line gaps of
+# both outer lines of a five-line staff and filling at least TIME_SIG_FILL of its box. A note's stem mostly runs past
+# the staff, and a note head just under the top line, its stem down to the bottom line, fills about a quarter of its box
+TIME_SIG_START = 1.0
+TIME_SIG_WIDTH = (0.8, 3.0)
+TIME_SIG_ENDS = 0.25
+TIME_SIG_FILL = 0.33
+
+
+def time_signature_end(dark: np.ndarray, staff, bar_end: int) -> int | None:
+    """Column just past a time signature that opens the measure right of the barline ending at bar_end, or None."""
+    lines, gap = staff.lines, staff.gap
+    if len(lines) != 5:
+        return None
+    a, b = int(round(lines[0] - 0.5 * gap)), int(round(lines[-1] + 0.5 * gap)) + 1
+    x0, x1 = bar_end + 1, min(dark.shape[1], int(bar_end + (TIME_SIG_START + TIME_SIG_WIDTH[1]) * gap))
+    if a < 0 or b > dark.shape[0] or x1 - x0 < 2:
+        return None
+    # Staff lines would join the signature to the notes after it; keep only marks taller than a line
+    k = max(3, int(round(0.2 * gap)))
+    sub = cv2.morphologyEx(dark[a:b, x0:x1].astype(np.uint8), cv2.MORPH_OPEN, np.ones((k, 1), np.uint8))
+    n, _, stats, _ = cv2.connectedComponentsWithStats(sub, connectivity=8)
+    for x, y, w, h, area in stats[1:]:
+        if (x <= TIME_SIG_START * gap and TIME_SIG_WIDTH[0] * gap <= w <= TIME_SIG_WIDTH[1] * gap
+                and abs(a + y - lines[0]) <= TIME_SIG_ENDS * gap and abs(a + y + h - lines[-1]) <= TIME_SIG_ENDS * gap
+                and area >= TIME_SIG_FILL * w * h):
+            return int(x0 + x + w)
+    return None
 
 
 def number_crop(g: np.ndarray, marks: np.ndarray, top: float, top_gap: float, bar_x: int,
-                panel_top: int = 0) -> np.ndarray | None:
+                panel_top: int = 0, opening_x: int | None = None) -> np.ndarray | None:
     """Gray crop of the small mark group above the top staff line nearest the barline at bar_x, if any.
 
     Measure numbers sit just above the staff at the start of the measure (or just left of it at a
     system start). `marks` is every visible mark, faint ones included. Above row `panel_top` the plate is painted
-    paper, so a group starting at the panel's top row is a number cut by the panel's top edge.
+    paper, so a group starting at the panel's top row is a number cut by the panel's top edge. Where a time signature
+    opens the measure, some players print the number past it: `opening_x` is the column just past the signature.
     """
     h, w = g.shape
     y0, y1 = int(max(0, top - 2.6 * top_gap)), int(max(0, top + 0.4 * top_gap))
-    x0, x1 = int(max(0, bar_x - 3.0 * top_gap)), int(min(w, bar_x + 2.5 * top_gap))
+    x0, x1 = int(max(0, bar_x - 3.0 * top_gap)), int(min(w, max(bar_x, opening_x or bar_x) + 2.5 * top_gap))
     if y1 - y0 < 4 or x1 - x0 < 4:
         return None
     sub = marks[y0:y1, x0:x1].astype(np.uint8)
@@ -533,6 +563,9 @@ def number_crop(g: np.ndarray, marks: np.ndarray, top: float, top_gap: float, ba
     while c1 + 1 < sub.shape[1] and sub[probe, c1 + 1]:
         c1 += 1
     sub[max(0, int(top) - 1 - y0):, max(0, c0 - 1):c1 + 2] = 0
+    if opening_x is not None:
+        # The time signature's columns too, as its top reaches into the window
+        sub[max(0, int(top) - 1 - y0):, c1:opening_x - x0 + 1] = 0
     n, _, stats, _ = cv2.connectedComponentsWithStats(sub, connectivity=8)
     boxes = [stats[i] for i in range(1, n)
              if max(5, 0.2 * top_gap) <= stats[i][3] <= NUMBER_DIGIT_GAPS * top_gap and stats[i][2] <= 1.4 * top_gap
@@ -552,12 +585,13 @@ def number_crop(g: np.ndarray, marks: np.ndarray, top: float, top_gap: float, ba
                 break
         else:
             groups.append([b])
-    rel = bar_x - x0
+    refs = [bar_x - x0] + ([opening_x - x0] if opening_x is not None else [])
 
     def dist(gr):
         left = gr[0][0]
         right = gr[-1][0] + gr[-1][2]
-        return 0 if left - 0.6 * top_gap <= rel <= right + 0.6 * top_gap else min(abs(left - rel), abs(right - rel))
+        return min(0 if left - 0.6 * top_gap <= rel <= right + 0.6 * top_gap else min(abs(left - rel), abs(right - rel))
+                   for rel in refs)
 
     # A measure number has at most three digits; a longer group is a word such as "let ring" printed nearby. A group
     # starting at the panel's top row is cut off
@@ -1075,7 +1109,10 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
                 continue
             top = (ps.system.notation or st).top
             top_gap = (ps.system.notation or st).gap
-            crop = number_crop(sub, marks, top, top_gap, a, ry0)
+            bar_end = next((q for p, q in ps.bars if a in (p, q)), None)
+            opening = (time_signature_end(dark, ps.system.notation, bar_end)
+                       if ps.system.notation is not None and bar_end is not None else None)
+            crop = number_crop(sub, marks, top, top_gap, a, ry0, opening)
             complete = kind == "full" or (kind == "lead" and starts_inside) or (kind == "tail" and ends_inside)
             cell = Cell(vi, si, len(ps.cells), a, b, kind, box_ink, box_faint, ps.y0, crop,
                         gap=st.gap, ref_y=int(round(st.top)) - ps.y0, mid_y=(st.top + st.bottom) / 2,

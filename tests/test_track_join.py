@@ -667,6 +667,19 @@ def test_a_run_is_not_matched_by_a_cut_or_highlighted_sighting_of_a_slot_seen_wh
     assert find_run(slots_of(p), [new], 10.0, 3, sightings=sightings) is None
 
 
+def test_a_runs_cut_last_cell_after_two_matched_cells_may_match_a_highlighted_sighting():
+    # Bars 1-4 with bar 4 cut to its first 120 px, then bar 4 whole but under the highlight. A later page shows bars
+    # 2-4 with bar 4 cut to its first 160 px: only the highlighted sighting shows that much of bar 4
+    p, w, o = band_view(0, 1), band_view(1, 4), band_view(2, 2)
+    p.cells[3] = piece(p.cells[3], "tail", 0, 120)
+    w.cells[0] = replace(w.cells[0], tint=np.ones_like(w.cells[0].ink))
+    sightings = {3: [(0, p.cells[3]), (1, w.cells[0])]}
+    cut = piece(o.cells[2], "tail", 0, 160)
+    assert find_run(slots_of(p), [o.cells[0], o.cells[1], cut], 10.0, 2, sightings=sightings) == 1
+    # After one whole cell the cut one is held to the first sighting
+    assert find_run(slots_of(p), [o.cells[1], cut], 10.0, 2, sightings=sightings) is None
+
+
 def test_a_run_matched_only_by_a_cut_sighting_prints_as_new_in_both_readings_with_a_notice():
     # Bars 1-4 whole, then bar 4 cut to its last 40 px by the page edge. A later page shows bar 3 and a measure that
     # ends like bar 4 but differs from its whole sighting: only the cut piece matches it
@@ -1156,6 +1169,18 @@ def test_a_playhead_that_carries_on_gives_way_to_a_slide_drawn_back():
                  Move("slide", shifts=[-1200, 400], drawn=[True, True], steps=5)):
         o.move = move
         assert choose_shift(p, o, [(398, 0.0)], 0.5, {"playhead"}, 10.0) == (398, "playhead", True)
+
+
+def test_a_playhead_unseen_between_two_views_may_have_moved_on_a_measure_per_beat():
+    # Cells 200 px wide; the playhead is last seen at 9.5 s and next at 10.1 s, 0.6 s unseen. At the 398 px shift it
+    # carries on 418 px, past 1.5 measures (300 px)
+    p, o = slid(400, False, p_end=700, o_start=720)
+    assert choose_shift(p, o, [(398, 0.0)], 0.5, {"playhead"}, 10.0) == (None, "playhead", True)
+    # 0.6 measures unseen allow 2.1 measures (420 px); 0.5 allow 2.0 (400 px)
+    assert choose_shift(p, o, [(398, 0.0)], 0.5, {"playhead"}, 10.0, beat=1.0) == (398, "playhead", True)
+    assert choose_shift(p, o, [(398, 0.0)], 0.5, {"playhead"}, 10.0, beat=1.2) == (None, "playhead", True)
+    # 2 measures unseen allow the shift, but only that time allows it, so it is left unsettled
+    assert choose_shift(p, o, [(398, 0.0)], 0.5, {"playhead"}, 10.0, beat=0.3) == (398, "playhead", False)
 
 
 def test_a_playhead_pick_in_a_scrolling_segment_gives_way_to_a_slide_drawn_back():

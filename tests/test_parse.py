@@ -263,6 +263,50 @@ def test_a_digit_touching_a_thick_barline_is_cropped_without_it():
     assert crop is not None and crop.shape == (13 + 2 * 2, 7 + 2 * 2)
 
 
+def signature_staff(x0: int, x1: int, y0: int = 100, y1: int = 157) -> np.ndarray:
+    """Dark pixels of a five-line staff, lines at rows 100-156 (gap 14), with a barline at columns 200-201 and a
+    solid mark at rows y0..y1, columns x0..x1."""
+    dark = np.zeros((200, 400), bool)
+    for y in (100, 114, 128, 142, 156):
+        dark[y, :] = True
+    dark[100:157, 200:202] = True
+    dark[y0:y1, x0:x1] = True
+    return dark
+
+
+def test_a_time_signature_is_a_solid_mark_from_the_top_line_to_the_bottom_line_just_past_the_barline():
+    from youtabber.parse import time_signature_end
+    staff = Staff([100.0, 114.0, 128.0, 142.0, 156.0], 0, 400, 14.0, "dark")
+    assert time_signature_end(signature_staff(210, 226), staff, 201) == 226
+    # TIME_SIG_START 1.0 lets it start up to 14 columns past the barline's last column
+    assert time_signature_end(signature_staff(216, 230), staff, 201) == 230
+    assert time_signature_end(signature_staff(217, 231), staff, 201) is None
+    # A stem running 4 rows above the top line ends past TIME_SIG_ENDS 0.25 line gaps (3.5 rows); 3 rows don't
+    assert time_signature_end(signature_staff(210, 226, y0=96), staff, 201) is None
+    assert time_signature_end(signature_staff(210, 226, y0=97), staff, 201) == 226
+    # TIME_SIG_WIDTH starts at 0.8 line gaps (11.2 columns)
+    assert time_signature_end(signature_staff(210, 222), staff, 201) == 222
+    assert time_signature_end(signature_staff(210, 221), staff, 201) is None
+    # A note head just under the top line, its stem down to the bottom line, fills too little of its box
+    note = signature_staff(224, 226)
+    note[100:112, 210:226] = True
+    assert time_signature_end(note, staff, 201) is None
+
+
+def test_a_number_printed_past_a_time_signature_is_cropped_without_the_signature():
+    from youtabber.parse import number_crop
+    # The barline at x 200, a time signature at columns 210-225 from the top line down, and a digit at columns
+    # 230-236 above it, 30 columns past the barline: within 2.5 line gaps of the signature only. Without the
+    # signature's place, the top of the signature is taken for the number
+    g = np.full((200, 400), 255, np.uint8)
+    g[100:170, 200:202] = 0
+    g[100:157, 210:226] = 0
+    g[86:96, 230:237] = 0
+    assert number_crop(g, g < 128, top=100.0, top_gap=14.0, bar_x=200).shape == (5 + 2 * 2, 16 + 2 * 2)
+    crop = number_crop(g, g < 128, top=100.0, top_gap=14.0, bar_x=200, opening_x=226)
+    assert crop is not None and crop.shape == (10 + 2 * 2, 7 + 2 * 2)
+
+
 def test_a_number_starting_one_row_below_the_panel_top_is_cropped():
     from youtabber.parse import number_crop
     g = np.full((200, 400), 255, np.uint8)
