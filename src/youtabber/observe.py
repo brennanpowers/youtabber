@@ -16,6 +16,15 @@ MIN_VIEW_SECONDS = 1.2
 EDGE_VIEW_SECONDS = 0.5
 # A new picture must hold for this many frames to end the view
 SETTLE_FRAMES = 2
+# A frame whose paper is more than this many gray levels darker than the segment's paper is fading out. It is
+# brightened back to the segment's paper before it is compared, so ink keeps reading as ink
+DIM_PAPER_DROP = 35
+# A frame whose paper in the staffs' box is less than this many gray levels lighter than its darkest ink shows no
+# page, as a black or blank frame does
+PAGE_CONTRAST = 16
+# Nor does a frame whose paper is lighter than its darkest ink by less than this share of the segment's paper: a fade
+# has washed it out, so its ink is no guide to the ink threshold, and brightening it only scales up noise
+PAGE_CONTRAST_SHARE = 0.2
 # Frames kept per view for the median; more adds time, not quality
 MAX_PLATE_FRAMES = 48
 # Frames whose pictures a view keeps (64 s at 6 fps); past this, pictures are thinned so a page held for minutes
@@ -159,6 +168,18 @@ def clear_footage(stack: np.ndarray, plate: np.ndarray, polarity: str, thr: floa
     out = plate.copy()
     out[ys[keep], xs[keep]] = stack[frame[keep], ys[keep], xs[keep]]
     return out
+
+
+def paper_in(gray: np.ndarray, seed: tuple[int, int, int, int]) -> float:
+    """Gray level of the paper in the staffs' box: most of the box is paper, so it is a light percentile. Every
+    fourth row and column is enough to find it."""
+    return float(np.percentile(gray[max(0, seed[1]):seed[3]:4, max(0, seed[0]):seed[2]:4], 85))
+
+
+def ink_in(gray: np.ndarray, seed: tuple[int, int, int, int]) -> float:
+    """Gray level of the darkest ink in the staffs' box. Every fourth column is enough, as staff lines run across
+    the columns."""
+    return float(np.percentile(gray[max(0, seed[1]):seed[3], max(0, seed[0]):seed[2]:4], 0.5))
 
 
 def ink_threshold(gray: np.ndarray, paper_bgr: np.ndarray, polarity: str) -> tuple[float, float]:
@@ -556,6 +577,7 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
     # last screen, even if a fade or a cut to black after it closed a chunk of its own
     tail: list = []
     numbered: list[bool] = []  # whether each reference judged so far prints measure numbers
+    paper_level = float(to_gray(np.asarray(paper, dtype=np.uint8)[None, None], polarity)[0, 0])
 
     def plates_of(chunk, clear: bool = True) -> tuple[np.ndarray, np.ndarray]:
         """(median, plate) of the chunk's frames: the plate is the median with footage behind the panel washed out.
@@ -657,8 +679,11 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
             return
         first = not views and cur[0][0] <= t_start + EDGE_VIEW_SECONDS
         seconds = held_for(cur)
-        if seconds < (EDGE_VIEW_SECONDS if first or last else MIN_VIEW_SECONDS):
-            if seconds >= EDGE_VIEW_SECONDS and not tail:
+        # A fading page can hold still for a moment on its way to black, so a view of fading frames is never a brief
+        # screen
+        edge = (first or last) and not ref["dim"]
+        if seconds < (EDGE_VIEW_SECONDS if edge else MIN_VIEW_SECONDS):
+            if seconds >= EDGE_VIEW_SECONDS and not tail and not ref["dim"]:
                 tail[:] = cur
             return
         tail.clear()
@@ -696,34 +721,46 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         mask[top:bottom, x0 + 2:x1 - 2] = True
         return mask
 
-    def start(t, f, g, rect, seed):
-        """A new reference frame."""
-        ink = ink_map(g, thr, gap)
-        return {"t": t, "frame": f, "rect": rect, "seed": seed, "ink": ink & area(rect, seed, ink.shape),
-                "tint": tinted(f)}
+    def start(t, f, g, lit, rect, seed, dim=False):
+        """A new reference frame, with the ink of its gray and of its brightened gray `lit`; `dim` says the frame
+        was fading."""
+        mask = area(rect, seed, g.shape)
+        return {"t": t, "frame": f, "rect": rect, "seed": seed, "ink": ink_map(g, thr, gap) & mask,
+                "lit": ink_map(lit, thr, gap) & mask if dim else None, "tint": tinted(f), "dim": dim}
 
-    def compare(r, f, g, rect):
-        """(changed, frame) for a frame against reference r."""
+    def compare(r, f, g, rect, key: str = "ink"):
+        """(changed, frame) for a frame against reference r, compared with r's ink map `key` ("ink", or "lit" for its
+        brightened gray)."""
         ink = ink_map(g, thr, gap)
         mask = area(r["rect"], r["seed"], ink.shape)
         tint = r["tint"] | tinted(f)
-        if not tinted_paper(tint, mask, r["ink"]):
+        if not tinted_paper(tint, mask, r[key]):
             mask &= ~tint
         # Two pixels of slack: a cursor passing over a note changes its soft edge
-        changed = significant_change(r["ink"] & mask, ink & mask, gap, radius=2)
-        if not changed and prints_numbers is not None and numbers_differ(r, f, ink, mask, tint):
+        changed = significant_change(r[key] & mask, ink & mask, gap, radius=2)
+        if not changed and prints_numbers is not None and numbers_differ(r, f, ink, mask, tint, key):
             changed = shows_numbers(r)
         return changed, f
 
-    def numbers_differ(r, f, ink, mask, tint) -> bool:
+    def differs(r, f, g, lit, rect, dim) -> tuple[bool, bool]:
+        """(changed, by brightening) for a frame against reference r: when either was fading, they match if their
+        grays or their brightened grays match; the second value says only the brightened grays did."""
+        if not compare(r, f, g, rect)[0]:
+            return False, False
+        if not dim and not r["dim"]:
+            return True, False
+        brightened = not compare(r, f, lit, rect, "lit" if r["dim"] else "ink")[0]
+        return not brightened, brightened
+
+    def numbers_differ(r, f, ink, mask, tint, key: str = "ink") -> bool:
         """Whether the row of measure numbers changed between reference r and frame f. Ink in either frame, with a
         pixel of its soft edge, is left out, as solid marks above the staff shift by a pixel and change color under a
         highlight; colored and faint numbers are told apart that way. Dark ink with no ink within a pixel of it in
         the other frame is compared too, so a dark number that changes in place is seen; colored marks such as a
         moving line cursor are left out of that."""
         k = np.ones((3, 3), np.uint8)
-        union = cv2.dilate(((r["ink"] | ink) & mask).astype(np.uint8), k).astype(bool)
-        lone = cv2.dilate(unmatched(r["ink"] & mask, ink & mask), k).astype(bool) & ~tint
+        union = cv2.dilate(((r[key] | ink) & mask).astype(np.uint8), k).astype(bool)
+        lone = cv2.dilate(unmatched(r[key] & mask, ink & mask), k).astype(bool) & ~tint
         return (number_changed(r["frame"], f, r["rect"], r["seed"], gap, union, tint)
                 or number_changed(r["frame"], f, r["rect"], r["seed"], gap, tint=tint, keep=lone))
 
@@ -746,22 +783,36 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
             stride, points = 1, {}
             continue
         g = to_gray(f, polarity)
+        level = paper_in(g, seed)
+        # A fade to black scales every pixel down by one factor; scaling the gray up by the segment's paper over this
+        # frame's paper shows the page as it was. A fade-out comes after a page has been shown, so the frames before
+        # the first view are left as they are
+        dim = bool(views) and polarity == "dark" and level < paper_level - DIM_PAPER_DROP
+        # A frame showing no page, such as a black frame, is skipped: it is never the page later frames are compared
+        # with, and brightening it would only scale up noise
+        if (ref is None or dim) and level - ink_in(g, seed) < max(PAGE_CONTRAST, PAGE_CONTRAST_SHARE * paper_level):
+            continue
+        # The ink threshold is read from the first frame that shows a page, as a black frame's darkest pixels are no ink
         if thr is None:
             thr, fthr = ink_threshold(g[max(0, seed[1]):seed[3], max(0, seed[0]):seed[2]], paper, polarity)
+        lit = cv2.convertScaleAbs(g, alpha=paper_level / level) if dim else g
         rect = within(panel_rect(f, paper, seed, gap, polarity=polarity), bound_at(t) if bound_at is not None else None,
                       (seed[1], seed[3]))
         if ref is None:
-            ref = start(t, f, g, rect, seed)
+            ref = start(t, f, g, lit, rect, seed, dim)
             cur, stride, points = [(t, f, rect, seed)], 1, {}
             continue
-        changed, _ = compare(ref, f, g, rect)
+        changed, brightened = differs(ref, f, g, lit, rect, dim)
+        if brightened and not ref["dim"]:
+            # The bright page fading: brightened, it is the same page, but its darker picture would dim the plate
+            continue
         if not changed:
             # Frames held while a possible change was checked were blips (a cursor crossing a beam)
             for c in held + [(t, f, rect, seed)]:
                 add(c)
             held, cand = [], None
             continue
-        if cand is not None and not compare(cand, f, g, rect)[0]:
+        if cand is not None and not differs(cand, f, g, lit, rect, dim)[0]:
             held.append((t, f, rect, seed))
             if len(held) >= SETTLE_FRAMES:
                 # The new picture held steady: the view ended where it began
@@ -770,7 +821,7 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
                 held, cand = [], None
             continue
         # Changed from the view, and not yet steady: the start of a possible new view
-        cand = start(t, f, g, rect, seed)
+        cand = start(t, f, g, lit, rect, seed, dim)
         held = [(t, f, rect, seed)]
     close(last=True)
     if tail and last_screen:

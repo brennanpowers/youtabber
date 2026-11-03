@@ -650,3 +650,129 @@ def test_without_a_numbers_check_the_number_row_is_not_compared(monkeypatch):
     observe.set_paper(PAPER)
     views = observe.views_in(None, (0, 0, 1280, 270), "dark", 18.0, PAPER, lambda t: STAFFS, 0.0, 10.0)[0]
     assert [round(v.t0, 2) for v in views] == [0.0]
+
+
+def blotches(i: int, shape: tuple) -> np.ndarray:
+    """Paper texture in blobs about 16 pixels across, different in every frame, at one gray level of spread."""
+    small = np.random.default_rng(i).normal(0, 1, (shape[0] // 16 + 1, shape[1] // 16 + 1))
+    return cv2.resize(small, (shape[1], shape[0]), interpolation=cv2.INTER_CUBIC)[:, :, None]
+
+
+def dimmed_frames(pages: list[tuple[np.ndarray, int]]):
+    """A fake `frames` showing each (page, paper level) in turn: the page scaled to that level, with textured paper."""
+    def frames(path, fps, crop=None, start=0.0, length=None):
+        for i, (page, level) in enumerate(pages):
+            f = page.astype(np.float32) * level / 255 + 8 * blotches(i, page.shape)
+            yield i / fps, np.clip(f, 0, 255).astype(np.uint8)
+    return frames
+
+
+def test_a_page_shown_during_a_fade_out_is_compared_at_the_paper_s_brightness(monkeypatch):
+    # The third page comes in with its paper near the ink threshold and keeps darkening
+    second = draw_measures(Song(notation=False, measures=8), 4, 4, 1280)
+    pages = [(PAGE, 255)] * 12 + [(second, 255)] * 12 + [(PAGE, 145 - 2 * k) for k in range(12)]
+    monkeypatch.setattr(observe, "frames", dimmed_frames(pages))
+    observe.set_paper(PAPER)
+
+    def spans():
+        views = observe.views_in(None, (0, 0, 1280, 270), "dark", 18.0, PAPER, lambda t: STAFFS, 0.0, 6.0,
+                                 thresholds=(140.0, 230.0))[0]
+        return [(round(v.t0, 2), round(v.t1, 2)) for v in views]
+    assert spans() == [(0.0, 2.0), (2.0, 4.0), (4.0, 6.0)]
+    monkeypatch.setattr(observe, "DIM_PAPER_DROP", 255)
+    assert spans() == [(0.0, 2.0), (2.0, 4.0)]
+
+
+def test_dim_frames_before_the_first_view_are_not_brightened(monkeypatch):
+    # A fade-in: the first page shows dim for a second before it is shown in full
+    second = draw_measures(Song(notation=False, measures=8), 4, 4, 1280)
+    pages = [(PAGE, 145)] * 6 + [(PAGE, 255)] * 12 + [(second, 255)] * 12
+    monkeypatch.setattr(observe, "frames", dimmed_frames(pages))
+    observe.set_paper(PAPER)
+    views = observe.views_in(None, (0, 0, 1280, 270), "dark", 18.0, PAPER, lambda t: STAFFS, 0.0, 5.0,
+                             thresholds=(140.0, 230.0))[0]
+    assert [(round(v.t0, 2), round(v.t1, 2)) for v in views] == [(1.0, 3.0), (3.0, 5.0)]
+
+
+def test_fading_frames_of_a_page_shown_bright_make_no_view_of_their_own(monkeypatch):
+    # The second page darkens from paper level 200: brightened, its frames match the page, so they are no new page
+    second = draw_measures(Song(notation=False, measures=8), 4, 4, 1280)
+    pages = [(PAGE, 255)] * 12 + [(second, 255)] * 6 + [(second, 200 - 8 * k) for k in range(8)]
+    monkeypatch.setattr(observe, "frames", dimmed_frames(pages))
+    observe.set_paper(PAPER)
+    views = observe.views_in(None, (0, 0, 1280, 270), "dark", 18.0, PAPER, lambda t: STAFFS, 0.0, 26 / 6,
+                             thresholds=(140.0, 230.0))[0]
+    assert [(round(v.t0, 2), round(v.t1, 2)) for v in views] == [(0.0, 2.0), (2.0, 3.83)]
+
+
+def test_a_fade_to_black_that_holds_briefly_is_no_screen(monkeypatch):
+    # The last page fades to near black, where three frames of noise hold still for half a second
+    second = draw_measures(Song(notation=False, measures=8), 4, 4, 1280)
+    black = np.zeros_like(PAGE)
+    pages = [(PAGE, 255)] * 12 + [(second, 255)] * 12 + [(black, 255)] * 3
+    monkeypatch.setattr(observe, "frames", dimmed_frames(pages))
+    observe.set_paper(PAPER)
+    views = observe.views_in(None, (0, 0, 1280, 270), "dark", 18.0, PAPER, lambda t: STAFFS, 0.0, 27 / 6,
+                             thresholds=(140.0, 230.0), last_screen=True)[0]
+    assert [(round(v.t0, 2), round(v.t1, 2)) for v in views] == [(0.0, 2.0), (2.0, 4.0)]
+
+
+def test_a_page_faded_to_near_black_and_held_still_is_no_view(monkeypatch):
+    # The last page fades to a paper level of 30 and holds for two seconds: brightened that far, it is noise
+    second = draw_measures(Song(notation=False, measures=8), 4, 4, 1280)
+    pages = [(PAGE, 255)] * 12 + [(second, 255)] * 12 + [(PAGE, 30)] * 12
+    monkeypatch.setattr(observe, "frames", dimmed_frames(pages))
+    observe.set_paper(PAPER)
+    views = observe.views_in(None, (0, 0, 1280, 270), "dark", 18.0, PAPER, lambda t: STAFFS, 0.0, 6.0,
+                             thresholds=(140.0, 230.0), last_screen=True)[0]
+    assert [(round(v.t0, 2), round(v.t1, 2)) for v in views] == [(0.0, 2.0), (2.0, 4.0)]
+
+
+def test_a_page_shown_briefly_while_fading_out_is_no_last_screen(monkeypatch):
+    # The last page comes in with its paper at 150 and holds for half a second
+    second = draw_measures(Song(notation=False, measures=8), 4, 4, 1280)
+    pages = [(PAGE, 255)] * 12 + [(second, 255)] * 12 + [(PAGE, 150)] * 3
+    monkeypatch.setattr(observe, "frames", dimmed_frames(pages))
+    observe.set_paper(PAPER)
+    views = observe.views_in(None, (0, 0, 1280, 270), "dark", 18.0, PAPER, lambda t: STAFFS, 0.0, 27 / 6,
+                             thresholds=(140.0, 230.0), last_screen=True)[0]
+    assert [(round(v.t0, 2), round(v.t1, 2)) for v in views] == [(0.0, 2.0), (2.0, 4.0)]
+
+
+def test_black_first_frames_are_not_a_screen(monkeypatch):
+    # Half a second of black opens the segment: it holds as long as a first screen may, but shows no page
+    second = draw_measures(Song(notation=False, measures=8), 4, 4, 1280)
+    shown = [np.zeros_like(PAGE)] * 3 + [PAGE] * 12 + [second] * 12
+
+    def frames(path, fps, crop=None, start=0.0, length=None):
+        for i, f in enumerate(shown):
+            yield i / fps, f.copy()
+    monkeypatch.setattr(observe, "frames", frames)
+    observe.set_paper(PAPER)
+    views = observe.views_in(None, (0, 0, 1280, 270), "dark", 18.0, PAPER, lambda t: STAFFS, 0.0, 27 / 6)[0]
+    assert [(round(v.t0, 2), round(v.t1, 2)) for v in views] == [(0.5, 2.5), (2.5, 4.5)]
+
+
+def test_the_ink_threshold_is_read_from_the_first_frame_that_shows_a_page(monkeypatch):
+    # Gray ink: read from the black frames, the threshold would sit at 0.55 of the way from black to the paper
+    gray = np.maximum(PAGE, 60)
+    shown = [np.zeros_like(PAGE)] * 3 + [gray] * 12
+
+    def frames(path, fps, crop=None, start=0.0, length=None):
+        for i, f in enumerate(shown):
+            yield i / fps, f.copy()
+    monkeypatch.setattr(observe, "frames", frames)
+    observe.set_paper(PAPER)
+    views, thr, fthr = observe.views_in(None, (0, 0, 1280, 270), "dark", 18.0, PAPER, lambda t: STAFFS, 0.0, 2.5)
+    assert (round(thr, 2), round(fthr, 2)) == (167.25, 235.5)
+    assert [(round(v.t0, 2), round(v.t1, 2)) for v in views] == [(0.5, 2.5)]
+
+
+def test_a_page_fading_in_from_near_black_sets_the_ink_threshold_once_it_is_bright(monkeypatch):
+    # The first three frames show the page at a paper level of 30: too dark to read ink from or to be a screen
+    gray = np.maximum(PAGE, 60)
+    monkeypatch.setattr(observe, "frames", dimmed_frames([(gray, 30)] * 3 + [(gray, 255)] * 12))
+    observe.set_paper(PAPER)
+    views, thr, fthr = observe.views_in(None, (0, 0, 1280, 270), "dark", 18.0, PAPER, lambda t: STAFFS, 0.0, 2.5)
+    assert (round(thr, 2), round(fthr, 2)) == (162.75, 234.5)
+    assert [(round(v.t0, 2), round(v.t1, 2)) for v in views] == [(0.5, 2.5)]
