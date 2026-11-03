@@ -8,7 +8,7 @@ from youtabber import ocr
 from youtabber.observe import (PRINT_ABOVE_GAPS, PRINT_BELOW_GAPS, PRINT_MARGIN_GAPS, colored, gray_pixels, ink_map,
                                to_gray)
 from youtabber.scan import NOTATION_FAR_GAPS, NOTATION_GAPS, System, line_columns, systems_in
-from youtabber.staff import without_border
+from youtabber.staff import thin_response, without_border
 
 # A barline covers at least this share of the rows between the tab staff's top and bottom lines
 BAR_COVER = 0.92
@@ -34,6 +34,17 @@ BAR_PAPER_RUN, BAR_PAPER_PX = 0.3, 3
 # BAR_WAVY_SWING, while its middle moves sideways by at least BAR_WAVY_MOVE line gaps, is a rolled-chord brace or a
 # column of parentheses
 BAR_WAVY_SWING, BAR_WAVY_MOVE = 1.41, 0.07
+# A barline stops at the staff's outer lines. A stroke inked over at least ARROW_HEAD of the rows ARROW_HEAD_ROWS line
+# gaps above the top line, over less than ARROW_ABOVE of the rows ARROW_ABOVE_ROWS gaps above it, and over at least
+# ARROW_TAIL of the rows ARROW_TAIL_ROWS gaps below the bottom line is a strum arrow: a head over the staff and a shaft
+# running on past it. A taller stroke above the staff is a bracket or a line through a staff above
+ARROW_HEAD, ARROW_HEAD_ROWS = 0.95, (0.2, 1.2)
+ARROW_ABOVE, ARROW_ABOVE_ROWS = 0.5, (1.2, 2.4)
+ARROW_TAIL, ARROW_TAIL_ROWS = 0.15, (0.3, 1.2)
+# ...and its head, gray ink only, runs at least ARROW_WIDE line gaps past the stroke on both sides in some head row.
+# Printed arrows are gray; a playhead or cursor over a barline is colored, and a panel edge or box side has ink on one
+# side only. Head rows are searched up to ARROW_REACH gaps either side of the stroke
+ARROW_WIDE, ARROW_REACH = 0.1, 2.0
 # A column whose ink under the tab staff has a median RGB spread (brightest channel less darkest) of at least this is
 # tinted there, as a see-through cursor running on below the staff tints what it covers
 BELOW_TINT_SPREAD = 12
@@ -48,6 +59,8 @@ EDGE_LINES_SHARE = 0.5
 DIGIT_GAPS = 1.6
 # Line groups spaced closer than this share of the view's widest-spaced tab staff are not tab staffs
 CLOSE_STAFF_SHARE = 0.6
+# A line within this many rows of the panel's top or bottom row counts as a line at the edge
+EDGE_REACH = 3
 
 
 # A notation staff's line spacing is within this share of the other notation staffs in the same view
@@ -238,6 +251,51 @@ def wavy_stroke(dark: np.ndarray, a: int, b: int, p: int, q: int, gap: float) ->
     return move >= BAR_WAVY_MOVE * gap and min(edge_swing(left, ys, gap), edge_swing(right, ys, gap)) >= BAR_WAVY_SWING
 
 
+def strum_arrow(dark: np.ndarray, a: int, b: int, p: int, q: int, gap: float, plate: np.ndarray | None = None) -> bool:
+    """True when the stroke in columns p..q, across the staff from row a to row b, is a strum arrow: its head fills
+    the rows just above the top line and is wider than the stroke, it ends there, and its shaft runs on below the
+    bottom line. The color `plate`, when given, leaves colored ink out of the head."""
+    def rows(r0: float, r1: float) -> tuple[int, int]:
+        return max(0, int(round(r0))), min(dark.shape[0], max(0, int(round(r1))))
+
+    def share(r0: float, r1: float) -> float:
+        r0, r1 = rows(r0, r1)
+        return float(dark[r0:r1, p:q + 1].mean()) if r1 > r0 else 0.0
+    if not (share(a - ARROW_ABOVE_ROWS[1] * gap, a - ARROW_ABOVE_ROWS[0] * gap) < ARROW_ABOVE
+            and share(b + ARROW_TAIL_ROWS[0] * gap, b + ARROW_TAIL_ROWS[1] * gap) >= ARROW_TAIL):
+        return False
+    h0, h1 = rows(a - ARROW_HEAD_ROWS[1] * gap, a - ARROW_HEAD_ROWS[0] * gap)
+    if h1 <= h0:
+        return False
+    fill, wide = arrow_head(dark, h0, h1, p, q, gap, plate)
+    return fill >= ARROW_HEAD and wide >= ARROW_WIDE
+
+
+def arrow_head(dark: np.ndarray, h0: int, h1: int, p: int, q: int, gap: float,
+               plate: np.ndarray | None) -> tuple[float, float]:
+    """(share of the pixels in rows h0..h1, columns p..q that are ink, and the farthest any of those rows' ink runs past
+    the stroke on both sides, in line gaps), counting gray ink only when the color `plate` is given."""
+    reach = int(round(ARROW_REACH * gap))
+    lo, hi = max(0, p - reach), min(dark.shape[1], q + 1 + reach)
+    ink = dark[h0:h1, lo:hi]
+    if plate is not None and plate.shape[:2] == dark.shape:
+        ink = ink & gray_pixels(plate[h0:h1, lo:hi])
+    fill = float(ink[:, p - lo:q + 1 - lo].mean())
+    widest = 0
+    for row in ink:
+        on = np.flatnonzero(row[p - lo:q + 1 - lo])
+        if not on.size:
+            continue
+        x0, x1 = p - lo + int(on[0]), p - lo + int(on[-1])
+        left, right = x0, x1
+        while left > 0 and row[left - 1]:
+            left -= 1
+        while right < row.size - 1 and row[right + 1]:
+            right += 1
+        widest = max(widest, min(x0 - left, right - x1))
+    return fill, widest / gap
+
+
 def tinted_below(plate: np.ndarray, below: np.ndarray, r0: int, r1: int, xs: np.ndarray) -> np.ndarray:
     """Which of columns `xs` have their ink in rows r0..r1 (`below`) tinted (BELOW_TINT_SPREAD)."""
     px = plate[r0:r1, xs].astype(np.int16)
@@ -320,7 +378,7 @@ def barlines(gray: np.ndarray, thr: float, fthr: float, tab_top: float, tab_bott
         return bars
     bars = [(p, q) for p, q in bars
             if longest_paper_run(dark, a, b, p, q) <= max(BAR_PAPER_RUN * gap, BAR_PAPER_PX)
-            and not wavy_stroke(dark, a, b, p, q, gap)]
+            and not wavy_stroke(dark, a, b, p, q, gap) and not strum_arrow(dark, a, b, p, q, gap, plate)]
     # A barline is a straight stroke with paper beside it; an arpeggio squiggle or a letter stroke has ink on
     # both sides. Beside a dark stroke, a column that is ink from a gap to half a gap above the staff and from half a
     # gap to a gap below it is the edge of a cursor or box drawn along the barline, and doesn't count
@@ -856,6 +914,15 @@ def joined_staffs(out: list, lone: list, struct: np.ndarray) -> tuple[list, list
     return out, lone
 
 
+def line_at_edge(g: np.ndarray, y: int, cols: slice) -> bool:
+    """True when the gray plate `g`, ink dark, shows a horizontal line within EDGE_REACH rows of row y in columns
+    `cols`: a row where thin strokes cover as many columns as find_staffs asks of a staff line."""
+    a, b = max(0, y - 2 * EDGE_REACH), min(g.shape[0], y + 2 * EDGE_REACH)
+    thin = cv2.dilate(thin_response(g[a:b, cols], "dark").astype(np.uint8), np.ones((3, 1), np.uint8))
+    counts = thin[max(a, y - EDGE_REACH) - a:min(b, y + EDGE_REACH) - a].sum(axis=1)
+    return bool(counts.size and counts.max() >= max(g.shape[1] // 8, 20))
+
+
 def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], polarity: str, thr: float, fthr: float,
                gap: float, print_rect: tuple[int, int, int, int] | None = None,
                hidden_bars: bool = False, whole_lines: bool = True,
@@ -872,7 +939,17 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
     # A staff with no rows inside the print area is not on the paper, such as the strings of a fretboard drawn
     # below it
     px0, py0, px1, py1 = print_rect or rect
-    syss = [s for s in pair_far_notation(systems_in(sub, whole_lines=whole_lines), notation_gaps)
+    # Painted paper next to a soft panel edge would make the edge a line, so unless the plate as it is shows a line at
+    # the panel's top or bottom, lines are found with the panel's edge row carried on past it
+    lined = sub.copy()
+    top, bottom = max(0, ry0), min(sub.shape[0], ry1)
+    cols = slice(max(0, rx0), rx1)
+    if top < bottom:
+        if top > 0 and not line_at_edge(g, top, cols):
+            lined[:top] = sub[top]
+        if bottom < g.shape[0] and not line_at_edge(g, bottom, cols):
+            lined[bottom:] = sub[bottom - 1]
+    syss = [s for s in pair_far_notation(systems_in(lined, whole_lines=whole_lines), notation_gaps)
             if s.top < py1 and s.tab.bottom > py0]
     # Past the panel the plate is painted paper, so a border at the panel's edge passes for a staff line there; the
     # plate as it is shows what lies past it

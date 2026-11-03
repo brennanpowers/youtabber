@@ -54,6 +54,34 @@ def test_a_panel_border_at_the_panel_edge_is_no_staff_line():
     assert len(xs) == 2 and abs(xs[0] - 100) <= 2 and abs(xs[1] - 400) <= 2
 
 
+def test_a_soft_panel_top_one_step_above_the_staff_is_no_seventh_line():
+    # Dark footage fades into the paper over eight rows; the panel starts partway down the fade, one line gap above
+    # a 6-line staff
+    img = np.full((300, 800, 3), 55, np.uint8)
+    for r, v in zip(range(18, 26), (177, 196, 210, 223, 234, 241, 245, 248)):
+        img[r] = v
+    img[26:] = 249
+    for i in range(6):
+        cv2.line(img, (20, 62 + i * 37), (780, 62 + i * 37), (60, 60, 60), 2)
+    for x in (100, 400, 700):
+        cv2.line(img, (x, 62), (x, 247), (0, 0, 0), 2)
+    systems = parse_view(0, img, (0, 21, 800, 300), "dark", 140.0, 229.0, 37.0)
+    assert [len(ps.system.tab.lines) for ps in systems] == [6]
+    xs = [c.x0 for ps in systems for c in ps.cells if c.kind == "full"]
+    assert len(xs) == 2 and abs(xs[0] - 100) <= 2 and abs(xs[1] - 400) <= 2
+
+
+def test_staff_lines_cut_by_the_panels_top_and_bottom_rows_are_kept():
+    # Lines five rows thick with paper between; the panel's top and bottom rows run through the outer lines
+    img = np.full((300, 800, 3), 238, np.uint8)
+    for i in range(4):
+        img[66 + i * 37:71 + i * 37, 20:780] = 189
+    for x in (100, 400, 700):
+        cv2.line(img, (x, 68), (x, 179), (0, 0, 0), 2)
+    systems = parse_view(0, img, (0, 67, 800, 179), "dark", 140.0, 229.0, 37.0)
+    assert [len(ps.system.tab.lines) for ps in systems] == [4]
+
+
 def staff_from(x_start: int, opening: bool) -> np.ndarray:
     """A tab staff starting at x_start with a fret digit in its first measure, barlines at 100, 400 and 700."""
     img = np.full((200, 800, 3), 255, np.uint8)
@@ -361,6 +389,75 @@ def test_a_stroke_leaving_paper_under_the_top_line_is_an_arrow_shaft(monkeypatch
     assert [p for p, _ in staff_bars(gray)] == [100]
     monkeypatch.setattr(parse, "BAR_PAPER_RUN", 1.0)
     assert [p for p, _ in staff_bars(gray)] == [100, 250]
+
+
+def test_a_stroke_with_a_head_over_the_staff_and_a_shaft_past_it_is_a_strum_arrow(monkeypatch):
+    gray = stroke_staff()
+    # An up arrow at x 250: its head over y 32-51, its shaft on to y 175, 0.75 gaps under the staff
+    for y in range(32, 52):
+        w = (y - 32) // 4
+        gray[y, 250 - w:252 + w] = 0
+    gray[52:176, 250:252] = 0
+    # A barline at x 300 under the left side of a box drawn from y 30 to 180, with its top edge running right
+    gray[30:181, 300:302] = 0
+    gray[30:32, 300:360] = 0
+    assert [p for p, _ in staff_bars(gray)] == [100, 300]
+    monkeypatch.setattr(parse, "ARROW_WIDE", 0.0)
+    assert [p for p, _ in staff_bars(gray)] == [100]
+    monkeypatch.setattr(parse, "ARROW_WIDE", 0.1)
+    monkeypatch.setattr(parse, "ARROW_TAIL", 0.9)
+    assert [p for p, _ in staff_bars(gray)] == [100, 250, 300]
+
+
+def test_a_strum_arrow_needs_its_head_rows_filled_and_little_ink_above_them(monkeypatch):
+    gray = stroke_staff()
+    # An up arrow at x 200 with rows 40-41 of its head blank, so its head fills 0.9 of the rows from y 36 to 56
+    for y in range(32, 52):
+        w = (y - 32) // 4
+        gray[y, 200 - w:202 + w] = 0
+    gray[40:42, 190:212] = 255
+    gray[52:176, 200:202] = 0
+    # An arrow at x 300 whose stroke runs on up to y 18, inking 0.75 of the rows from y 12 to 36
+    for y in range(32, 52):
+        w = (y - 32) // 4
+        gray[y, 300 - w:302 + w] = 0
+    gray[18:176, 300:302] = 0
+    assert [p for p, _ in staff_bars(gray)] == [100, 200, 300]
+    monkeypatch.setattr(parse, "ARROW_HEAD", 0.85)
+    assert [p for p, _ in staff_bars(gray)] == [100, 300]
+    monkeypatch.setattr(parse, "ARROW_ABOVE", 0.8)
+    assert [p for p, _ in staff_bars(gray)] == [100]
+
+
+def test_a_stroke_with_ink_off_one_side_above_the_staff_is_no_strum_arrow():
+    gray = stroke_staff()
+    # A box side over a barline at x 300 from y 30 to 175, with a line running right from it at y 45
+    gray[30:176, 300:302] = 0
+    gray[45:47, 300:360] = 0
+    assert [p for p, _ in staff_bars(gray)] == [100, 300]
+
+
+def test_a_colored_head_over_a_barline_is_no_strum_arrow():
+    gray = stroke_staff()
+    # A gray stroke at x 250 from y 52 to 175 under a red head over y 32-51, such as a playhead's marker
+    gray[52:176, 250:252] = 0
+    plate = np.repeat(gray[:, :, None], 3, axis=2)
+    for y in range(32, 52):
+        w = (y - 32) // 4
+        gray[y, 250 - w:252 + w] = 60
+        plate[y, 250 - w:252 + w] = (0, 0, 220)
+    assert [p for p, _ in staff_bars(gray)] == [100]
+    bars = parse.barlines(gray, 140.0, 229.0, 60.0, 160.0, 20.0, 20, 380, None, plate=plate)
+    assert [p for p, _ in bars] == [100, 250]
+
+
+def test_a_line_over_part_of_the_panel_width_is_a_line_at_its_edge():
+    g = np.full((300, 800), 238, np.uint8)
+    # A staff line over 40% of the width on the panel's top row, and a line over 10% on its bottom row
+    g[50:52, 0:320] = 60
+    g[250:252, 0:80] = 60
+    assert parse.line_at_edge(g, 50, slice(0, 800))
+    assert not parse.line_at_edge(g, 250, slice(0, 800))
 
 
 def test_a_faint_barline_broken_for_three_rows_at_a_small_line_gap_is_kept(monkeypatch):
