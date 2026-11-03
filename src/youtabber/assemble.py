@@ -163,6 +163,7 @@ class Obs:
     brief: bool = False                  # a first or last screen held under observe.MIN_VIEW_SECONDS
     faded: bool = False                  # a brief screen with the weak contrast of a fade
     fading_out: bool = False             # one of its part's last screens, read from its own darker paper
+    own_paper: bool = False              # read with thresholds set from its own darker paper
 
 
 @dataclass

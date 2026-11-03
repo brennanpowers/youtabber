@@ -1192,12 +1192,15 @@ def last_screen_notice(obs: list[Obs], last_seg: int, held: set[int], why: dict[
 def same_barlines(a: Obs, b: Obs) -> bool:
     """Whether at least FADED_BAR_SHARE of view b's barlines lie within FADED_BAR_GAPS line gaps of one of view a's.
     A fade adds false barlines and loses real ones, but a page that moved on has its barlines elsewhere. Only the
-    barlines inside each system count: its two ends stand at the panel's edges on every page."""
+    barlines inside each system count: its two ends stand at the panel's edges on every page. A system of one cell
+    has no barline inside it, so its ends count, as they are all there is to compare."""
     def bars(o: Obs) -> list[int]:
         xs: set[int] = set()
         for s in {c.system for c in o.all_cells}:
             cells = sorted((c for c in o.all_cells if c.system == s), key=lambda c: c.x0)
             xs |= {c.x0 for c in cells[1:]} | {c.x1 for c in cells[:-1]}
+            if len(cells) == 1:
+                xs |= {cells[0].x0, cells[0].x1}
         return sorted(xs)
     xa, xb = bars(a), bars(b)
     if not xa or not xb:
@@ -1463,9 +1466,9 @@ def placed_notation(cells: list[Cell]) -> list[Cell]:
 
 def read_spans(obs: list[Obs]) -> list[tuple[float, float]]:
     """(t0, t1) of the views that count as read: those where a staff was found, and glides, whose mosaic covers their
-    whole time. A last screen read from its own darker paper counts only when it kept cells as measures, as a fade
-    can leave staff lines with no notes to find."""
-    return [(o.t0, o.t1) for o in obs if (o.systems and (o.cells or not o.fading_out)) or o.mosaic is not None]
+    whole time. A screen read from its own darker paper counts only when it kept cells as measures, as a fade or a
+    dimming overlay can leave staff lines with no notes to find."""
+    return [(o.t0, o.t1) for o in obs if (o.systems and (o.cells or not o.own_paper)) or o.mosaic is not None]
 
 
 def kept_cells(cells: list[Cell], typical: float, playhead: list = ()) -> list[Cell]:
@@ -1715,21 +1718,21 @@ def plate_obs(v, seg: Segment, si: int, thr: float, fthr: float, index: int, col
     x0, y0, x1, y1 = v.rect
     fading_read = False
     level = paper_level(v, seg)
-    if level is not None:
-        # A screen shown briefly while the page fades, or one of the last screens as the video fades out, can have
-        # paper darker than the segment's faint-ink level, which would make all of it ink; it is read with
-        # thresholds set from its own paper. So is any screen whose paper is darker than the ink level, as when an
-        # overlay dims the page
-        if level < (fthr if v.brief or fading else thr):
-            own = paper_color(v)
-            if not v.brief:
-                # The panel found from the segment's paper shrinks to the staff rows as the paper darkens, so its
-                # rows are grown again from the screen's own paper. Its columns stay, as footage the color of the
-                # darker paper could widen them past the panel
-                _, y0, _, y1 = panel_rect(v.plate, own, v.rect, seg.gap, polarity=seg.polarity)
-                v = replace(v, rect=(x0, y0, x1, y1))
-                fading_read = True
-            thr, fthr = ink_threshold(to_gray(v.plate, seg.polarity)[y0:y1, x0:x1], own, seg.polarity)
+    # A screen shown briefly while the page fades, or one of the last screens as the video fades out, can have
+    # paper darker than the segment's faint-ink level, which would make all of it ink; it is read with thresholds
+    # set from its own paper. So is any screen whose paper is darker than the ink level, as when an overlay dims
+    # the page
+    own_paper = level is not None and level < (fthr if v.brief or fading else thr)
+    if own_paper:
+        own = paper_color(v)
+        if not v.brief:
+            # The panel found from the segment's paper shrinks to the staff rows as the paper darkens, so its rows
+            # are grown again from the screen's own paper. Its columns stay, as footage the color of the darker
+            # paper could widen them past the panel
+            _, y0, _, y1 = panel_rect(v.plate, own, v.rect, seg.gap, polarity=seg.polarity)
+            v = replace(v, rect=(x0, y0, x1, y1))
+            fading_read = True
+        thr, fthr = ink_threshold(to_gray(v.plate, seg.polarity)[y0:y1, x0:x1], own, seg.polarity)
     systems = parse_view(index, v.plate, v.rect, seg.polarity, thr, fthr, seg.gap, v.print_rect,
                          notation_gaps=notation_gaps)
     cells = [c for ps in systems for c in ps.cells]
@@ -1739,6 +1742,7 @@ def plate_obs(v, seg: Segment, si: int, thr: float, fthr: float, index: int, col
     # Only the part's last screens, darkening as the video fades out, count as fading out; a screen dimmed
     # earlier is judged like any other
     o.fading_out = fading and fading_read
+    o.own_paper = own_paper
     o.wrapped = v.wrapped
     o.frames = len(v.times)
     o.rect = v.rect

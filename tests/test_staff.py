@@ -1,9 +1,9 @@
 import cv2
 import numpy as np
 
-from youtabber.scan import systems_in
+from youtabber.scan import on_paper_of, systems_in
 from youtabber import staff
-from youtabber.staff import find_staffs, line_rows, split_rows
+from youtabber.staff import Staff, find_staffs, line_rows, split_rows
 
 
 def staff_image(dark: bool = True, notation: bool = False) -> np.ndarray:
@@ -48,6 +48,20 @@ def test_lines_over_footage_above_a_dark_tab_band_are_no_notation():
         systems = systems_in(img)
         assert len(systems) == 1 and len(systems[0].tab.lines) == 6
         assert (systems[0].notation is not None) == paired
+
+
+def test_notation_with_two_rows_crowded_by_beams_is_on_its_tabs_paper():
+    tab = Staff([200.0 + 14 * i for i in range(6)], 50, 750, 14.0, "dark")
+    notation = Staff([80.0 + 10 * i for i in range(5)], 50, 750, 10.0, "dark")
+
+    def paired(covered):
+        img = np.full((360, 800), 255, np.uint8)
+        # Beams over the two lowest gap rows: 400 of the row's 700 px, which is the one row excused, and `covered`
+        img[115, 50:450] = 60
+        img[105, 50:50 + covered] = 60
+        return on_paper_of(img, notation, tab)
+    assert paired(294)
+    assert not paired(336)
 
 
 def test_a_close_line_group_above_the_notation_does_not_steal_it():

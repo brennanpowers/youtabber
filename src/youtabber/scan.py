@@ -15,6 +15,9 @@ SCAN_FPS = 2
 PAPER_SHARE = 0.6
 # Paper pixels are within this many gray levels of the row's median
 PAPER_SPREAD = 22
+# A notation staff's gap rows are mostly the tab's paper; strings in footage are not. Beams and note heads can crowd
+# a row below this share, so one row is excused
+NOTATION_PAPER_SHARE = 0.55
 # Staffs in one segment keep their line spacing within this share
 GAP_DRIFT = 0.35
 # Frames without tab shorter than this don't end a segment (page turns, fades)
@@ -115,14 +118,14 @@ def paper_between_lines(gray: np.ndarray, st: Staff) -> bool:
 
 def on_paper_of(gray: np.ndarray, st: Staff, under: Staff) -> bool:
     """True when the rows midway between a staff's lines are mostly the paper seen between the lines of the staff
-    `under` it, as notation printed on its tab's sheet is: PAPER_SHARE of each row within PAPER_SPREAD gray levels of
-    that paper, with one row allowed to be crowded."""
+    `under` it, as notation printed on its tab's sheet is: NOTATION_PAPER_SHARE of each row within PAPER_SPREAD gray
+    levels of that paper, with one row allowed to be crowded."""
     paper = np.median([np.median(gray[int(round((a + b) / 2)), under.x0:under.x1])
                        for a, b in zip(under.lines, under.lines[1:])])
     good = 0
     for a, b in zip(st.lines, st.lines[1:]):
         row = gray[int(round((a + b) / 2)), st.x0:st.x1].astype(int)
-        good += row.size > 0 and np.mean(np.abs(row - paper) <= PAPER_SPREAD) >= PAPER_SHARE
+        good += row.size > 0 and np.mean(np.abs(row - paper) <= PAPER_SPREAD) >= NOTATION_PAPER_SHARE
     return good >= len(st.lines) - 1 - 1
 
 

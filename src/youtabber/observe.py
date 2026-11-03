@@ -690,10 +690,11 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         first = not views and cur[0][0] <= t_start + EDGE_VIEW_SECONDS
         seconds = held_for(cur)
         # A fading page can hold still for a moment on its way to black, so a view of fading frames is never a brief
+        # screen. It can still be the tail: a new page that turns in during the fade and ends the segment is its last
         # screen
         edge = (first or last) and not ref["dim"]
         if seconds < (EDGE_VIEW_SECONDS if edge else MIN_VIEW_SECONDS):
-            if seconds >= EDGE_VIEW_SECONDS and not tail and not ref["dim"]:
+            if seconds >= EDGE_VIEW_SECONDS and not tail:
                 tail[:] = cur
             return
         tail.clear()
@@ -793,6 +794,10 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
             stride, points = 1, {}
             continue
         g = to_gray(f, polarity)
+        # At a segment's edge the scan's staffs nearest t can be the next segment's, outside this crop: such a frame
+        # shows none of the crop's staffs and is skipped
+        if g[max(0, seed[1]):seed[3], max(0, seed[0]):seed[2]].size == 0:
+            continue
         level = paper_in(g, seed)
         # A fade to black scales every pixel down by one factor; scaling the gray up by the segment's paper over this
         # frame's paper shows the page as it was. A fade-out comes after a page has been shown, so the frames before

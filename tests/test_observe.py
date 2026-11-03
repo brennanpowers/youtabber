@@ -741,7 +741,7 @@ def test_a_page_faded_to_near_black_and_held_still_is_no_view(monkeypatch):
     assert [(round(v.t0, 2), round(v.t1, 2)) for v in views] == [(0.0, 2.0), (2.0, 4.0)]
 
 
-def test_a_page_shown_briefly_while_fading_out_is_no_last_screen(monkeypatch):
+def test_a_page_shown_briefly_while_fading_out_is_the_brief_last_screen(monkeypatch):
     # The last page comes in with its paper at 150 and holds for half a second
     second = draw_measures(Song(notation=False, measures=8), 4, 4, 1280)
     pages = [(PAGE, 255)] * 12 + [(second, 255)] * 12 + [(PAGE, 150)] * 3
@@ -749,6 +749,22 @@ def test_a_page_shown_briefly_while_fading_out_is_no_last_screen(monkeypatch):
     observe.set_paper(PAPER)
     views = observe.views_in(None, (0, 0, 1280, 270), "dark", 18.0, PAPER, lambda t: STAFFS, 0.0, 27 / 6,
                              thresholds=(140.0, 230.0), last_screen=True)[0]
+    assert [(round(v.t0, 2), round(v.t1, 2)) for v in views] == [(0.0, 2.0), (2.0, 4.0), (4.0, 4.5)]
+    assert [v.brief for v in views] == [False, False, True]
+
+
+def test_frames_whose_staffs_lie_outside_the_crop_are_skipped(monkeypatch):
+    # The last half second's staffs are below the crop's 270 rows, as the next segment's staffs can be
+    second = draw_measures(Song(notation=False, measures=8), 4, 4, 1280)
+    shown = [PAGE] * 12 + [second] * 12 + [second] * 3
+
+    def frames(path, fps, crop=None, start=0.0, length=None):
+        for i, f in enumerate(shown):
+            yield i / fps, f.copy()
+    monkeypatch.setattr(observe, "frames", frames)
+    observe.set_paper(PAPER)
+    views = observe.views_in(None, (0, 0, 1280, 270), "dark", 18.0, PAPER,
+                             lambda t: STAFFS if t < 3.9 else (0, 300, 1280, 390), 0.0, 4.5)[0]
     assert [(round(v.t0, 2), round(v.t1, 2)) for v in views] == [(0.0, 2.0), (2.0, 4.0)]
 
 

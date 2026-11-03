@@ -189,6 +189,13 @@ def test_same_barlines_needs_a_fifth_of_the_inner_barlines_within_a_quarter_line
     assert same_barlines(page, two)
 
 
+def test_a_page_of_one_measure_per_system_fading_out_is_the_same_page():
+    # A system of one measure has no barline inside it, so its ends are compared
+    page = barred(0, [0, 400])
+    assert same_barlines(page, barred(1, [0, 400]))
+    assert not same_barlines(page, barred(1, [100, 300]))
+
+
 def test_a_faded_brief_last_screen_gives_none_when_it_shows_the_barlines_of_the_screen_before():
     before, last = barred(0, [0, 100, 200, 300, 400]), barred(1, [2, 101, 203, 298, 400], brief=True)
     last.faded = True
@@ -422,11 +429,11 @@ def test_a_screen_on_paper_darker_than_the_ink_level_is_read_from_its_own_paper_
     own = ink_threshold(to_gray(v.plate, "dark")[75:190], np.array([100.0, 100.0, 100.0]), "dark")
     o = pipeline.plate_obs(v, seg, 0, 128.0, 230.0, 0)
     assert used[-1][0] == o.rect == (0, 75, 640, 190) and used[-1][1:] == pytest.approx(own)
-    # Only the part's last screens are marked as fading out
-    assert not o.fading_out
+    # Read from its own paper, but only the part's last screens are marked as fading out
+    assert o.own_paper and not o.fading_out
     # Paper between the ink and faint-ink levels is read with the segment's thresholds
     o = pipeline.plate_obs(flat(2.0, 6.0, 140), seg, 0, 128.0, 230.0, 0)
-    assert used[-1] == ((0, 100, 640, 160), 128.0, 230.0) and not o.fading_out
+    assert used[-1] == ((0, 100, 640, 160), 128.0, 230.0) and not o.own_paper and not o.fading_out
 
 
 def contrasted(index, ink, line, brief=False):
@@ -482,6 +489,20 @@ def test_a_fading_last_screen_caught_in_the_fade_keeps_its_measures_when_its_bar
     # Over the barlines of the page before, it is that page fading; not read from its own paper, it is cleared
     assert last(True, 0) == (0, False)
     assert last(False, 100) == (0, False)
+
+
+def test_a_fading_last_screen_of_one_measure_on_the_barlines_of_the_page_before_is_cleared():
+    from youtabber.parts import Part
+    seg = Segment(0.0, 10.0, 10.0, "dark")
+    parts = [Part(0, 0, (0, 100), "page")]
+    obs = [timed(at(contrasted(k, 100.0, 40.0), [0, 400]), 2.0 * k, 2.0 * k + 2.0) for k in range(3)]
+    o = timed(at(contrasted(3, 50.0, 20.0), [0, 400]), 6.0, 9.0)
+    o.fading_out = True
+    for v in obs + [o]:
+        v.all_cells = v.all_cells[:1]
+        v.part = 0
+    mark_fades(obs + [o], parts, [seg], 0)
+    assert len(o.all_cells) == 0
 
 
 def test_a_brief_screen_left_with_no_measures_does_not_hide_a_break_before_a_restart():
@@ -634,17 +655,17 @@ def test_a_first_screen_cleared_under_a_card_gives_no_notice_for_its_long_hold(m
     assert [w["kind"] for w in check.dwell([first, page, after], out.assembly)] == ["few_measures"]
 
 
-def test_a_last_screen_read_from_its_own_paper_counts_as_read_only_when_it_kept_cells():
-    def last_screen(fading_out, cells):
+def test_a_screen_read_from_its_own_paper_counts_as_read_only_when_it_kept_cells():
+    def screen_on(own_paper, cells):
         o = timed(contrasted(3, 50.0, 20.0), 6.0, 9.0)
         o.systems = ["staff"]
-        o.fading_out = fading_out
+        o.own_paper = own_paper
         if not cells:
             o.cells = []
         return o
-    assert pipeline.read_spans([last_screen(True, True)]) == [(6.0, 9.0)]
+    assert pipeline.read_spans([screen_on(True, True)]) == [(6.0, 9.0)]
     # Cells parsed but none kept as measures, such as a lone blank tail, leave it unread
-    assert last_screen(True, False).all_cells
-    assert pipeline.read_spans([last_screen(True, False)]) == []
+    assert screen_on(True, False).all_cells
+    assert pipeline.read_spans([screen_on(True, False)]) == []
     # A screen read with the segment's paper counts once a staff is found on it
-    assert pipeline.read_spans([last_screen(False, False)]) == [(6.0, 9.0)]
+    assert pipeline.read_spans([screen_on(False, False)]) == [(6.0, 9.0)]
