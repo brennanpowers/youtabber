@@ -532,12 +532,14 @@ def pick_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float, 
     if "playhead" in use and tracked(p) and tracked(o):
         a, b = playhead_at(p, at_start=False), playhead_at(o, at_start=True)
         if a is not None and b is not None:
-            widths = [c.x1 - c.x0 for c in p.cells if c.kind == "full"] or [4 * gap]
-            width = float(np.median(widths))
+            # A page can be redrawn with wider measures after a jump, so the carry-on is counted in the typical
+            # measures of the wider of the two pages
+            width = max(float(np.median([c.x1 - c.x0 for c in v.cells if c.kind == "full"] or [4 * gap]))
+                        for v in (p, o))
             # While the playhead went unseen between the two views it moved on about one measure per `beat` seconds
             unseen = playhead_track(o)[0][0] - playhead_track(p)[-1][0]
             extra = max(0.0, unseen) / beat if beat else 0.0
-            reach = (1.5 + extra) * width
+            reach = (CARRY_MEASURES + extra) * width
             fits = [dx for dx, _ in shifts if -gap <= (b[0] + dx) - a[0] <= reach and abs(b[1] - a[1]) < 3 * gap]
             if len(fits) == 1:
                 if drawn_against(o, fits[0], gap):
@@ -545,7 +547,7 @@ def pick_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float, 
                     return None, "drawn_back", False
                 # Unseen for a measure or more, the playhead may have stopped or jumped, so a shift only that
                 # time allows is taken but left unsettled
-                return fits[0], "playhead", extra < 1.0 or (b[0] + fits[0]) - a[0] <= 1.5 * width
+                return fits[0], "playhead", extra < 1.0 or (b[0] + fits[0]) - a[0] <= CARRY_MEASURES * width
             if not fits:
                 return None, "playhead", True
     if usual is not None:
@@ -916,7 +918,14 @@ def track_join(p: Obs, o: Obs, gap: float, cands=()) -> tuple[dict[int, int], st
         # The same page, with the playhead starting over: played again, or a new page of the same riff
         o.restarted = True
         return None
-    return still_links(p, o), "still" if restart is not None else "still?"
+    links, basis = still_links(p, o), "still" if restart is not None else "still?"
+    d = o.start - p.start if o.start is not None and p.start is not None else None
+    if d:
+        # A page that jumped by whole periods of a riff looks held still, but its numbers moved on: each cell is the
+        # measure d cells on in p, if p shows it
+        links = {i: j + d for i, j in links.items() if 0 <= j + d < len(p.cells)}
+        basis += f" {d:+d}"
+    return links, basis
 
 
 def slide_join(p: Obs, o: Obs, gap: float, cands) -> tuple[dict[int, int], str] | None:
@@ -1339,7 +1348,7 @@ def place_views(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str]
                         resolved = playhead_at(prev, at_start=False) is None or playhead_at(o, at_start=True) is None
                     else:
                         # A band that held still with no playhead seen could also be a page flipped to the same riff
-                        resolved = tj[1] != "still?"
+                        resolved = "?" not in tj[1]
                     A.decisions.append(Decision(o.t0, "join", tj[1].replace("?", ""), [], "track", resolved))
                 elif not probed:
                     links = existing_join(prev, o, gap, shift_cache, scroll_share, usual, use, A, obs, beats.get(o.seg))

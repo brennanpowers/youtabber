@@ -91,6 +91,41 @@ def test_a_still_band_showing_other_music_is_not_joined():
     assert track_join(p, o, 10.0) is None
 
 
+def read_as(o: Obs, *reads) -> None:
+    for c, n in zip(o.cells, reads):
+        c.read = n
+
+
+def test_a_held_page_whose_voted_start_moved_on_joins_that_many_measures_on():
+    p, o = held(p_end=300, o_start=320)
+    p.start, o.start = 1, 3
+    assert track_join(p, o, 10.0) == ({0: 2, 1: 3}, "still +2")
+    # A page that moved on by all its measures shares none with the one before
+    o.start = 5
+    assert track_join(p, o, 10.0) == ({}, "still +4")
+    o.start = 1
+    assert track_join(p, o, 10.0) == ({0: 0, 1: 1, 2: 2, 3: 3}, "still")
+
+
+def test_a_held_page_joins_in_place_when_only_raw_reads_moved_on():
+    # Numbers read on cells of views with no voted start may be chord names or fret digits
+    p, o = held(p_end=300, o_start=320)
+    read_as(p, 1, 2, 3, 4)
+    read_as(o, 3, 4, 41, 6)
+    assert track_join(p, o, 10.0) == ({0: 0, 1: 1, 2: 2, 3: 3}, "still")
+    p.start, o.start = 1, 3
+    assert track_join(p, o, 10.0) == ({0: 2, 1: 3}, "still +2")
+
+
+def test_assembly_leaves_a_held_page_joined_by_its_moved_numbers_unresolved_with_no_playhead_seen():
+    p, o = held()
+    p.start, o.start = 1, 3
+    A = assemble([p, o], 10.0, False, {"playhead"}, lambda v: [])
+    assert A.view_slots[1][:2] == A.view_slots[0][2:]
+    joins = [d for d in A.decisions if d.kind == "join"]
+    assert [(d.chosen, d.resolved) for d in joins] == [("still +2", False)]
+
+
 def below_staff(o: Obs) -> Obs:
     """o with 30 rows of paper added below its staff, in both the cut and the whole map of its marks."""
     o.band = np.vstack([o.band, np.zeros((30, o.band.shape[1]), bool)])
@@ -341,6 +376,18 @@ def test_a_pick_among_several_playhead_fits_gives_way_to_a_slide_drawn_back():
 
 def test_a_playhead_that_rules_out_every_shift_settles_a_new_page():
     assert playhead_pick(50, 420.0) == (None, "playhead", True)
+
+
+def test_the_playhead_carries_on_in_the_measures_of_a_page_redrawn_wider():
+    # o draws its measures 400 px wide; the playhead goes from 700 in p to 750 in o under a 400 px shift: 450 px,
+    # over one and a half of p's measures but not of o's
+    p, o = slid(400, False, p_end=700, o_start=750)
+    x = 0
+    for k, c in enumerate(o.cells):
+        o.cells[k], x = replace(c, x0=x, x1=x + 400), x + 400
+    assert choose_shift(p, o, [(400, 0.0)], 0.9, {"playhead"}, 10.0) == (400, "playhead", True)
+    p, o = slid(400, False, p_end=700, o_start=750)
+    assert choose_shift(p, o, [(400, 0.0)], 0.9, {"playhead"}, 10.0) == (None, "playhead", True)
 
 
 def test_drawn_near_needs_a_shift_drawn_in_several_steps_within_reach():
