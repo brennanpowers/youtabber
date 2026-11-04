@@ -33,6 +33,43 @@ def staff_at(top: float) -> scan_module.System:
     return scan_module.System(scan_module.Staff([top + i * GAP for i in range(6)], 100, 1180, GAP, "dark"), None)
 
 
+def soft_hole(sharp_before: list[float], sharp_after: list[float], lines: int = 6, gap: float = GAP,
+              top: float = TOP) -> list[float]:
+    """Times of soft staffs at 2.0-3.0 s that soft_in_holes keeps, with sharp staffs at the given times. `lines`,
+    `gap` and `top` set only the sharp staffs after the hole; the others match the soft staffs."""
+    def at(reach: int, n: int = 6, g: float = GAP, y: float = TOP) -> list[scan_module.System]:
+        return [scan_module.System(scan_module.Staff([y + i * g for i in range(n)], 100, 1180, g, "dark",
+                                                     reach=reach), None)]
+    found = {t: at(3) for t in sharp_before}
+    found.update({t: at(3, lines, gap, top) for t in sharp_after})
+    found.update({t: at(4) for t in (2.0, 2.5, 3.0)})
+    kept = scan_module.soft_in_holes(found)
+    return [t for t in (2.0, 2.5, 3.0) if kept[t]]
+
+
+def test_a_soft_staff_is_kept_only_in_a_hole_between_sharp_sightings_of_its_layout():
+    assert soft_hole([1.0, 1.5], [3.5, 4.0]) == [2.0, 2.5, 3.0]
+    # At the start or the end of the tab
+    assert soft_hole([], [3.5, 4.0]) == []
+    assert soft_hole([1.0, 1.5], []) == []
+    # The staff after it has four lines, or a line spacing 15% wider
+    assert soft_hole([1.0, 1.5], [3.5, 4.0], lines=4) == []
+    assert soft_hole([1.0, 1.5], [3.5, 4.0], gap=GAP * 1.15) == []
+    # The staff after it lies below the soft staff's box
+    assert soft_hole([1.0, 1.5], [3.5, 4.0], top=TOP + 10 * GAP) == []
+    # The sharp staff before it lies 2 s before, past a stretch with no tab; 1.5 s before is still the same run
+    assert soft_hole([0.0], [3.5]) == []
+    assert soft_hole([0.5], [3.5]) == [2.0, 2.5, 3.0]
+
+
+def test_a_sharp_staff_beside_a_dropped_soft_staff_is_kept_as_it_was():
+    sharp = staff_at(TOP + 20 * GAP)
+    soft = scan_module.System(scan_module.Staff([TOP + i * GAP for i in range(6)], 100, 1180, GAP, "dark", reach=4),
+                              None)
+    kept = scan_module.soft_in_holes({1.0: [staff_at(TOP + 20 * GAP)], 2.0: [sharp, soft]})
+    assert len(kept[2.0]) == 1 and kept[2.0][0] is sharp
+
+
 def test_a_page_moving_steadily_up_is_a_vertical_scroll():
     # 20 px up every half second for 12 s, then held still for 5 s
     found = {k / 2: [staff_at(800 - 20 * k)] for k in range(24)}
@@ -214,3 +251,20 @@ def test_a_barline_drawn_through_two_stacked_staffs_is_no_divider():
     systems = [scan_module.System(scan_module.Staff([top + i * GAP for i in range(6)], 100, 1820, GAP, "dark"), None)
                for top in (upper, lower)]
     assert [s.panel for s in scan_module.split_panels(g, systems)] == [False, False]
+
+
+def test_short_staffs_use_only_the_usual_thin_line_test():
+    # A sharp staff, and under it a short one of lines blurred over nine rows down to 205 on paper at 230: only the
+    # thin-line test reaching four rows finds the short one
+    img = np.full((400, 800), 230, np.uint8)
+    for i in range(6):
+        cv2.line(img, (50, 60 + i * 14), (750, 60 + i * 14), 60, 1)
+    for i in range(6):
+        y = 250 + 14 * i
+        for k, v in enumerate([230, 222, 214, 208, 205, 208, 214, 222, 230]):
+            img[y - 4 + k, 50:200] = v
+    (long,) = scan_module.find_staffs(img)
+    rest = img.copy()
+    rest[46:145] = 230
+    assert [round(s.top) for s in scan_module.staffs_with(rest, 20, False, 4)] == [250]
+    assert scan_module.short_staffs(img, [long]) == []

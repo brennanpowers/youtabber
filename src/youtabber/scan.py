@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 
 from youtabber.observe import PRINT_ABOVE_GAPS
-from youtabber.staff import LINE_CONTRAST, Staff, find_staffs, line_rows, thin_response
+from youtabber.staff import LINE_CONTRAST, LINE_REACH, Staff, find_staffs, line_rows, staffs_with, thin_response
 from youtabber.video import frames
 
 SCAN_FPS = 2
@@ -46,6 +46,9 @@ NOTATION_FAR_GAPS = 12
 OPEN_ROW_SHARE = 0.5
 # A system spaced closer than this share of the frame's widest is a title bar or text lines, which don't set the theme
 THEME_GAP_SHARE = 0.4
+# A staff found only by the soft-line test is kept when the usual test finds a staff of the same layout before it and
+# after it, its line spacing within this share
+HOLE_GAP_SHARE = 0.1
 # A tab staff found again half a second later sits within this many pixels of where it was
 STEADY_PX = 2.5
 # A staff that moves up by more than STEADY_PX and at most this many line gaps between scanned frames is scrolling
@@ -145,7 +148,8 @@ def short_staffs(gray: np.ndarray, long: list[Staff]) -> list[Staff]:
     for o in long:
         rest[max(0, int(o.top - o.gap)):int(o.bottom + o.gap) + 1] = int(np.median(gray))
     out = []
-    for s in find_staffs(rest, max(w // 40, 20)):
+    # Only the usual thin-line test: this frame holds staffs, so the second pass for frames without one does not apply
+    for s in staffs_with(rest, max(w // 40, 20), False, LINE_REACH):
         if s.x1 - s.x0 >= w / 5 or s.x1 - s.x0 < SHORT_MIN_GAPS * s.gap:
             continue
         if any(o.top <= s.bottom + o.gap and s.top <= o.bottom + o.gap for o in long):
@@ -175,8 +179,8 @@ def broken_up(gray: np.ndarray, st: Staff) -> bool:
     """True when most of a staff's lines go missing together over two or more stretches DIAGRAM_BREAK_GAPS wide, or
     when they run on in short pieces, one per diagram, that end on the diagrams' outer strings: a strip of chord
     diagrams."""
-    a = max(0, int(st.top) - 3)
-    resp = thin_response(gray[a:int(st.bottom) + 4, st.x0:st.x1], st.polarity)
+    a = max(0, int(st.top) - st.reach)
+    resp = thin_response(gray[a:int(st.bottom) + st.reach + 1, st.x0:st.x1], st.polarity, st.reach)
     present = sum(resp[max(0, int(round(y)) - a - 1):int(round(y)) - a + 2].any(axis=0) for y in st.lines)
     missing = np.concatenate([[False], present < len(st.lines) / 2, [False]]).astype(np.int8)
     starts, ends = np.flatnonzero(np.diff(missing) == 1), np.flatnonzero(np.diff(missing) == -1)
@@ -205,8 +209,8 @@ def stroke_near(gray: np.ndarray, st: Staff, x: int) -> bool:
 
 def line_columns(gray: np.ndarray, st: Staff) -> np.ndarray:
     """Columns where at least half of the staff's lines are drawn in this frame."""
-    a = max(0, int(st.top) - 4)
-    resp = thin_response(gray[a:int(st.bottom) + 5], st.polarity)
+    a = max(0, int(st.top) - st.reach - 1)
+    resp = thin_response(gray[a:int(st.bottom) + st.reach + 2], st.polarity, st.reach)
     hits = sum(resp[max(0, int(round(y)) - a - 1):int(round(y)) - a + 2].any(axis=0) for y in st.lines)
     return hits >= 0.5 * len(st.lines)
 
@@ -268,10 +272,11 @@ def split_panels(gray: np.ndarray, systems: list["System"]) -> list["System"]:
             continue
         gap = s.tab.gap
         for lo, hi in ((s.tab.x0, int(x - gap / 2)), (int(x + gap / 2), s.tab.x1)):
-            tab = Staff(s.tab.lines, max(lo, s.tab.x0), min(hi, s.tab.x1), s.tab.gap, s.tab.polarity, s.tab.dashed)
+            tab = Staff(s.tab.lines, max(lo, s.tab.x0), min(hi, s.tab.x1), s.tab.gap, s.tab.polarity, s.tab.dashed,
+                        s.tab.reach)
             n = s.notation
             if n is not None:
-                n = Staff(n.lines, max(lo, n.x0), min(hi, n.x1), n.gap, n.polarity, n.dashed)
+                n = Staff(n.lines, max(lo, n.x0), min(hi, n.x1), n.gap, n.polarity, n.dashed, n.reach)
             out.append(System(tab, n, True, s))
     return out
 
@@ -349,6 +354,38 @@ def vertical_scrolls(found: dict[float, list[System]]) -> list[tuple[float, floa
     return [(a, b) for a, b in spans if b - a >= SCROLL_SECONDS]
 
 
+def soft_in_holes(found: dict[float, list[System]]) -> dict[float, list[System]]:
+    """`found` with each staff that only the soft-line test found dropped, unless the usual test finds a staff of the
+    same layout (line count, spacing, overlapping box) on a frame before it and on one after it, in the same run of
+    frames with tab. Faint lines fill a hole in the tab that way; at a run's start or end the soft test also takes
+    a staff sliding in or the fret lines of a chord chart left on screen."""
+    times = sorted(t for t in found if found[t])
+    run, k = {}, 0
+    for i, t in enumerate(times):
+        if i and t - times[i - 1] > BRIDGE_SECONDS:
+            k += 1
+        run[t] = k
+
+    def alike(a: Staff, b: Staff) -> bool:
+        return (len(a.lines) == len(b.lines) and abs(a.gap - b.gap) <= HOLE_GAP_SHARE * a.gap
+                and a.x0 < b.x1 and b.x0 < a.x1 and a.top <= b.bottom and b.top <= a.bottom)
+
+    def sharp_near(st: Staff, i: int, step: int) -> bool:
+        j = i + step
+        while 0 <= j < len(times) and run[times[j]] == run[times[i]]:
+            if any(o.tab.reach == LINE_REACH and alike(st, o.tab) for o in found[times[j]]):
+                return True
+            j += step
+        return False
+
+    out = dict(found)
+    for i, t in enumerate(times):
+        if any(s.tab.reach != LINE_REACH for s in found[t]):
+            out[t] = [s for s in found[t] if s.tab.reach == LINE_REACH
+                      or sharp_near(s.tab, i, -1) and sharp_near(s.tab, i, 1)]
+    return out
+
+
 def lines_of(syss: list[System]) -> int:
     """The number of lines of the widest-spaced tab staff among a frame's systems."""
     return len(max(syss, key=lambda s: s.tab.gap).tab.lines)
@@ -390,6 +427,7 @@ def scan(path: Path, width: int, height: int, region: tuple[int, int, int, int] 
             for a, b in zip(st.lines, st.lines[1:]):
                 row = f[int(round((a + b) / 2)), st.x0:st.x1]
                 papers.append((t, np.median(row, axis=0)))
+    found = soft_in_holes(found)
     scrolls = vertical_scrolls(found)
     # Tab holds still between page turns; guitar strings and other lines in the footage wobble.
     # Keep a system only if the frame before or after shows it in the same place.

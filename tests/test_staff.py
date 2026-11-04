@@ -399,3 +399,52 @@ def test_rows_that_cover_half_the_width_or_a_thin_group_are_not_re_centred(monke
     # Lines 24 px apart: the tied line's group is under half of that thick
     y, mean = third_line(tied_staff(24), monkeypatch)
     assert y == mean
+
+
+def soft_staff(sharp_top: bool = False, lines: int = 4) -> np.ndarray:
+    """Paper at 230 with `lines` lines 30 px apart from row 200, each blurred over nine rows down to 205 at its middle,
+    so the rows 3 away are only 17 levels lighter than it and the rows 4 away 25. With `sharp_top`, a sharp six-line
+    staff above."""
+    img = np.full((400, 800), 230, np.uint8)
+    profile = [230, 222, 214, 208, 205, 208, 214, 222, 230]
+    for i in range(lines):
+        y = 200 + 30 * i
+        for k, v in enumerate(profile):
+            img[y - 4 + k, 50:750] = v
+    if sharp_top:
+        for i in range(6):
+            cv2.line(img, (50, 40 + i * 14), (750, 40 + i * 14), 60, 1)
+    return img
+
+
+def test_a_soft_line_passes_the_thin_line_test_only_reaching_four_rows():
+    img = soft_staff()
+    assert not staff.thin_response(img, "dark")[200, 400]
+    assert staff.thin_response(img, "dark", 4)[200, 400]
+
+
+def test_a_staff_of_soft_lines_is_found_by_the_second_pass():
+    assert staff.staffs_with(soft_staff(), None, False, 3) == []
+    (st,) = find_staffs(soft_staff())
+    assert [round(y) for y in st.lines] == [200, 230, 260, 290]
+    assert st.reach == 4
+
+
+def test_a_six_line_staff_of_soft_lines_is_found_by_the_second_pass():
+    assert staff.staffs_with(soft_staff(lines=6), None, False, 3) == []
+    (st,) = find_staffs(soft_staff(lines=6))
+    assert [round(y) for y in st.lines] == [200, 230, 260, 290, 320, 350]
+    assert st.reach == 4
+
+
+def test_the_second_pass_runs_only_when_the_usual_test_finds_no_staff():
+    (sharp,) = find_staffs(soft_staff(sharp_top=True))
+    assert len(sharp.lines) == 6 and sharp.reach == 3
+
+
+def test_a_soft_staff_whose_lines_cover_too_little_of_its_width_is_no_staff():
+    # Each line drawn in two pieces at the ends of the 700 px width: the median line covers 2 x 130 px of 700
+    img = soft_staff()
+    img[:, 180:620] = 230
+    assert find_staffs(img) == []
+    assert len(staff.staffs_with(img, None, False, 4)) == 1

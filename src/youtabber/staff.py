@@ -6,6 +6,12 @@ import numpy as np
 
 # Lines must differ from the pixels just above and below them by this many gray levels
 LINE_CONTRAST = 18
+# The thin-line test compares a pixel with the rows 2 to LINE_REACH away. When it finds no staff, a second pass reaches
+# SOFT_REACH rows: a blurred line spreads over more rows, so it stands out only from rows farther away
+LINE_REACH, SOFT_REACH = 3, 4
+# ...and keeps a staff only when its lines cover, on the median, at least this share of the staff's width: staff lines
+# run across it, while the frets of a fretboard or the rows of a chart line up only in part of it
+SOFT_COVER = 0.4
 # A staff has 4 to 6 lines; banjo tab has 5, bass 4, guitar 6
 MIN_LINES, MAX_LINES = 4, 6
 # Gaps between neighboring lines of one staff agree within this share
@@ -52,6 +58,7 @@ class Staff:
     gap: float               # line spacing
     polarity: str            # "dark" lines on light paper, or "light" lines on dark paper
     dashed: bool = False     # lines typed as dashes (text tab), not drawn
+    reach: int = LINE_REACH  # rows away the thin-line test that found the lines compares them with
 
     @property
     def top(self) -> float:
@@ -62,8 +69,8 @@ class Staff:
         return self.lines[-1]
 
 
-def thin_response(gray: np.ndarray, polarity: str) -> np.ndarray:
-    """Pixels on a thin horizontal stroke: darker (or lighter) than both the pixels 2-3 rows above and below.
+def thin_response(gray: np.ndarray, polarity: str, reach: int = LINE_REACH) -> np.ndarray:
+    """Pixels on a thin horizontal stroke: darker (or lighter) than both the pixels 2 to `reach` rows above and below.
 
     Thick marks such as rhythm beams and solid boxes fail the test, so they can't pose as staff lines.
     """
@@ -71,7 +78,7 @@ def thin_response(gray: np.ndarray, polarity: str) -> np.ndarray:
     if polarity == "light":
         g = 255 - g
     best = np.zeros_like(g)
-    for k in (2, 3):
+    for k in range(2, reach + 1):
         up = np.zeros_like(g)
         down = np.zeros_like(g)
         up[k:] = g[:-k] - g[k:]
@@ -80,12 +87,13 @@ def thin_response(gray: np.ndarray, polarity: str) -> np.ndarray:
     return best > LINE_CONTRAST
 
 
-def line_rows(gray: np.ndarray, polarity: str, min_cover: int) -> list[tuple[float, int, int, int, int]]:
+def line_rows(gray: np.ndarray, polarity: str, min_cover: int,
+              reach: int = LINE_REACH) -> list[tuple[float, int, int, int, int]]:
     """Horizontal lines as (y, x0, x1, thickness, coverage): row groups where thin strokes cover at least `min_cover` columns.
 
     Coverage rather than run length, because fret digits cut tab lines into short pieces.
     """
-    resp = cv2.dilate(thin_response(gray, polarity).astype(np.uint8), np.ones((3, 1), np.uint8))
+    resp = cv2.dilate(thin_response(gray, polarity, reach).astype(np.uint8), np.ones((3, 1), np.uint8))
     counts = resp.sum(axis=1)
     rows = np.flatnonzero(counts >= min_cover)
     out = []
@@ -145,7 +153,8 @@ def in_step(lines: list, firm: list[bool], k: int) -> bool:
                              or (len(below) >= 2 and near(below[1] - below[0], d2)))
 
 
-def weak_end(gray: np.ndarray, polarity: str, lines: list, chain: list[int], end: int, strong: float) -> bool:
+def weak_end(gray: np.ndarray, polarity: str, lines: list, chain: list[int], end: int, strong: float,
+             reach: int = LINE_REACH) -> bool:
     """True when the chain's line at `end` (0 or -1) is a ledger line or beam row rather than a staff line hidden
     under digits: it covers less than WEAK_LINE of the typical line, and also covers less than HIDDEN_LINE, or
     doesn't span the median extent of the chain's other lines, or isn't missing just where digits cover it. A chain
@@ -159,10 +168,12 @@ def weak_end(gray: np.ndarray, polarity: str, lines: list, chain: list[int], end
     x0, x1 = int(np.median([v[1] for v in inner])), int(np.median([v[2] for v in inner]))
     across = ln[1] <= x0 + 0.05 * (x1 - x0) and ln[2] >= x1 - 0.05 * (x1 - x0)
     gap = abs(ln[0] - inner[0 if end == 0 else -1][0])
-    return ln[4] < HIDDEN_LINE * strong or not across or not under_digits(gray, polarity, ln[0], x0, x1, gap)
+    return (ln[4] < HIDDEN_LINE * strong or not across
+            or not under_digits(gray, polarity, ln[0], x0, x1, gap, reach))
 
 
-def under_digits(gray: np.ndarray, polarity: str, y: float, x0: int, x1: int, gap: float) -> bool:
+def under_digits(gray: np.ndarray, polarity: str, y: float, x0: int, x1: int, gap: float,
+                 line_reach: int = LINE_REACH) -> bool:
     """True when a line at row y is missing mostly where ink lies just above or below it, as digits sitting on it
     hide it, and shows mostly where there is none. A ledger row or a string in the footage shows where noteheads or
     fingers sit."""
@@ -173,7 +184,9 @@ def under_digits(gray: np.ndarray, polarity: str, y: float, x0: int, x1: int, ga
     g = gray[a:b, x0:x1].astype(np.int16)
     if polarity == "light":
         g = 255 - g
-    shown = thin_response(gray[max(0, r - 4):r + 5, x0:x1], polarity)[min(r, 4) - 1:min(r, 4) + 2].any(axis=0)
+    pad = line_reach + 1
+    shown = thin_response(gray[max(0, r - pad):r + pad + 1, x0:x1], polarity, line_reach)
+    shown = shown[min(r, pad) - 1:min(r, pad) + 2].any(axis=0)
     # Paper is the light end of the band; digits can cover most of it
     ink = g < np.percentile(g, 90) - 60
     # Rows off the line itself, where a digit's strokes are and the line's soft edge isn't
@@ -210,7 +223,7 @@ def without_border(gray: np.ndarray, st: Staff) -> Staff:
     if len(rows) == len(st.lines):
         return st
     ys = [y for y, _, _ in rows]
-    return Staff(ys, st.x0, st.x1, float(np.median(np.diff(ys))), st.polarity)
+    return Staff(ys, st.x0, st.x1, float(np.median(np.diff(ys))), st.polarity, reach=st.reach)
 
 
 def runs(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -247,8 +260,8 @@ def dashed(gray: np.ndarray, st: Staff) -> bool:
     narrower than the dash, or dashes blurred together whose ink still dips at an even pitch (`dip_cover`).
     A drawn line runs on between the digits on it, a dashed or dotted one leaves more paper than ink, and the lines
     of a chord diagram are broken by its strings, which are ink."""
-    a = max(0, int(st.top) - 3)
-    resp = thin_response(gray[a:int(st.bottom) + 4, st.x0:st.x1], st.polarity)
+    a = max(0, int(st.top) - st.reach)
+    resp = thin_response(gray[a:int(st.bottom) + st.reach + 1, st.x0:st.x1], st.polarity, st.reach)
     g = gray[:, st.x0:st.x1].astype(np.int16)
     paper = np.median([np.median(g[int(round((p + q) / 2))]) for p, q in zip(st.lines, st.lines[1:])])
     typed = 0
@@ -270,14 +283,24 @@ def find_staffs(gray: np.ndarray, min_len: int | None = None, keep_dashed: bool 
     out, unless `keep_dashed`.
 
     Lines are taken in order down the frame; a staff is a run of neighbors with equal gaps, so a
-    line between two staff lines can't be skipped over to make a wider-spaced staff.
+    line between two staff lines can't be skipped over to make a wider-spaced staff. When the usual thin-line test
+    finds no staff, staffs are looked for again with the test reaching SOFT_REACH rows.
     """
+    staffs = (staffs_with(gray, min_len, keep_dashed, LINE_REACH)
+              or staffs_with(gray, min_len, keep_dashed, SOFT_REACH, cover=SOFT_COVER))
+    return sorted(staffs, key=lambda s: s.top)
+
+
+def staffs_with(gray: np.ndarray, min_len: int | None, keep_dashed: bool, reach: int,
+                cover: float = 0.0) -> list[Staff]:
+    """The staffs `find_staffs` finds with a thin-line test that reaches `reach` rows, whose lines cover at least
+    `cover` of the staff's width on the median."""
     h, w = gray.shape
     min_len = min_len or max(w // 8, 20)
     max_gap = max(h / 12, MAX_GAP_PX)
     staffs = []
     for polarity in ("dark", "light"):
-        lines = line_rows(gray, polarity, min_len)
+        lines = line_rows(gray, polarity, min_len, reach)
         # A short line between strong ones (a bend curve, a beam, a ledger line) is not a staff line
         firm = [ln[4] >= WEAK_LINE * max([lines[m][4] for m in (k - 1, k + 1) if 0 <= m < len(lines)] or [0])
                   for k, ln in enumerate(lines)]
@@ -306,9 +329,9 @@ def find_staffs(gray: np.ndarray, min_len: int | None = None, keep_dashed: bool 
                 j += 1
             # Ledger lines and beam rows next to a staff are short; drop weak lines from the ends
             strong = np.median([lines[c][4] for c in chain])
-            while len(chain) > MIN_LINES and weak_end(gray, polarity, lines, chain, -1, strong):
+            while len(chain) > MIN_LINES and weak_end(gray, polarity, lines, chain, -1, strong, reach):
                 chain.pop()
-            while len(chain) > MIN_LINES and weak_end(gray, polarity, lines, chain, 0, strong):
+            while len(chain) > MIN_LINES and weak_end(gray, polarity, lines, chain, 0, strong, reach):
                 chain.pop(0)
             while len(chain) > MIN_LINES and not paper_beyond(gray, [lines[c] for c in chain], 1):
                 chain.pop()
@@ -334,9 +357,10 @@ def find_staffs(gray: np.ndarray, min_len: int | None = None, keep_dashed: bool 
                 continue
             x0 = int(np.median([lines[c][1] for c in chain]))
             x1 = int(np.median([lines[c][2] for c in chain]))
-            st = Staff(ys, x0, x1, gap, polarity)
+            if np.median([lines[c][4] for c in chain]) < cover * (x1 - x0):
+                continue
+            st = Staff(ys, x0, x1, gap, polarity, reach=reach)
             st.dashed = dashed(gray, st)
             if keep_dashed or not st.dashed:
                 staffs.append(st)
-    staffs.sort(key=lambda s: s.top)
     return staffs
