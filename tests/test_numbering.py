@@ -54,12 +54,12 @@ def test_another_part_numbered_the_same_way_gets_measures_of_its_own():
 
 
 def test_numbers_after_another_part_starts_go_on_from_its_own_measures_when_three_hold_other_music():
-    # The second part's 5-7, shown beside its 3-4, are not the first part's 5-7
-    assert slots(run("a", 1, 7), run("b", 1, 4), run("b", 3, 7)) == [[0, 1, 2, 3, 4, 5, 6], [7, 8, 9, 10],
-                                                                     [9, 10, 11, 12, 13]]
+    # The second part's 9-11, shown beside its 7-8, are not the first part's 9-11
+    assert slots(run("a", 1, 11), run("b", 5, 8), run("b", 7, 11)) == [list(range(11)), [11, 12, 13, 14],
+                                                                       [13, 14, 15, 16, 17]]
     # Two measures of other music are too few to tell a section from measures drawn differently
-    assert slots(run("a", 1, 6), run("b", 1, 4), run("b", 3, 6)) == [[0, 1, 2, 3, 4, 5], [6, 7, 8, 9],
-                                                                     [8, 9, 4, 5]]
+    assert slots(run("a", 1, 10), run("b", 5, 8), run("b", 7, 10)) == [list(range(10)), [10, 11, 12, 13],
+                                                                       [12, 13, 8, 9]]
 
 
 def test_a_number_past_the_screen_before_carries_on_whatever_it_looked_like_before():

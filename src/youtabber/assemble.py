@@ -7,6 +7,7 @@ explain are new music, or a replay of earlier slots (REVISIT), which folds only 
 from collections import Counter
 from dataclasses import dataclass, field, replace
 
+import cv2
 import numpy as np
 
 from youtabber.match import WIDTH_PX, WIDTH_SHARE, resemble, resemble_scaled, same, same_part
@@ -66,6 +67,9 @@ NOTES_INK, BAR_GAPS = 0.1, 0.7
 HIGHLIGHT_SHARE = 0.25
 # Two sightings are drawn at one line spacing when their spacings differ by at most this share
 SAME_SPACING = 0.03
+# A view numbered from this measure or lower starts the numbers again, as the next track or example does; a part
+# shown for a few bars mid-song carries its later numbers
+RESTART_NUMBERS = 4
 # A number read this many measures or fewer off its view's count points at a missed or extra barline
 CONFLICT_SPAN = 2
 NAV_WORDS = ("D.S", "DS.", "D.C", "DC.", "CODA", "FINE", "SEGNO")
@@ -1504,9 +1508,10 @@ def place_numbered(o, slot_of, A, prev, prev_slots, gap, seg_of, held: dict, oth
     by_number = {s.number: s.id for s in A.slots
                  if s.number is not None and (s.id >= A.number_floor or s.id in prev_slots)}
     other_part = other or switched_part(o, A, by_number, prev, prev_slots, gap, seg_of, held)
-    if other_part and not other and (prev is None or prev.seg != o.seg):
-        # Other music starting a segment is a section of its own, so its later pages don't fold onto earlier
-        # measures with the same numbers
+    if other_part and not other and (prev is None or prev.seg != o.seg
+                                     or min(c.number for c in o.cells) <= RESTART_NUMBERS):
+        # Other music starting a segment, or numbered from the start again (the next track or example), is a
+        # section of its own, so its later pages don't fold onto earlier measures with the same numbers
         A.number_floor = len(A.slots)
     if other_part:
         A.switches.append((o.t0, o.t1))
@@ -1666,8 +1671,23 @@ def same_layout(A, sid, o, seg_of) -> list:
 
 
 def seen_before(c, earlier, gap) -> bool:
-    """Whether a cell shows the music of some earlier sighting."""
-    return any(alike_music(x, c, gap) for x in earlier)
+    """Whether a cell shows the music of some earlier sighting. A sighting drawn at another line spacing may be the
+    same page zoomed, so it is also compared after scaling it to the cell's spacing."""
+    return any(alike_music(x, c, gap) or (abs(x.gap - c.gap) > SAME_SPACING * gap
+                                          and alike_music(at_spacing(x, c.gap), c, gap))
+               for x in earlier)
+
+
+def at_spacing(c, g: float):
+    """A copy of cell c scaled both ways so its tab lines are g apart."""
+    f = g / c.gap
+    h, w = c.ink.shape
+    size = (max(1, round(w * f)), max(1, round(h * f)))
+
+    def scaled(m):
+        return None if m is None else cv2.resize(m.astype(np.float32), size, interpolation=cv2.INTER_LINEAR) >= 0.5
+    return replace(c, ink=scaled(c.ink), faint=scaled(c.faint), tint=scaled(c.tint), gap=g,
+                   x1=c.x0 + round((c.x1 - c.x0) * f), ref_y=round(c.ref_y * f), mid_y=c.y0 + (c.mid_y - c.y0) * f)
 
 
 def alike_music(a, b, gap: float) -> bool:

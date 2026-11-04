@@ -218,11 +218,52 @@ def test_another_part_starting_a_layout_numbers_its_later_screens_on_its_own():
 
 
 def test_another_part_within_a_layout_keeps_the_numbering_floor():
-    guitar = view(0, [cell(1, 6), cell(2, 6), cell(3, 6)], 0)
-    A = Assembly(slots=[Slot(k, c, 0, k + 1) for k, c in enumerate(guitar.cells)],
+    guitar = view(0, [cell(n, 6) for n in (7, 8, 9)], 0)
+    A = Assembly(slots=[Slot(k, c, 0, k + 7) for k, c in enumerate(guitar.cells)],
                  sightings={k: [(0, c)] for k, c in enumerate(guitar.cells)})
-    bass = view(1, [cell(1, 4), cell(2, 4), cell(3, 4)], 0)
+    bass = view(1, [cell(n, 4) for n in (7, 8, 9)], 0)
     for c in guitar.cells + bass.cells:
         c.tint = np.zeros_like(c.ink)
     place_numbered(bass, {}, A, guitar, [0, 1, 2], 10.0, {0: 0, 1: 0}, {0: True, 1: True})
     assert A.switches == [(10.0, 15.0)] and A.number_floor == 0
+
+
+def test_another_part_numbered_from_the_start_within_a_layout_numbers_its_later_screens_on_its_own():
+    # Track 1 ends on a screen of measures 6-7, then track 2 in the same layout shows 3-5 and next 6-7, drawn like
+    # track 1's (rest bars look alike): track 2's 6-7 are new measures
+    guitar = view(0, [cell(n, 6, index=n) for n in range(1, 8)], 0)
+    A = Assembly(slots=[Slot(k, c, 0, k + 1) for k, c in enumerate(guitar.cells)],
+                 sightings={k: [(0, c)] for k, c in enumerate(guitar.cells)})
+    seg_of = {0: 0, 1: 0, 2: 0}
+    bass = view(1, [cell(n, 4, index=n) for n in (3, 4, 5)], 0)
+    for c in guitar.cells + bass.cells:
+        c.tint = np.zeros_like(c.ink)
+    first: dict = {}
+    place_numbered(bass, first, A, view(0, guitar.cells[5:], 0), [5, 6], 10.0, seg_of, {0: True, 1: True})
+    assert A.number_floor == 7 and sorted(first.values()) == [7, 8, 9]
+    more = view(2, [cell(n, 6, index=n) for n in (6, 7)], 0)
+    for c in more.cells:
+        c.tint = np.zeros_like(c.ink)
+    later: dict = {}
+    place_numbered(more, later, A, bass, [7, 8, 9], 10.0, seg_of, {0: True, 1: True})
+    assert sorted(later.values()) == [10, 11]
+
+
+def drawn(gap: float, spots, number: int = 1) -> Cell:
+    """A measure whose fret marks sit at `spots` (in line gaps from the box's corner), drawn at line spacing gap."""
+    h, w = round(9 * gap), round(20 * gap)
+    ink = np.zeros((h, w), bool)
+    for x, y in spots:
+        x0, y0 = round(x * gap), round(y * gap)
+        ink[y0:y0 + round(0.6 * gap), x0:x0 + round(0.4 * gap)] = True
+    return Cell(0, 0, 1, 0, w, "full", ink, np.zeros_like(ink), 0, gap=gap, ref_y=round(2 * gap),
+                mid_y=round(2 * gap) + 2.5 * gap, tint=np.zeros_like(ink), number=number)
+
+
+def test_a_measure_drawn_again_at_another_zoom_is_the_same_music():
+    spots = [(2, 2), (5, 3), (8, 4), (11, 5), (14, 6), (17, 3)]
+    small, large = drawn(10.0, spots), drawn(10.8, spots)
+    assert seen_before(large, [small], 10.0) and seen_before(small, [large], 10.0)
+    # Other music at the larger zoom
+    other = drawn(10.8, [(3, 6), (6, 2), (9, 5), (12, 2), (15, 4), (18, 6)])
+    assert not seen_before(other, [small], 10.0)
