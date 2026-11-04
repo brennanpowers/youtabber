@@ -266,3 +266,32 @@ def test_a_repeated_screen_keeps_its_start():
     obs = [read_view(i, run("a", 1, 4), s) for i, s in enumerate(shown)]
     number_views(obs, lambda crop: int(crop[0, 0]))
     assert [o.start for o in obs] == [1, 5, 5, 9]
+
+
+def panel_start(shown: list[int | None], panels: frozenset = frozenset({3})) -> int | None:
+    """The start number_views gives a split panel's screen whose reads are `shown`, after three full-width screens
+    numbered 10-13, 14-17 and 18-21."""
+    obs = [read_view(i, run("a", 4 * i + 1, 4 * i + 4), list(range(10 + 4 * i, 14 + 4 * i))) for i in range(3)]
+    obs.append(read_view(3, run("b", 1, len(shown)), shown))
+    number_views(obs, lambda crop: int(crop[0, 0]), panels=panels)
+    return obs[3].start
+
+
+def test_a_panel_screen_is_numbered_from_one_read_that_carries_on_from_the_screen_before():
+    # The screen before starts at 18 and ends at 21, so a start from 18 to 22 carries on from it
+    for shown, start in (([None, 19], 18), ([None, 20], 19), ([None, 23], 22), ([None, 24], None), ([None, 18], None)):
+        assert panel_start(shown) == start, shown
+    assert panel_start([None, 20], panels=frozenset()) is None
+
+
+def test_a_panel_screen_takes_the_one_read_that_fits_and_none_when_two_disagree():
+    assert panel_start([9, 20]) == 19
+    assert panel_start([19, 21]) is None
+
+
+def test_a_video_too_short_to_count_as_numbered_keeps_no_starts():
+    # Two screens whose two reads each agree, such as chord names or fret digits that count up, are too few to
+    # call the video numbered
+    obs = [read_view(0, run("a", 1, 2), [3, 4]), read_view(1, run("a", 3, 4), [5, 6])]
+    assert number_views(obs, lambda crop: int(crop[0, 0])) == "unnumbered"
+    assert [o.start for o in obs] == [None, None]

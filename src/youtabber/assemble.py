@@ -225,12 +225,13 @@ class Assembly:
     unsure_slots: dict = field(default_factory=dict)
 
 
-def number_views(obs: list[Obs], read, more=None) -> str:
+def number_views(obs: list[Obs], read, more=None, panels: frozenset = frozenset()) -> str:
     """Read measure numbers and keep only those that count up consistently within a view.
 
     Every cell's number is read; the view's numbers are trusted only when at least two readings agree
     on one starting number for the run of cells. In a numbered video, `more(o)` ({cell: number}) reads the cells
-    of view o whose own crop read nothing. Returns "numbered" or "unnumbered".
+    of view o whose own crop read nothing. `panels` holds the indexes of views of a split screen's panels, which may
+    be numbered from one read, as `lone_reads` says. Returns "numbered" or "unnumbered".
     """
     all_reads = []
     for o in obs:
@@ -263,6 +264,12 @@ def number_views(obs: list[Obs], read, more=None) -> str:
     for k, o in enumerate(obs):
         if o.start is not None and not fits_neighbours(obs, k):
             o.start = None
+    if not numbered:
+        # Reads that agree in a video without measure numbers are chord names or fret digits that happen to count up
+        for o in obs:
+            o.start = None
+    if numbered:
+        lone_reads(obs, panels)
     for o, reads in zip(obs, all_reads):
         if numbered and o.start is not None:
             for i, c in enumerate(o.cells):
@@ -289,6 +296,22 @@ def vote_starts(obs: list[Obs], all_reads: list) -> bool:
             consistent += 1
             o.start = start
     return checked >= 3 and consistent >= 0.6 * checked
+
+
+def lone_reads(obs: list[Obs], panels: frozenset) -> None:
+    """Start each unnumbered view of a split screen's panel from a number read on it that carries on from the
+    numbered view before it: one that starts at that view's first measure up to the one after its last. A half-width
+    panel shows too few measures for two reads to agree. When several reads fit, none is trusted."""
+    for k, o in enumerate(obs):
+        if o.start is not None or o.index not in panels:
+            continue
+        prev = next((obs[m] for m in range(k - 1, -1, -1) if obs[m].start is not None), None)
+        if prev is None:
+            continue
+        fit = {c.read - i for i, c in enumerate(o.cells)
+               if c.read is not None and prev.start <= c.read - i <= prev.start + len(prev.cells)}
+        if len(fit) == 1:
+            o.start = fit.pop()
 
 
 def fits_neighbours(obs: list[Obs], k: int) -> bool:

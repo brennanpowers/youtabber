@@ -464,8 +464,9 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
     # Each stream is numbered and assembled on its own
     streams = sorted({o.stream for o in obs}) or [0]
     stream_obs = {k: [o for o in obs if o.stream == k] for k in streams}
+    panel_views = frozenset(o.index for o in obs if r.parts and r.parts[o.part].cols is not None)
     r.numbering = number_streams(stream_obs, ocr.read_number,
-                                 lambda o: detected_numbers(o, segments[o.seg].polarity))
+                                 lambda o: detected_numbers(o, segments[o.seg].polarity), panel_views)
     for o in obs:
         if o.mosaic is not None and o.counter:
             counted_numbers(o)
@@ -709,10 +710,10 @@ def set_numbers(obs: list[Obs], numbers: list[list[int | None]]) -> None:
             c.number = n
 
 
-def number_streams(stream_obs: dict[int, list[Obs]], read, more=None) -> str:
+def number_streams(stream_obs: dict[int, list[Obs]], read, more=None, panels: frozenset = frozenset()) -> str:
     """Number each stream's views apart from the others', since parts shown at once count their measures apart.
-    "numbered" when any stream is."""
-    found = [number_views(views, read, more) for views in stream_obs.values()]
+    "numbered" when any stream is. `panels` holds the indexes of views of a split screen's panels."""
+    found = [number_views(views, read, more, panels) for views in stream_obs.values()]
     return "numbered" if "numbered" in found else "unnumbered"
 
 
