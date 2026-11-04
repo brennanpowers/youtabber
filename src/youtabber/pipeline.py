@@ -382,7 +382,7 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
             o = plate_obs(v, seg, si, thr, fthr, len(obs), pcrop[0], fading=id(v) in fading,
                           notation_gaps=notation_of[id(part)])
             if v.brief and not o.all_cells:
-                # A first or last screen held briefly with no measures is a page coming or going, not time with tab
+                # A screen held briefly with no measures is a page coming or going, not time with tab
                 continue
             o.part, o.stream = part.id, part.stream
             obs.append(o)
@@ -1096,9 +1096,9 @@ def mark_fades(obs: list[Obs], parts: list[Part], segments: list[Segment], last_
             ink, line = clearest.get(seg.polarity, (0.0, 0.0))
         for o in group:
             if o.contrast < FADE_SHARE * ink and o.line_contrast < FADE_LINE_SHARE * line:
-                # A brief last screen may hold music no other screen shows, so drop_fades judges it against the
-                # screen before it and last_screen_notice can note it. A first screen fading in shows the page the
-                # next screen shows clearly.
+                # A brief screen after its part's first, in the last segment, may hold music no other screen shows,
+                # so drop_fades judges it against the screen before it and last_screen_notice can note the last one.
+                # A first screen fading in shows the page the next screen shows clearly.
                 if o.brief and o is not group[0] and part.seg == last_seg:
                     o.faded = True
                 elif not (o.fading_out and new_page(o, group)):
@@ -1115,11 +1115,11 @@ def new_page(o: Obs, group: list[Obs]) -> bool:
 
 
 def drop_fades(obs: list[Obs]) -> dict[int, str]:
-    """Clear the cells of each brief first or last screen that is a page fading or drawing in or out: one with fewer
-    than two whole measures, one whose measures the screen next to it shows again (for a faded screen, its barlines
-    or a neighbour with no measures left), or one mostly slivers from misread barlines. Returns why each was cleared,
-    by its id: "few", "shown_again", "misread", or "faded" for a faded screen cleared
-    as misread or for its barlines."""
+    """Clear the cells of each brief screen (a segment's first or last, or one held before a cut) that is a page fading
+    or drawing in or out, or one its neighbour shows again: one with fewer than two whole measures, one whose measures
+    the screen next to it shows again (for a faded screen, its barlines or a neighbour with no measures left), or one
+    mostly slivers from misread barlines. Returns why each was cleared, by its id: "few", "shown_again", "misread", or
+    "faded" for a faded screen cleared as misread or for its barlines."""
     widths = [c.x1 - c.x0 for o in obs for c in o.all_cells if c.kind == "full"]
     typical = float(np.median(widths)) if widths else 0.0
 

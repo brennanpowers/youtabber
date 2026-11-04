@@ -1613,7 +1613,12 @@ def switched_part(o, A, by_number, prev, prev_slots, gap, seg_of, held: dict) ->
     """Whether a screen shows another part under numbers seen before: a whole measure drawn at the same line spacing
     on a staff with another number of lines (a bass track after a guitar), both staffs held over several screens as
     `held` ({view index: bool}) says, or most measures shown again holding other music, judged on at least two of
-    them by their look on the same layout or by their width at the same spacing."""
+    them by their look on the same layout or by their width at the same spacing.
+
+    A brief screen is never another part: held that short, it shows too little to tell a part change from the same
+    measures drawn again."""
+    if o.brief:
+        return False
     shown = [A.slots[s].number for s in prev_slots if s is not None and A.slots[s].number is not None]
     alike = []
     for c in o.cells:

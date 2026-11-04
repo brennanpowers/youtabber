@@ -47,21 +47,104 @@ def read(monkeypatch, runs, t_start=0.0, lead=0.0, last_screen=False):
 
 
 def test_first_and_last_screens_need_half_a_second_and_others_the_usual_hold(monkeypatch):
-    # 4 frames (0.67 s) first, 12, then 6 frames (1.0 s) in the middle, 12, and 4 frames last
-    views = read(monkeypatch, [(0, 4), (1, 12), (2, 6), (3, 12), (4, 4)])
-    assert [(round(v.t0, 2), v.brief) for v in views] == [(0.0, True), (0.67, False), (3.67, False), (5.67, True)]
+    # 4 frames (0.67 s) first, 12, then 6 frames (1.0 s) in the middle turned away through four passing frames, 12,
+    # and 4 frames last
+    views = read(monkeypatch, [(0, 4), (1, 12), (2, 6), (4, 1), (0, 1), (4, 1), (0, 1), (3, 12), (4, 4)])
+    assert [(round(v.t0, 2), v.brief) for v in views] == [(0.0, True), (0.67, False), (4.33, False), (6.33, True)]
+
+
+def test_a_screen_held_half_a_second_before_a_cut_is_a_brief_view(monkeypatch):
+    # 3 frames (0.5 s) of page 1, then page 2 at once
+    views = read(monkeypatch, [(0, 12), (1, 3), (2, 12)])
+    assert [(round(v.t0, 2), v.brief) for v in views] == [(0.0, False), (2.0, True), (2.5, False)]
+    # ...or after three passing frames
+    views = read(monkeypatch, [(0, 12), (1, 3), (3, 1), (4, 1), (3, 1), (2, 12)])
+    assert [(round(v.t0, 2), v.brief) for v in views] == [(0.0, False), (2.0, True), (3.0, False)]
+    # Two frames are too few
+    views = read(monkeypatch, [(0, 12), (1, 2), (2, 12)])
+    assert [(round(v.t0, 2), v.brief) for v in views] == [(0.0, False), (2.33, False)]
+
+
+def test_a_screen_held_briefly_in_a_page_turn_of_several_frames_is_no_view(monkeypatch):
+    # Page 1 holds 5 frames between pages, with four passing frames before page 2
+    views = read(monkeypatch, [(0, 12), (1, 5), (3, 1), (4, 1), (3, 1), (4, 1), (2, 12)])
+    assert [(round(v.t0, 2), v.brief) for v in views] == [(0.0, False), (3.5, False)]
+
+
+def test_only_the_first_of_brief_screens_in_a_row_before_a_cut_is_a_view(monkeypatch):
+    # Pages 1 and 2 hold 4 frames each between views
+    views = read(monkeypatch, [(0, 12), (1, 4), (2, 4), (3, 12)])
+    assert [(round(v.t0, 2), v.brief) for v in views] == [(0.0, False), (2.0, True), (3.33, False)]
+    # After a brief first screen, the next brief screen can be a view
+    views = read(monkeypatch, [(0, 3), (1, 4), (3, 12)])
+    assert [(round(v.t0, 2), v.brief) for v in views] == [(0.0, True), (0.5, True), (1.17, False)]
+
+
+def test_a_count_in_changing_over_a_page_makes_no_brief_views(monkeypatch):
+    # Page 1 comes in under a count-in box, which turns into a block, then goes, 4 frames each
+    boxed, blocked = PAGES[1].copy(), PAGES[1].copy()
+    boxed[95:125, 600:620] = 0
+    boxed[98:122, 603:617] = 255
+    blocked[100:118, 604:616] = 0
+    timeline = [PAGES[0]] * 12 + [boxed] * 4 + [blocked] * 4 + [PAGES[1]] * 12
+
+    def frames(path, fps, crop=None, start=0.0, length=None):
+        for i, f in enumerate(timeline):
+            yield i / fps, f.copy()
+    monkeypatch.setattr(observe, "frames", frames)
+    observe.set_paper(PAPER)
+    views = observe.views_in(None, (0, 0, 1280, 270), "dark", 18.0, PAPER, lambda t: STAFFS, 0.0, 32 / 6)[0]
+    assert [(round(v.t0, 2), v.brief) for v in views] == [(0.0, False), (3.33, False)]
+
+
+def test_a_brief_screen_of_the_page_before_with_a_mark_changed_makes_no_view(monkeypatch):
+    # Page 0 holds 2 s, then shows a note-sized mark for 4 frames before page 1
+    marked = PAGES[0].copy()
+    marked[100:118, 604:616] = 0
+    timeline = [PAGES[0]] * 12 + [marked] * 4 + [PAGES[1]] * 12
+
+    def frames(path, fps, crop=None, start=0.0, length=None):
+        for i, f in enumerate(timeline):
+            yield i / fps, f.copy()
+    monkeypatch.setattr(observe, "frames", frames)
+    observe.set_paper(PAPER)
+    views = observe.views_in(None, (0, 0, 1280, 270), "dark", 18.0, PAPER, lambda t: STAFFS, 0.0, 28 / 6)[0]
+    assert [(round(v.t0, 2), v.brief) for v in views] == [(0.0, False), (2.67, False)]
+
+
+def test_ink_maps_show_other_pages_when_most_of_each_one_s_ink_is_gone_in_the_other():
+    a = np.zeros((20, 40), bool)
+    a[5:15, 2:12] = True
+    b = a.copy()
+    b[5:15, 20:30] = True
+    # Half of b's ink is new, none of a's is gone
+    assert not observe.turned(a, b)
+    c = np.zeros((20, 40), bool)
+    c[5:15, 26:36] = True
+    assert observe.turned(a, c)
+    # 5 of 10 columns moved away is enough, 4 of 10 too few
+    for moved, other in ((5, True), (4, False)):
+        e = np.zeros((20, 40), bool)
+        e[5:15, 2:2 + moved] = True
+        e[5:15, 12:22 - moved] = True
+        f = np.zeros((20, 40), bool)
+        f[5:15, 12:22 - moved] = True
+        f[5:15, 30:30 + moved] = True
+        assert observe.turned(e, f) == other
 
 
 def test_a_last_screen_is_kept_when_a_fade_after_it_closes_a_chunk_of_its_own(monkeypatch):
-    # 5 frames (0.83 s) of the last page, then 2 frames of another picture as the video fades out
-    views = read(monkeypatch, [(0, 12), (1, 5), (2, 2)], last_screen=True)
+    # 5 frames (0.83 s) of the last page, then four passing frames and 2 frames of another picture as the video
+    # fades out
+    runs = [(0, 12), (1, 5), (3, 1), (4, 1), (3, 1), (4, 1), (2, 2)]
+    views = read(monkeypatch, runs, last_screen=True)
     assert [(round(v.t0, 2), v.brief) for v in views] == [(0.0, False), (2.0, True)]
     # ...only in the video's last segment
-    views = read(monkeypatch, [(0, 12), (1, 5), (2, 2)])
+    views = read(monkeypatch, runs)
     assert [(round(v.t0, 2), v.brief) for v in views] == [(0.0, False)]
-    # A screen held as briefly before another view is a page turn, not the last screen
-    views = read(monkeypatch, [(0, 12), (1, 5), (2, 12)], last_screen=True)
-    assert [(round(v.t0, 2), v.brief) for v in views] == [(0.0, False), (2.83, False)]
+    # A screen held as briefly before a page turn of several frames and another view is not the last screen
+    views = read(monkeypatch, [(0, 12), (1, 5), (3, 1), (4, 1), (3, 1), (4, 1), (2, 12)], last_screen=True)
+    assert [(round(v.t0, 2), v.brief) for v in views] == [(0.0, False), (3.5, False)]
 
 
 def test_a_first_screen_of_exactly_half_a_second_is_kept_at_any_start_time(monkeypatch):
@@ -86,9 +169,10 @@ def test_a_brief_screen_just_before_the_segment_start_is_read_in_its_own_pass(mo
 
 
 def test_a_first_screen_shown_briefly_after_the_segment_start_is_held_the_usual_time(monkeypatch):
-    # Page 2 holds 4 frames (0.67 s) from 0.67 s, more than half a second into the segment, so it needs the usual hold
-    views = read(monkeypatch, [(0, 2), (1, 2), (2, 4), (3, 12)])
-    assert [(round(v.t0, 2), v.brief) for v in views] == [(1.33, False)]
+    # Page 2 holds 4 frames (0.67 s) from 0.67 s, more than half a second into the segment, and turns to page 3
+    # through four passing frames, so it needs the usual hold
+    views = read(monkeypatch, [(0, 2), (1, 2), (2, 4), (4, 1), (0, 1), (4, 1), (0, 1), (3, 12)])
+    assert [(round(v.t0, 2), v.brief) for v in views] == [(2.0, False)]
 
 
 def test_the_lead_is_at_most_one_scan_step_and_never_reaches_into_the_segment_before():

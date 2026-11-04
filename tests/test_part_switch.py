@@ -33,6 +33,10 @@ def test_measures_numbered_again_on_a_staff_of_other_lines_are_another_part():
     again = view(1, [cell(1, 6), cell(2, 6), cell(3, 6)], 1)
     assert not switched_part(again, A, by_number, guitar, [0, 1, 2], 10.0, {0: 0, 1: 1}, {0: True, 1: True})
 
+    # A brief screen shows too little to call it another part
+    assert not switched_part(replace(bass, brief=True), A, by_number, guitar, [0, 1, 2], 10.0, {0: 0, 1: 1},
+                             {0: True, 1: True})
+
 
 def test_a_staff_line_count_is_held_over_four_screens_in_a_row():
     def screens(first: int, lines: list[int]) -> list[Obs]:

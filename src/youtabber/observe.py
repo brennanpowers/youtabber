@@ -11,9 +11,15 @@ from youtabber.video import frames
 OBS_FPS = 6
 # A view must stay still this long; shorter ones are page-turn animations and fades
 MIN_VIEW_SECONDS = 1.2
-# ...except a segment's first and last screens: one shown only briefly before the first page turn or after the last
-# may hold music no other screen shows
+# ...except a segment's first and last screens and a page held between a view and a cut to another page: one shown
+# only briefly before the first page turn, after the last, or before a cut may hold music no other screen shows
 EDGE_VIEW_SECONDS = 0.5
+# A screen cuts to the next picture when at most this many frames pass between its last frame and the next picture's
+# first. A picture held still partway through a longer page turn animation is no page
+CUT_FRAMES = 3
+# Two pictures show other pages when at least this share of each one's ink has no ink near it in the other. A card
+# or a count-in coming or going over a page, or a cursor moving on it, leaves most of the music in place
+TURN_SHARE = 0.45
 # A new picture must hold for this many frames to end the view
 SETTLE_FRAMES = 2
 # A frame whose paper is more than this many gray levels darker than the segment's paper is fading out. It is
@@ -91,7 +97,8 @@ class View:
     rect: tuple[int, int, int, int] = (0, 0, 0, 0)   # panel in crop coordinates
     wrapped: bool = False                            # began where the playhead jumped back over part of the page
     print_rect: tuple[int, int, int, int] = (0, 0, 0, 0)   # paper area to print from, crop coordinates
-    brief: bool = False                              # a first or last screen held under MIN_VIEW_SECONDS
+    # A first or last screen, or one before a cut, held under MIN_VIEW_SECONDS
+    brief: bool = False
 
 
 def to_gray(frame: np.ndarray, polarity: str) -> np.ndarray:
@@ -387,6 +394,12 @@ def channel_diff(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return d.max(axis=2) if d.ndim == 3 else d
 
 
+def turned(a: np.ndarray, b: np.ndarray) -> bool:
+    """Whether two ink maps show other pages: TURN_SHARE of each one's ink has no ink within 2 pixels in the other."""
+    diff = unmatched(a, b, 2).astype(bool)
+    return all((diff & m).sum() >= TURN_SHARE * m.sum() for m in (a, b))
+
+
 def significant_change(a: np.ndarray, b: np.ndarray, gap: float, radius: int = 1) -> bool:
     """True when some mark the size of a digit is in one ink map and not near the same place in the other.
 
@@ -587,6 +600,11 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
     # last screen, even if a fade or a cut to black after it closed a chunk of its own
     tail: list = []
     numbered: list[bool] = []  # whether each reference judged so far prints measure numbers
+    # Whether the last picture closed made a view, other than a brief one before a cut, and the ink of that view's
+    # first frame. A brief picture right after another brief one is part of an animation or a count-in, so only one
+    # right after a view, showing another page than that view and than the picture after it, holds music no other
+    # screen shows
+    after_view, view_ink = False, None
     paper_level = float(to_gray(np.asarray(paper, dtype=np.uint8)[None, None], polarity)[0, 0])
 
     def plates_of(chunk, clear: bool = True) -> tuple[np.ndarray, np.ndarray]:
@@ -684,7 +702,9 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
                 since = k + 1
         return out
 
-    def close(last: bool = False) -> None:
+    def close(last: bool = False, cut: bool = False) -> None:
+        """End the current view; `last` says the segment ends after it, `cut` that it is another page between a view
+        and a cut to another page."""
         if not cur:
             return
         first = not views and cur[0][0] <= t_start + EDGE_VIEW_SECONDS
@@ -692,7 +712,7 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         # A view of fading frames needs the full view time, as a fading page can hold still for a moment on its way
         # to black. Held briefly it can still be the tail: a new page that turns in during the fade and ends the
         # segment is the last screen
-        edge = (first or last) and not ref["dim"]
+        edge = (first or last or cut) and not ref["dim"]
         if seconds < (EDGE_VIEW_SECONDS if edge else MIN_VIEW_SECONDS):
             if seconds >= EDGE_VIEW_SECONDS and not tail:
                 tail[:] = cur
@@ -790,6 +810,7 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         seed = seed_at(t)
         if seed is None:
             close()
+            after_view = False
             cur, ref, cand, held = [], None, None, []
             stride, points = 1, {}
             continue
@@ -831,7 +852,12 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
             held.append((t, f, rect, seed))
             if len(held) >= SETTLE_FRAMES:
                 # The new picture held steady: the view ended where it began
-                close()
+                cut = (round((held[0][0] - cur[-1][0]) * OBS_FPS) - 1 <= CUT_FRAMES and after_view
+                       and held_for(cur) < MIN_VIEW_SECONDS and turned(view_ink, ref["ink"])
+                       and turned(ref["ink"], cand["ink"]))
+                shown = len(views)
+                close(cut=cut)
+                after_view, view_ink = len(views) > shown and not cut, ref["ink"]
                 cur, ref, stride, points = held, cand, 1, {}
                 held, cand = [], None
             continue
