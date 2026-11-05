@@ -48,6 +48,12 @@ DASH_GAPS, DASH_COVER, DASH_PAPER = 1.0, 0.3, 40
 # line don't make the line between them look like dips
 DIP_RUN, DIP_PITCH, DIP_STEP_PX = 5, (0.2, 0.5), 2.5
 DIP_NEAR_PX, DIP_FAR_PX, DIP_DEPTH, DIP_INK = 5, 21, 0.6, 60
+# Paper pixels are within this many gray levels of the paper's typical gray
+PAPER_SPREAD = 22
+# The paper under a staff ends after its last stretch PAPER_END_GAPS line gaps wide that is PAPER_END_SHARE paper, if
+# that is PAPER_END_MIN_GAPS line gaps before the staff's end and the gray steps by over PAPER_SPREAD in PAPER_EDGE_PX
+# columns there
+PAPER_END_GAPS, PAPER_END_SHARE, PAPER_END_MIN_GAPS, PAPER_EDGE_PX = 2.0, 0.4, 2.0, 6
 
 
 @dataclass
@@ -224,6 +230,34 @@ def without_border(gray: np.ndarray, st: Staff) -> Staff:
         return st
     ys = [y for y, _, _ in rows]
     return Staff(ys, st.x0, st.x1, float(np.median(np.diff(ys))), st.polarity, reach=st.reach)
+
+
+def paper_end(gray: np.ndarray, ys: list[float], x0: int, x1: int, gap: float) -> int:
+    """The column where the paper under a staff's lines ends on the right, or x1 when they end on the paper."""
+    mids = [int(round((a + b) / 2)) for a, b in zip(ys, ys[1:])]
+    rows = gray[mids, x0:x1].astype(np.int16)
+    if rows.shape[1] == 0:
+        return x1
+    # Share of each column's rows between the lines that are paper, the paper being the staff's typical gray there
+    paper = (np.abs(rows - np.median(rows)) <= PAPER_SPREAD).mean(axis=0)
+    w = max(2, int(PAPER_END_GAPS * gap))
+    if len(paper) <= w:
+        return x1
+    sums = np.concatenate([[0.0], np.cumsum(paper)])
+    ends = np.flatnonzero((sums[w:] - sums[:-w]) / w >= PAPER_END_SHARE)
+    if not len(ends):
+        return x1
+    # The last such stretch ends at column ends[-1] + w; its last mostly-paper column is the paper's edge
+    end = int(ends[-1]) + w
+    edge = np.flatnonzero(paper[:end] >= 0.5)
+    end = int(edge[-1]) + 1 if len(edge) else end
+    if x1 - (x0 + end) < PAPER_END_MIN_GAPS * gap:
+        return x1
+    level = np.median(rows, axis=0)
+    inside, outside = level[max(0, end - PAPER_EDGE_PX):end], level[end:end + PAPER_EDGE_PX]
+    if not len(inside) or not len(outside) or abs(float(np.median(inside)) - float(np.median(outside))) <= PAPER_SPREAD:
+        return x1
+    return x0 + end
 
 
 def runs(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

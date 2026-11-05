@@ -448,3 +448,37 @@ def test_a_soft_staff_whose_lines_cover_too_little_of_its_width_is_no_staff():
     img[:, 180:620] = 230
     assert find_staffs(img) == []
     assert len(staff.staffs_with(img, None, False, 4)) == 1
+
+
+
+def with_footage(x: int) -> np.ndarray:
+    """staff_image() with footage from column x on: book spines in stripes 8 px wide, with shelf edges along the
+    staff's lines."""
+    img = staff_image()
+    img[:, x:] = np.where((np.arange(x, 800) // 8) % 2, 200, 120)[None, :]
+    for i in range(6):
+        cv2.line(img, (x, 200 + i * 14), (750, 200 + i * 14), 30, 1)
+    return img
+
+
+def test_a_tab_staff_followed_into_footage_past_the_paper_ends_at_the_paper():
+    (system,) = systems_in(with_footage(430))
+    assert 425 <= system.tab.x1 <= 431
+
+
+def test_lines_mostly_on_footage_with_a_short_stretch_of_paper_are_no_staff():
+    assert systems_in(with_footage(250)) == []
+
+
+def test_a_staff_on_paper_has_no_paper_edge():
+    (st,) = find_staffs(staff_image())
+    assert staff.paper_end(staff_image(), st.lines, st.x0, st.x1, st.gap) == st.x1
+
+
+def test_paper_darkened_by_a_smooth_shade_has_no_paper_edge():
+    img = staff_image()
+    # The paper darkens evenly from column 400 to the right edge, by 100 gray levels in all
+    shade = np.clip(np.arange(800) - 400, 0, None) * 100 // 400
+    img = np.clip(img.astype(int) - shade[None, :], 0, 255).astype(np.uint8)
+    (st,) = find_staffs(img)
+    assert staff.paper_end(img, st.lines, st.x0, st.x1, st.gap) == st.x1

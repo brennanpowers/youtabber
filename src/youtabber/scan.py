@@ -1,23 +1,25 @@
 """Scan the whole video at a low frame rate for tab staffs and group the frames that hold them into segments."""
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import cv2
 import numpy as np
 
 from youtabber.observe import PRINT_ABOVE_GAPS
-from youtabber.staff import LINE_CONTRAST, LINE_REACH, Staff, find_staffs, line_rows, staffs_with, thin_response
+from youtabber.staff import (LINE_CONTRAST, LINE_REACH, PAPER_SPREAD, Staff, find_staffs, line_rows, paper_end,
+                             staffs_with, thin_response)
 from youtabber.video import frames
 
 SCAN_FPS = 2
 # Between staff lines, at least this share of a row must be plain paper (digits cover the rest)
 PAPER_SHARE = 0.6
-# Paper pixels are within this many gray levels of the row's median
-PAPER_SPREAD = 22
 # A notation staff's gap rows are mostly the tab's paper; strings in footage are not. Beams and note heads can crowd
 # a row below this share, so one row is excused
 NOTATION_PAPER_SHARE = 0.55
+# A staff whose lines run on past the paper into footage is cut at the paper's edge when what is left is at least this
+# share of it and passes the paper test; less than that is footage with a short stretch of paper-like rows
+PAPER_KEPT_SHARE = 0.5
 # Staffs in one segment keep their line spacing within this share
 GAP_DRIFT = 0.35
 # Frames without tab shorter than this don't end a segment (page turns, fades)
@@ -128,6 +130,18 @@ def paper_between_lines(gray: np.ndarray, st: Staff) -> bool:
         med = np.median(row)
         good += np.mean(np.abs(row - med) <= PAPER_SPREAD) >= PAPER_SHARE
     return good >= len(st.lines) - 1 - 1  # one row may be crowded with digits
+
+
+def on_paper(gray: np.ndarray, st: Staff) -> Staff | None:
+    """The staff when its rows between the lines are paper, the staff cut at the paper's right edge when only its
+    lines followed into footage past the paper fail that, or None."""
+    if paper_between_lines(gray, st):
+        return st
+    x1 = paper_end(gray, st.lines, st.x0, st.x1, st.gap)
+    if x1 == st.x1 or x1 - st.x0 < PAPER_KEPT_SHARE * (st.x1 - st.x0):
+        return None
+    cut = replace(st, x1=x1)
+    return cut if paper_between_lines(gray, cut) else None
 
 
 def on_paper_of(gray: np.ndarray, st: Staff, under: Staff) -> bool:
@@ -350,8 +364,8 @@ def systems_in(gray: np.ndarray, whole_lines: bool = False) -> list[System]:
                for o in clash):
             continue
         keep.append(s)
-    staffs = [s for s in keep if paper_between_lines(gray, s) and not (whole_lines and broken_up(gray, s))
-              and not fretboard(gray, s)]
+    staffs = [p for p in (on_paper(gray, s) for s in keep)
+              if p is not None and not (whole_lines and broken_up(gray, p)) and not fretboard(gray, p)]
     out: list[System] = []
     used = set()
     # From the bottom up: each tab staff takes the staff just above it as its notation staff, so a stray group of
