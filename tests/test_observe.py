@@ -805,3 +805,56 @@ def test_a_page_fading_in_from_near_black_sets_the_ink_threshold_once_it_is_brig
     views, thr, fthr = observe.views_in(None, (0, 0, 1280, 270), "dark", 18.0, PAPER, lambda t: STAFFS, 0.0, 2.5)
     assert (round(thr, 2), round(fthr, 2)) == (162.75, 234.5)
     assert [(round(v.t0, 2), round(v.t1, 2)) for v in views] == [(0.5, 2.5)]
+
+
+def cut_line_cursor() -> tuple[np.ndarray, np.ndarray]:
+    """Ink maps of a still page at a 20-pixel line gap where a 6-pixel line cursor moves 100 pixels: staff lines every
+    20 rows, 2 rows thick, cut each sighting into pieces 18 rows tall."""
+    a, b = np.zeros((200, 400), bool), np.zeros((200, 400), bool)
+    for top in range(20, 180, 20):
+        a[top + 2:top + 20, 100:106] = True
+        b[top + 2:top + 20, 200:206] = True
+    return a, b
+
+
+def test_a_line_cursor_cut_up_by_staff_lines_is_no_change():
+    a, b = cut_line_cursor()
+    assert observe.significant_change(a, b, 20.0, 2)
+    assert not observe.significant_change(a, b, 20.0, 2, cursor=True)
+
+
+def test_staff_line_pieces_a_box_cursor_breaks_off_are_no_change():
+    # Pieces 4 rows tall and 30 wide come and go where the box sat
+    a, b = np.zeros((200, 400), bool), np.zeros((200, 400), bool)
+    for y in (40, 60, 80, 100):
+        a[y:y + 4, 100:130] = True
+        b[y:y + 4, 200:230] = True
+    assert observe.significant_change(a, b, 20.0, 2)
+    assert not observe.significant_change(a, b, 20.0, 2, cursor=True)
+    # 5 rows tall, as thick as a beam, is a mark
+    a[120:125, 100:130] = True
+    assert observe.significant_change(a, b, 20.0, 2, cursor=True)
+
+
+def test_a_line_cursor_cut_where_it_passes_over_a_digit_is_no_change():
+    a, b = cut_line_cursor()
+    # A digit shown on both pages hides 12 rows of the cursor's new sighting
+    a[60:74, 196:210] = b[60:74, 196:210] = True
+    b[58:76, 200:206] = False
+    assert not observe.significant_change(a, b, 20.0, 2, cursor=True)
+
+
+def test_a_chord_of_narrow_digits_stacked_on_neighbouring_strings_is_a_change():
+    # Three 1s, 7 pixels wide and 14 tall, on lines 20 rows apart, with blank paper between them
+    a, b = np.zeros((200, 400), bool), np.zeros((200, 400), bool)
+    for k in range(3):
+        b[33 + 20 * k:47 + 20 * k, 200:207] = True
+    assert observe.significant_change(a, b, 20.0, 2, cursor=True)
+    b[73:87] = False             # two of them
+    assert observe.significant_change(a, b, 20.0, 2, cursor=True)
+
+
+def test_a_digit_changing_beside_a_moving_line_cursor_is_a_change():
+    a, b = cut_line_cursor()
+    b[60:74, 300:310] = True
+    assert observe.significant_change(a, b, 20.0, 2, cursor=True)

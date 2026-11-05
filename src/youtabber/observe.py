@@ -400,14 +400,54 @@ def turned(a: np.ndarray, b: np.ndarray) -> bool:
     return all((diff & m).sum() >= TURN_SHARE * m.sum() for m in (a, b))
 
 
-def significant_change(a: np.ndarray, b: np.ndarray, gap: float, radius: int = 1) -> bool:
+# A line cursor drawn over the staff is cut by each staff line into pieces stacked in one column, and where it passes
+# over a digit; closing the change map over this many rows joins them into one thin tall line again
+LINE_HOLE_ROWS = 9
+# ...as long as one piece is at least LINE_PIECE_TALL line gaps tall, taller than a fret digit, or each hole between
+# the pieces is at most LINE_HOLE_PX pixels or LINE_HOLE_GAPS line gaps tall, a staff line's rows, or lies on ink of
+# either frame, a digit the cursor passed over. Digits stacked on neighbouring strings leave about 0.3 line gaps of
+# blank paper between them
+LINE_PIECE_TALL, LINE_HOLE_PX, LINE_HOLE_GAPS = 0.8, 3, 0.15
+# A piece of change at most LINE_PIECE_PX pixels and LINE_PIECE_GAPS line gaps tall, and at least twice as wide, is a
+# piece of a staff line: a pale cursor box lightens the line under it, so the line breaks up where the box sits. A
+# beam is about half a line gap thick
+LINE_PIECE_PX, LINE_PIECE_GAPS = 4, 0.3
+
+
+def line_holes(ink: np.ndarray, diff: np.ndarray, labels: np.ndarray, i: int, box, gap: float) -> bool:
+    """True when joined piece i of `labels`, in the box (x, y, w, h), is a line cursor's pieces: one of them is
+    LINE_PIECE_TALL line gaps tall, or each run of rows between them is a staff line's rows or has `ink` beside it."""
+    x, y, w, h = (int(v) for v in box[:4])
+    mine = diff[y:y + h, x:x + w].astype(bool) & (labels[y:y + h, x:x + w] == i)
+    n, _, stats, _ = cv2.connectedComponentsWithStats(mine.astype(np.uint8), connectivity=8)
+    if any(stats[j][3] >= LINE_PIECE_TALL * gap for j in range(1, n)):
+        return True
+    changed = mine.any(axis=1)
+    inked = ink[y:y + h, max(0, x - 2):x + w + 2].any(axis=1)
+    edges = np.diff(np.concatenate([[0], (~changed).astype(np.int8), [0]]))
+    starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
+    thin = max(LINE_HOLE_PX, LINE_HOLE_GAPS * gap)
+    return all(e - s <= thin or inked[s:e].any() for s, e in zip(starts, ends))
+
+
+def significant_change(a: np.ndarray, b: np.ndarray, gap: float, radius: int = 1, cursor: bool = False) -> bool:
     """True when some mark the size of a digit is in one ink map and not near the same place in the other.
 
-    Thin tall marks are skipped: they are line cursors moving across a still page.
+    Thin tall marks are skipped: they are line cursors moving across a still page. With `cursor`, the pieces a
+    moving cursor leaves are skipped too: a line cursor cut up by the staff lines, and the staff lines a box
+    cursor breaks up.
     """
     diff = unmatched(a, b, radius)
     if diff.sum() < 8:
         return False
+    if cursor:
+        # Pieces that join into a thin tall line are left out; joining is only used to find them, so scattered
+        # specks never add up to a mark
+        joined = cv2.morphologyEx(diff, cv2.MORPH_CLOSE, np.ones((LINE_HOLE_ROWS, 1), np.uint8))
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(joined, connectivity=8)
+        tall = [i for i in range(1, n) if stats[i][3] > 1.5 * gap and stats[i][2] < 0.5 * gap
+                and line_holes(a | b, diff, labels, i, stats[i], gap)]
+        diff[np.isin(labels, tall)] = 0
     n, _, stats, _ = cv2.connectedComponentsWithStats(diff, connectivity=8)
     amin = max(12, 0.1 * gap * gap)
     for i in range(1, n):
@@ -415,6 +455,8 @@ def significant_change(a: np.ndarray, b: np.ndarray, gap: float, radius: int = 1
         if area < amin:
             continue
         if h > 1.5 * gap and w < 0.5 * gap:
+            continue
+        if cursor and h <= min(LINE_PIECE_PX, LINE_PIECE_GAPS * gap) and w >= 2 * h:
             continue
         # A sliver one or two pixels thick is an edge flickering, not a mark that changed
         if min(w, h) < max(3, 0.12 * gap):
@@ -768,7 +810,7 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         if not tinted_paper(tint, mask, r[key]):
             mask &= ~tint
         # Two pixels of slack: a cursor passing over a note changes its soft edge
-        changed = significant_change(r[key] & mask, ink & mask, gap, radius=2)
+        changed = significant_change(r[key] & mask, ink & mask, gap, radius=2, cursor=True)
         if not changed and prints_numbers is not None and numbers_differ(r, f, ink, mask, tint, key):
             changed = shows_numbers(r)
         return changed, f
