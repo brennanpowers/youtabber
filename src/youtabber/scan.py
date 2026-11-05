@@ -38,6 +38,17 @@ DIAGRAM_PIECE_MIN, DIAGRAM_PIECE_GAPS, DIAGRAM_SHORT_BREAK = 1.5, 5.0, 0.7
 # pieces count as diagrams only when STROKE_ENDS of their inner ends have, within max(STROKE_PX, STROKE_GAPS line
 # gaps), a column that is ink on STROKE_COVER of the rows from the top line to the bottom one
 STROKE_ENDS, STROKE_COVER, STROKE_PX, STROKE_GAPS = 0.75, 0.85, 3, 0.1
+# A fretboard drawn as strings is crossed by its frets. Going along the neck one way, the step from fret to fret is
+# FRET_RATIO (from, to) of the step before (0.94 on a real neck), at least FRET_STEPS times in a row
+FRET_RATIO, FRET_STEPS = (0.85, 0.98), 4
+# ...and that run holds at least FRET_SHARE of all the steps across the staff, since frets fill a neck; a long strip
+# of measures can hold a short run of steps that shrink by chance
+FRET_SHARE = 0.25
+# ...and its typical step is at most FRET_STEP_GAPS line gaps, closer than a line's barlines stand, unless the run
+# is FRET_LONG_RUN or more, longer than a line of up to 8 measures can hold
+FRET_STEP_GAPS, FRET_LONG_RUN = 7.0, 8
+# Barlines stand at least this many line gaps apart (the median step), as a measure holds at least a rest
+BAR_GAPS = 2.0
 # A notation staff sits at most this many tab line gaps above its tab staff...
 NOTATION_GAPS = 9
 # ...or up to this many when nothing but small marks (H, P, fingerings) lies between them
@@ -207,6 +218,43 @@ def stroke_near(gray: np.ndarray, st: Staff, x: int) -> bool:
     return bool(ink.size and ink.mean(axis=0).max() >= STROKE_COVER)
 
 
+def crossings(gray: np.ndarray, st: Staff, darker: bool) -> list[float]:
+    """The x of each vertical line darker (or lighter) than the paper between the staff's lines on STROKE_COVER of the
+    rows from its top line to its bottom line: barlines, frets, or a line cursor."""
+    paper = np.median([np.median(gray[int(round((a + b) / 2)), st.x0:st.x1]) for a, b in zip(st.lines, st.lines[1:])])
+    cols = gray[int(round(st.top)):int(round(st.bottom)) + 1, st.x0:st.x1].astype(np.int16)
+    ink = cols < paper - LINE_CONTRAST if darker else cols > paper + LINE_CONTRAST
+    at = np.flatnonzero(ink.mean(axis=0) >= STROKE_COVER) if ink.size else np.array([], int)
+    if not len(at):
+        return []
+    # Columns a couple of pixels apart are one antialiased line
+    return [float(r.mean()) + st.x0 for r in np.split(at, np.flatnonzero(np.diff(at) > 2) + 1)]
+
+
+def fretboard(gray: np.ndarray, st: Staff) -> bool:
+    """True when the staff is a fretboard's strings: lines cross it, light or dark, closer together than barlines,
+    and the steps between them shrink a little at a time one way along it, as frets do along a neck."""
+    for darker in (True, False):
+        steps = np.diff(crossings(gray, st, darker))
+        if len(steps) < FRET_STEPS + 1:
+            continue
+        need = max(FRET_STEPS, FRET_SHARE * len(steps))
+        for way in (steps, steps[::-1]):
+            run = 0
+            for i, r in enumerate(way[1:] / way[:-1]):
+                run = run + 1 if FRET_RATIO[0] <= r <= FRET_RATIO[1] else 0
+                if run >= need and (run >= FRET_LONG_RUN
+                                    or float(np.median(way[i + 1 - run:i + 2])) <= FRET_STEP_GAPS * st.gap):
+                    return True
+    return False
+
+
+def barred(gray: np.ndarray, st: Staff) -> bool:
+    """True when two or more lines of the staff's ink cross it about a measure apart or more, as barlines do."""
+    xs = crossings(gray, st, st.polarity == "dark")
+    return len(xs) >= 2 and float(np.median(np.diff(xs))) >= BAR_GAPS * st.gap
+
+
 def line_columns(gray: np.ndarray, st: Staff) -> np.ndarray:
     """Columns where at least half of the staff's lines are drawn in this frame."""
     a = max(0, int(st.top) - st.reach - 1)
@@ -302,7 +350,8 @@ def systems_in(gray: np.ndarray, whole_lines: bool = False) -> list[System]:
                for o in clash):
             continue
         keep.append(s)
-    staffs = [s for s in keep if paper_between_lines(gray, s) and not (whole_lines and broken_up(gray, s))]
+    staffs = [s for s in keep if paper_between_lines(gray, s) and not (whole_lines and broken_up(gray, s))
+              and not fretboard(gray, s)]
     out: list[System] = []
     used = set()
     # From the bottom up: each tab staff takes the staff just above it as its notation staff, so a stray group of
@@ -413,6 +462,7 @@ def scan(path: Path, width: int, height: int, region: tuple[int, int, int, int] 
         for s in found[t]:
             s.motion = motion
             s.lines_at = line_columns(g, s.tab)
+            s.barred = barred(g, s.tab)
             # A panel's lines run on into the panel beside it; only its own columns count for its bound
             if s.panel:
                 s.lines_at[:s.tab.x0] = False
@@ -447,6 +497,7 @@ def scan(path: Path, width: int, height: int, region: tuple[int, int, int, int] 
         cur: Segment | None = None
         last_seen = -1e9
         dropped: set[float] = set()   # times of frames whose staffs of the other polarity were left out
+        ruled_seg = False             # some frame of the current segment showed a barline on its staffs
         for t in sorted(found):
             syss = found[t]
             if not syss:
@@ -458,11 +509,13 @@ def scan(path: Path, width: int, height: int, region: tuple[int, int, int, int] 
             # Lines in the footage (guitar strings) come and go above the tab as a staff of the other polarity;
             # while the frame still shows a staff of the segment's polarity and spacing, the segment goes on
             # without them. Whichever polarity starts the segment keeps it, so footage that starts one hides the
-            # real tab after it
+            # real tab after it, unless the tab shows barlines and the segment's staffs never have, as a card's
+            # strings don't
             if cur is not None and pol != cur.polarity and t - last_seen <= BRIDGE_SECONDS and t not in no_bridge:
                 same = [s for s in syss if s.tab.polarity == cur.polarity
                         and abs(s.tab.gap - cur.gap) <= GAP_DRIFT * cur.gap]
-                if same:
+                ruled = any(s.barred for s in syss if s.tab.polarity != cur.polarity)
+                if same and not (ruled and not ruled_seg and not any(s.barred for s in same)):
                     pol, gap = cur.polarity, max(s.tab.gap for s in same)
                     dropped.add(t)
                     found[t] = [s for s in syss if s.tab.polarity == pol]
@@ -480,8 +533,10 @@ def scan(path: Path, width: int, height: int, region: tuple[int, int, int, int] 
                 if cur is not None:
                     segments.append(cur)
                 cur = Segment(t, t, gap, pol, [t], [gap])
+                ruled_seg = False
                 if carries and lines_of(found[t]) == lines_of(found[last.times[-1]]):
                     cur.passed = (last.t0, last.t1 + 1 / SCAN_FPS)
+            ruled_seg = ruled_seg or any(s.barred for s in found[t] if s.tab.polarity == pol)
             last_seen = t
         if cur is not None:
             segments.append(cur)

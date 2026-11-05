@@ -268,3 +268,88 @@ def test_short_staffs_use_only_the_usual_thin_line_test():
     rest[46:145] = 230
     assert [round(s.top) for s in scan_module.staffs_with(rest, 20, False, 4)] == [250]
     assert scan_module.short_staffs(img, [long]) == []
+
+
+def fretboard_frame(frets: bool, tab: bool = True) -> np.ndarray:
+    """A white gray frame with a dark board of 4 light strings 30 pixels apart at the bottom, crossed by light frets
+    when `frets`, 90 pixels apart at the left and each step 0.94 of the one before; and, when `tab`, a dark 4-line tab
+    staff 14 pixels apart above it with a barline every 270 pixels."""
+    g = np.full((720, 1280), 255, np.uint8)
+    g[490:630] = 20
+    for i in range(4):
+        g[515 + 30 * i, 60:1220] = 200
+    if frets:
+        x, step = 80.0, 90.0
+        while x < 1220:
+            g[515:606, int(x):int(x) + 2] = 200
+            x, step = x + step, step * 0.94
+    if tab:
+        for i in range(4):
+            g[TOP + i * GAP, 100:1180] = 60
+        for x in range(100, 1181, 270):
+            g[TOP:TOP + 3 * GAP + 1, x] = 60
+    return g
+
+
+def test_a_fretboard_s_strings_are_no_tab_staff():
+    # The tab's barlines stand evenly apart, so its steps never shrink
+    assert [(s.tab.polarity, s.tab.gap) for s in scan_module.systems_in(fretboard_frame(True))] == [("dark", 14.0)]
+    assert len(scan_module.systems_in(fretboard_frame(False))) == 2
+
+
+def test_a_long_strip_of_measures_with_a_short_run_of_shrinking_steps_is_tab():
+    # 30 barlines 150 or 170 pixels apart, with four steps that each happen to shrink by 0.94 among them
+    steps = [150, 170] * 6 + [160, 150, 141, 133, 125] + [170, 150] * 6
+    g = np.full((600, sum(steps) + 200), 255, np.uint8)
+    for i in range(4):
+        g[TOP + i * GAP, 100:100 + sum(steps)] = 60
+    x = 100
+    for step in [0] + steps:
+        x += step
+        g[TOP:TOP + 3 * GAP + 1, x] = 60
+    assert [s.tab.gap for s in scan_module.systems_in(g)] == [14.0]
+
+
+def test_an_ordinary_line_of_measures_that_narrow_or_widen_steadily_is_tab():
+    # Six to eight measures whose widths shrink or grow by up to 8% each, as note density changes along a line
+    for steps in ([200, 184, 170, 157, 145, 134], [200, 190, 200, 185, 170, 160, 150, 140], [120, 130, 140, 150, 160, 170]):
+        g = np.full((600, sum(steps) + 200), 255, np.uint8)
+        for i in range(4):
+            g[TOP + i * GAP, 100:100 + sum(steps)] = 60
+        x = 100
+        for step in [0] + steps:
+            x += step
+            g[TOP:TOP + 3 * GAP + 1, x] = 60
+        assert [s.tab.gap for s in scan_module.systems_in(g)] == [14.0], steps
+
+
+def test_a_segment_whose_tab_showed_barlines_goes_on_through_a_frame_without_any_beside_ruled_footage(monkeypatch):
+    def frame(k: int, fps: int) -> np.ndarray:
+        """Dark tab with barlines for 2 s; then strings in the footage above it, crossed by light lines evenly 100
+        pixels apart, while the tab's frame shows no barline."""
+        g = np.full((720, 1280), 255, np.uint8)
+        for i in range(4):
+            g[TOP + i * GAP, 100:1180] = 60
+        if k < 2 * fps:
+            for x in range(100, 1181, 270):
+                g[TOP:TOP + 3 * GAP + 1, x] = 60
+        else:
+            g[100:240] = 20
+            for i in range(4):
+                g[125 + 30 * i, 60:1220] = 200
+            for x in range(80, 1220, 100):
+                g[125:216, x:x + 2] = 200
+        return cv2.cvtColor(g, cv2.COLOR_GRAY2BGR)
+    monkeypatch.setattr(scan_module, "frames", lambda path, fps: [(k / fps, frame(k, fps)) for k in range(5 * fps)])
+    segments = scan_module.scan(None, 1280, 720)[0]
+    assert [(s.polarity, s.t0, s.t1) for s in segments] == [("dark", 0.0, 5.0)]
+
+
+def test_tab_with_barlines_ends_a_segment_held_by_a_card_s_strings(monkeypatch):
+    # A card with light strings and no frets for 2 s, then the page with dark tab above the same strings
+    def frames(path, fps):
+        return [(k / fps, cv2.cvtColor(fretboard_frame(False, k >= 2 * fps), cv2.COLOR_GRAY2BGR))
+                for k in range(5 * fps)]
+    monkeypatch.setattr(scan_module, "frames", frames)
+    segments = scan_module.scan(None, 1280, 720)[0]
+    assert [(s.polarity, s.t0) for s in segments] == [("light", 0.0), ("dark", 2.0)]
