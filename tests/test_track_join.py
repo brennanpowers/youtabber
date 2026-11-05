@@ -6,11 +6,12 @@ from test_numbering import band_view, music, run, view
 
 from youtabber import assemble as assemble_module
 from youtabber.assemble import (RESTART_GAP_SECONDS, Assembly, Decision, Obs, Slot, after_header, assemble, cell_at,
-                                borrow_numbers, choose_shift, closes_piece, compare_cells, drawn_near, find_run,
-                                forget_compared, jumped_back, keeps_widths, measure_time, page_flip_join, place_rest,
-                                playhead_at, playhead_join, playhead_restarts, playhead_track, register, register_marks,
-                                repeat_played, replay_evidence, rest_of, restart_before, same_cell, samples_on,
-                                scroll_shares, scroll_shifts, shown_again, split_measure, still_links, track_join, usual_slides)
+                                borrow_numbers, choose_shift, closes_piece, compare_cells, cut_tails, drawn_near,
+                                find_run, forget_compared, jumped_back, keeps_widths, measure_time, page_flip_join,
+                                place_rest, playhead_at, playhead_join, playhead_restarts, playhead_track, register,
+                                register_marks, repeat_played, replay_evidence, rest_of, restart_before, same_cell,
+                                samples_on, scroll_shares, scroll_shifts, sequence_links, shown_again, split_measure,
+                                still_links, track_join, usual_slides, view_pairs)
 from youtabber.observe import unmatched
 from youtabber.parse import Cell
 from youtabber.pipeline import Measure, Notice, edge_notices, join_notices, readings, repeat_notices
@@ -1086,6 +1087,40 @@ def headed(lead: int):
 def test_a_cut_measure_matches_a_system_start_past_its_header():
     part, whole = headed(50)
     assert after_header(part, whole, 10.0) and same_cell(part, whole, 10.0)
+
+
+def test_a_page_that_moved_a_little_joins_on_its_tails_cut_at_different_places():
+    # Bars 1-4 with bar 4 cut to 120 px by the panel edge, then the page 20 px to the right with bar 4 cut to 100 px;
+    # bar 4 cut that way is no sighting same_cell compares whole
+    p, o = band_view(0, 1), band_view(1, 1)
+    p.cells[3] = piece(p.cells[3], "tail", 0, 120)
+    o.cells[3] = piece(o.cells[3], "tail", 0, 100)
+    assert not same_cell(p.cells[3], o.cells[3], 10.0)
+    assert sequence_links(p, o, 10.0)[0] == {0: 0, 1: 1, 2: 2, 3: 3}
+
+
+def test_tails_cut_at_different_places_that_start_differently_are_other_measures():
+    c = band_view(0, 1).cells[3]
+    ink = c.ink.copy()
+    ink[20:24, 20:80] = True
+    other = replace(c, ink=ink)
+    assert cut_tails(piece(c, "tail", 0, 120), piece(c, "tail", 0, 100), 10.0)
+    assert not cut_tails(piece(c, "tail", 0, 120), piece(other, "tail", 0, 100), 10.0)
+
+
+def test_views_on_either_side_of_a_brief_view_with_no_cells_are_registered_as_a_pair():
+    # Measures 1-4, a page caught for half a second during the jump, then measures 3-6: the band moved two measures
+    p, o = band_view(0, 1), band_view(2, 3)
+    passing = Obs(1, 10.0, 10.5, [], [], 0, (0, 0), brief=True)
+    (dx, _), *_ = view_pairs([p, passing, o], 10.0).shift_cache[2]
+    assert abs(dx - 400) <= 2
+    # The band held still from the brief view to the next, and slid 400 px from the view before it
+    o.move = Move("still")
+    o.move_over = (0, Move("slide", [-400], [True], 3, [-130.0, -140.0, -130.0]))
+    (decision,) = view_pairs([p, passing, o], 10.0).moves
+    assert decision.chosen == "slide" and o.move.kind == "slide"
+    held = Obs(1, 10.0, 12.0, [], [], 0, (0, 0))
+    assert 2 not in view_pairs([p, held, o], 10.0).shift_cache
 
 
 def test_same_cell_answers_a_pair_again_from_the_store_until_it_is_forgotten(monkeypatch):

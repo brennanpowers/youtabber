@@ -409,10 +409,16 @@ def read(path: Path, region: Region | None = None, progress: Progress | None = N
         r.panels += still
         gaps.append(seg.gap)
         # How the part's band moved between each pair of its views, read from the frames between them
-        for p, o in part_pairs(mine):
+        pairs = part_pairs(mine)
+        for k, (p, o) in enumerate(pairs):
             part = r.parts[o.part]
-            o.move = view_move(path, part_crop(seg, part), seg, p, o, thr_of[part.id],
-                               (part.rows[0] - seg.y0, part.rows[1] - seg.y0))
+            within = (part.rows[0] - seg.y0, part.rows[1] - seg.y0)
+            o.move = view_move(path, part_crop(seg, part), seg, p, o, thr_of[part.id], within)
+            # Assembly passes over a brief view left with no cells, so the move over it is measured too
+            if p.brief and k > 0 and pairs[k - 1][1] is p:
+                before = pairs[k - 1][0]
+                o.move_over = (before.index, view_move(path, part_crop(seg, part), seg, before, o, thr_of[part.id],
+                                                       within))
     r.views = obs
     tell("read", 1.0)
     return finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, tell)

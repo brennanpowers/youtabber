@@ -157,6 +157,7 @@ class Obs:
     print_rect: tuple = (0, 0, 0, 0)     # paper area to print from (x0, y0, x1, y1), crop coordinates
     number_conflicts: list = field(default_factory=list)   # (cell, number read) where the count gives another
     move: object = None                  # how the band moved from the view before, measured on the frames between
+    move_over: tuple | None = None       # (index, move) of the view two back when the one before is brief
     track: list | None = None            # the playhead samples on the view's music, found when first asked for
     restarted: bool = False              # the band held still while the playhead went back over the page
     part: int = 0                        # id of the part it shows, its place in the reading's parts
@@ -689,6 +690,18 @@ def after_header(part, whole, gap: float) -> bool:
                for dx in range(int(SYSTEM_START_GAPS * gap), min(hw - w, int(STAFF_START_GAPS * gap)) + 1, 2))
 
 
+def cut_tails(a, b, gap: float) -> bool:
+    """True when two tails cut by the panel edge at different places show the same start of a measure, as when a page
+    moves a little between two screens."""
+    if a.kind != "tail" or b.kind != "tail" or a.complete or b.complete:
+        return False
+    part, whole = (a, b) if a.ink.shape[1] <= b.ink.shape[1] else (b, a)
+    # Tails cut alike are compared whole by same_cell
+    if whole.ink.shape[1] - part.ink.shape[1] <= max(WIDTH_PX, WIDTH_SHARE * whole.ink.shape[1]):
+        return False
+    return same_part(part, whole, gap, "left")
+
+
 def sequence_links(p: Obs, o: Obs, gap: float) -> list[dict[int, int]]:
     """Possible joins where the last k cells of p are the first k cells of o (largest k first).
 
@@ -701,7 +714,7 @@ def sequence_links(p: Obs, o: Obs, gap: float) -> list[dict[int, int]]:
         ok = True
         for i in range(k):
             a, b = p.cells[len(p.cells) - k + i], o.cells[i]
-            ok = same_cell(a, b, gap)
+            ok = same_cell(a, b, gap) or cut_tails(a, b, gap)
             if not ok:
                 break
         if ok:
@@ -1248,16 +1261,22 @@ class _Pairs:
 def view_pairs(obs: list[Obs], gap: float) -> _Pairs:
     """Register every consecutive pair of views and read the joins their band moves decide."""
     moves = []
+    # A brief view left with no cells is a page coming or going, so the views on either side of it are a pair, and
+    # the band's move between them is the one measured over it
+    placed = [o for o in obs if o.cells or not o.brief]
+    for p, o in zip(placed, placed[1:]):
+        if o.move_over is not None and o.move_over[0] == p.index:
+            o.move = o.move_over[1]
     # Registration of every consecutive pair
     shift_cache: dict = {}
-    for p, o in zip(obs, obs[1:]):
+    for p, o in zip(placed, placed[1:]):
         if p.seg == o.seg and p.cells and o.cells and not glided_on(o):
             shift_cache[o.index] = scroll_shifts(p, o, gap)
     # Joins decided by how the band moved between the two views
     track_joins: dict = {}
     slides: dict = {}
     drawn_slides: dict = {}
-    for p, o in zip(obs, obs[1:]):
+    for p, o in zip(placed, placed[1:]):
         if p.seg == o.seg and p.cells and o.cells and not glided_on(o):
             if o.move is not None:
                 moves.append(move_decision(p, o, gap))
