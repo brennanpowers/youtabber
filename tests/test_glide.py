@@ -1,12 +1,16 @@
 import shutil
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
 import pytest
 
 from synth import Song, write_video
-from youtabber import glide, pipeline
-from youtabber.glide import Mosaic
+from youtabber import glide, ocr, pipeline
+from youtabber.glide import Mosaic, carried_columns
+from youtabber.pipeline import stacked_tracks, track_score
+from youtabber.scan import Segment, System
+from youtabber.staff import Staff
 
 pytestmark = pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")
 
@@ -335,3 +339,145 @@ def test_a_mosaic_whose_staff_sits_lower_in_two_stretches_keeps_its_staff():
         image[:3, a:b] = 255
     (ps,) = pipeline.parse_mosaic(0, image, (0, 0, 2400, 130), "dark", 140.0, 229.0, GAP)
     assert len(ps.system.tab.lines) == 6
+
+
+def test_a_stacked_track_column_is_the_one_that_reached_the_playhead_at_the_same_time():
+    times = np.arange(11, dtype=float)
+    # The reference track glides 10 px a second, the other 20; both have their playhead 10 columns in
+    ref = Mosaic(np.zeros((5, 120, 3), np.uint8), 0, 10.0 * times, times, 30.0, 10)
+    src = Mosaic(np.zeros((5, 230, 3), np.uint8), 0, 20.0 * times, times, 30.0, 10)
+    cols = carried_columns(src, ref, 30.0)
+    assert cols[60] == 110            # reached the playhead at 5 s
+    assert cols[110] == 210           # at 10 s
+    assert list(cols[:10]) == list(range(10))   # left of the playhead on the first screen
+
+
+def test_a_stacked_track_that_starts_later_or_ends_sooner_has_no_columns_there():
+    times = np.arange(11, dtype=float)
+    ref = Mosaic(np.zeros((5, 120, 3), np.uint8), 0, 10.0 * times, times, 30.0, 10)
+    # The other track's first clear frame is at 3 s, and its mosaic's last column reached the playhead at 8.45 s
+    late = Mosaic(np.zeros((5, 120, 3), np.uint8), 0, 20.0 * times[3:] - 60, times[3:], 30.0, 10)
+    cols = carried_columns(late, ref, 30.0)
+    assert list(cols[:40]) == [-1] * 40          # before 3 s, and left of the playhead on ref's first screen
+    assert cols[40] == 10 and cols[80] == 90     # reached the playhead at 3 s and at 7 s
+    assert cols[94] == 118 and cols[95] == -1    # past its column 119 the track shows nothing
+
+
+def test_a_stacked_track_whose_playhead_was_not_found_is_lined_up_by_the_one_that_was():
+    times = np.arange(11, dtype=float)
+    ref = Mosaic(np.zeros((5, 120, 3), np.uint8), 0, 10.0 * times, times, 30.0, 10)
+    # Built without a playhead, the other track counts its columns from the panel's centre, 400
+    src = Mosaic(np.zeros((5, 600, 3), np.uint8), 0, 20.0 * times, times, 400.0, 380, centred=True)
+    cols = carried_columns(src, ref, 30.0)
+    assert cols[60] == 110 and cols[110] == 210
+
+
+GAP_S = 14
+
+
+def stack_staff(top: int) -> Staff:
+    return Staff([top + i * GAP_S for i in range(6)], 0, 800, GAP_S, "dark")
+
+
+def stack_mosaic(rows, top, bar_every, speed, t_start, width=None, centred=False) -> Mosaic:
+    """A track's mosaic over crop rows `rows`: its tab staff at crop row `top`, a barline every `bar_every` columns
+    from column 100 (the playhead's column on the first screen, at screen x 300), gliding `speed` px a second from
+    `t_start` to 10 s."""
+    times = np.arange(t_start, 10.001, 0.5)
+    off = speed * (times - times[0])
+    w = width or int(100 + off[-1] + 500)
+    img = np.full((rows[1] - rows[0], w, 3), 255, np.uint8)
+    y = top - rows[0]
+    for i in range(6):
+        cv2.line(img, (0, y + i * GAP_S), (w - 1, y + i * GAP_S), (60, 60, 60), 1)
+    for x in range(100, w, bar_every):
+        cv2.line(img, (x, y), (x, y + 5 * GAP_S), (0, 0, 0), 2)
+        cv2.putText(img, "7", (x + bar_every // 3, y + 2 * GAP_S + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+    return Mosaic(img, rows[0], off, times, 300.0, 100, centred=centred)
+
+
+def stacked_glide(monkeypatch, upper_args, lower_args):
+    """glide_obs on two tracks stacked at crop rows 130 and 300, seen in every frame, with each track's mosaic made
+    by stack_mosaic; also returns how often each track's mosaic was built."""
+    seg = Segment(0.0, 10.0, GAP_S, "dark", y0=0, y1=400, x0=0, x1=800)
+    upper, lower = System(stack_staff(130), None), System(stack_staff(300), None)
+    found = {t: [upper, lower] for t in np.arange(1.0, 10.0, 0.5)}
+    made = {130: 0, 300: 0}
+
+    def build_track(path, crop, s, group, thr, t0):
+        _, print_rows = pipeline.group_rows(s, group)
+        top = int(group[0].tab.top)
+        made[top] += 1
+        return stack_mosaic(print_rows, top, *(upper_args if top == 130 else lower_args))
+    monkeypatch.setattr(pipeline, "build_track", build_track)
+    monkeypatch.setattr(ocr, "read_number", lambda crop: None)
+    return pipeline.glide_obs(None, (0, 0, 800, 400), seg, 0, found, 140.0, 229.0, 0, 0.0), made
+
+
+def test_a_stacked_glide_prints_every_track_over_the_measures_of_the_one_with_wide_measures(monkeypatch):
+    # The lower track's measures are half as wide on screen and glide twice as fast, from 2 s on
+    o, made = stacked_glide(monkeypatch, (300, 50.0, 0.0), (150, 100.0, 2.0))
+    assert made == {130: 1, 300: 1}
+    # The measures are the upper track's, and the image reaches from its print rows to the lower track's
+    assert [(c.x0, c.x1, c.kind) for c in o.cells[:3]] == [(99, 399, "full"), (399, 699, "full"), (699, 999, "full")]
+    assert o.image.shape == (368, 1100, 3) and o.rows == (32, 400)
+    assert o.systems[0].system.notation.lines[0] == 98 and o.systems[0].system.tab.lines[0] == 268
+    lower_rows = o.image[268 - 2:268 + 5 * GAP_S + 3]
+    # The lower track's barline at its column 250 reached the playhead at 3.5 s, as the upper track's column 275 did
+    assert lower_rows[:, 275].min() == 0
+    # Before 2 s and past the end of the lower track's mosaic, its rows are paper
+    assert (lower_rows[:, :200] == 255).all() and (lower_rows[:, 850:] == 255).all()
+    assert o.tracks_left_out == 0
+
+
+def test_stacked_tracks_with_no_playhead_found_print_only_the_track_counted_with_a_notice(monkeypatch):
+    o, made = stacked_glide(monkeypatch, (300, 50.0, 0.0, None, True), (150, 100.0, 2.0, None, True))
+    assert o.image.shape[0] == 242 - 32 and o.tracks_left_out == 1
+    assert [n.kind for n in pipeline.track_notices([o])] == ["parts"]
+
+
+def test_a_glide_whose_stacked_tracks_show_too_few_measures_is_read_from_the_mosaic_already_built(monkeypatch):
+    # Each track shows one whole measure, so neither prints with the other; the upper track is read alone
+    o, made = stacked_glide(monkeypatch, (600, 50.0, 0.0, 800), (600, 50.0, 0.0, 800))
+    assert made == {130: 1, 300: 1}
+    assert o.image.shape[0] == 242 - 32
+
+
+def test_staff_groups_seen_as_often_and_spaced_alike_are_stacked_tracks():
+
+    def group(n, gap, top):
+        return [SimpleNamespace(tab=SimpleNamespace(gap=gap, top=top)) for _ in range(n)]
+    title, upper, lower = group(4, 25.0, 100), group(20, 25.0, 300), group(19, 25.5, 600)
+    assert stacked_tracks([title, upper, lower]) == [upper, lower]
+    assert stacked_tracks([upper, group(20, 14.0, 600)]) == []
+    # Of five tracks seen alike, the four seen most are read
+    tracks = [group(n, 25.0, 300 * k) for k, n in enumerate((20, 19, 17, 20, 18))]
+    assert stacked_tracks(tracks) == [tracks[0], tracks[1], tracks[3], tracks[4]]
+
+
+def test_a_system_whose_notation_staff_is_found_in_some_frames_is_one_track():
+    tab = Staff([300 + 12 * i for i in range(6)], 0, 1000, 12, "dark")
+    notation = Staff([200 + 12 * i for i in range(5)], 0, 1000, 12, "dark")
+    seen = [System(tab, notation if i % 2 else None) for i in range(20)]
+    # Grouped by their tops, the frames with the notation staff and those without make two groups
+    groups = [[s for s in seen if s.notation is not None], [s for s in seen if s.notation is None]]
+    assert stacked_tracks(groups) == []
+    # With another track below, the two groups are one track, whose rows start at the notation staff
+    other = [System(Staff([600 + 12 * i for i in range(6)], 0, 1000, 12, "dark"), None) for _ in range(20)]
+    tracks = stacked_tracks(groups + [other])
+    assert [len(t) for t in tracks] == [20, 20]
+    assert pipeline.group_top(tracks[0]) == 200
+
+
+def test_the_track_counted_is_one_of_wide_measures_numbered_in_order(monkeypatch):
+    monkeypatch.setattr(ocr, "read_number", lambda crop: crop)
+
+    def track(width, numbers):
+        cells = [SimpleNamespace(kind="full", x0=k * width, x1=(k + 1) * width, number_crop=n)
+                 for k, n in enumerate(numbers)]
+        return [SimpleNamespace(cells=cells)]
+    # Bars of rest drawn 4 line gaps wide, numbered in order, against bars of music numbered with a gap
+    rests = track_score([0] * 20, track(100, [1, 2, 3, 4, 5]), 25.0)
+    music = track_score([0] * 20, track(700, [1, 2, None, 4, 5]), 25.0)
+    assert rests == (False, 1.0, 20) and music == (True, 0.5, 20)
+    assert max([rests, music]) == music

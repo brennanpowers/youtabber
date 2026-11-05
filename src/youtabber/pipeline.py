@@ -25,8 +25,8 @@ from youtabber.observe import (ABOVE_GAPS, BELOW_GAPS, OBS_FPS, PRINT_ABOVE_GAPS
 from youtabber.parse import Cell, bare_header, line_darkness, numbers_printed, parse_view, staff_ink
 from youtabber.panel import panel_bounds
 from youtabber.parts import Part, find_parts, merge_order, stream_of
-from youtabber.scan import SCAN_FPS, Segment, scan
-from youtabber.staff import find_staffs
+from youtabber.scan import SCAN_FPS, Segment, System, scan
+from youtabber.staff import Staff, find_staffs
 from youtabber.video import frames, probe
 
 # Every kind of evidence the assembler can weigh
@@ -71,6 +71,17 @@ GLIDE_MIN_SECONDS = 20.0
 HELD_SHARE = 0.4
 # Staff positions tried for a glide, most often seen first
 GLIDE_GROUPS = 3
+# Tracks stacked in a glide (parts played together, each with its own staff and barlines): staff groups seen at least
+# TRACK_SEEN_SHARE as often as the most-seen group, spaced within TRACK_GAP_SHARE of its line gap
+TRACK_SEEN_SHARE, TRACK_GAP_SHARE = 0.8, 0.1
+# The track whose measures count is one whose typical measure is at least TRACK_WIDE_GAPS line gaps wide, as bars
+# of music are, with the most measure numbers counting up by one. A track of bars of rest drawn narrow, or of chord
+# strokes read as barlines, has narrow cells
+TRACK_WIDE_GAPS = 12.0
+# A track prints with the others only when its mosaic shows at least this many whole measures
+TRACK_MIN_BARS = 2
+# At most this many stacked tracks are read, the most seen first; each takes a decode and a parse of the glide
+TRACK_MAX = 4
 # A glide is read in at most this many pieces, each at least this long, with rows from the staffs seen in its
 # first GLIDE_ROWS_SECONDS
 MAX_GLIDE_PIECES, GLIDE_PIECE_SECONDS, GLIDE_ROWS_SECONDS = 8, 2.0, 10.0
@@ -499,7 +510,7 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
 
     notices = (join_notices(main, obs) + edge_notices(main, obs, r.candidates[0].measures)
                + header_notices(main, obs, typical) + header_kept_notices(obs) + colored_bar_notices(obs)
-               + faint_bar_notices(obs))
+               + faint_bar_notices(obs) + track_notices(obs))
     if r.intro is not None:
         notices.append(Notice(round(r.intro[0], 2), round(r.intro[1], 2), "intro",
                               f"The tab at {fmt(r.intro[0])}-{fmt(r.intro[1])} is drawn in another layout than the "
@@ -1597,6 +1608,14 @@ def colored_bar_notices(obs: list[Obs]) -> list[Notice]:
     return out
 
 
+def track_notices(obs: list[Obs]) -> list[Notice]:
+    """One notice per glide whose stacked tracks print only one of them, as no playhead was found to line them up."""
+    return [Notice(round(o.t0, 2), round(o.t1, 2), "parts",
+                   f"Other tracks of the tab glide stacked with this one at {fmt(o.t0)}-{fmt(o.t1)}, but no playhead "
+                   f"was found to line them up, so they aren't printed.", True)
+            for o in obs if o.tracks_left_out]
+
+
 def faint_bar_notices(obs: list[Obs]) -> list[Notice]:
     """One notice per stretch of screens with a faint line inside a measure that may be a barline left out: if it is
     one, two measures there are printed as one."""
@@ -1878,28 +1897,60 @@ def glide_obs(path: Path, crop, seg: Segment, si: int, found, thr: float, fthr: 
             groups[-1].append(s)
         else:
             groups.append([s])
-    m = rows = None
+    tracks = stacked_tracks(groups)
+    # Mosaics the stacked reading built, by group, so reading a single track doesn't decode them again
+    tried: dict = {}
+    if len(tracks) >= 2:
+        o = stacked_obs(path, crop, seg, si, tracks, thr, fthr, index, t0, tried)
+        if o is not None:
+            return o
+    m = None
     for group in sorted(groups, key=len, reverse=True)[:GLIDE_GROUPS]:
-        top = float(np.median([s.top for s in group])) - seg.y0
-        bottom = float(np.median([s.tab.bottom for s in group])) - seg.y0
-        g = float(np.median([s.tab.gap for s in group]))
-        rows = (max(0, int(top - ABOVE_GAPS * g)), min(seg.y1 - seg.y0, int(bottom + BELOW_GAPS * g)))
-        staff_rows = (max(rows[0], int(top)), min(rows[1], int(bottom) + 1))
-        # The mosaic reaches up to the chord names and labels; the playhead and the motion use the analysis rows
-        print_rows = (max(0, int(top - PRINT_ABOVE_GAPS * g)), rows[1])
-        staff_x = (int(np.median([s.tab.x0 for s in group])) - seg.x0,
-                   int(np.median([s.tab.x1 for s in group])) - seg.x0)
-        m = glide.build(path, crop, print_rows, staff_rows, seg.polarity, thr, seg.gap, t0, seg.t1,
-                        analysis_rows=rows, staff_x=staff_x, redrawn=t0 > seg.t0,
-                        tab_rows=(float(np.median([s.tab.top for s in group])) - seg.y0, bottom))
+        rows, print_rows = group_rows(seg, group)
+        m = tried[id(group)] if id(group) in tried else build_track(path, crop, seg, group, thr, t0)
         if m is not None:
             break
+    tried.clear()
     if m is None:
         return None
     h, w = m.image.shape[:2]
-    print_top = print_rows[0]
-    systems = parse_mosaic(index, m.image, (0, rows[0] - print_top, w, rows[1] - print_top), seg.polarity, thr, fthr,
-                           seg.gap)
+    systems = parse_mosaic(index, m.image, (0, rows[0] - print_rows[0], w, rows[1] - print_rows[0]), seg.polarity,
+                           thr, fthr, seg.gap)
+    return mosaic_obs(m, systems, seg, si, index, t0, print_rows)
+
+
+def group_rows(seg: Segment, group: list) -> tuple[tuple[int, int], tuple[int, int]]:
+    """(analysis rows, print rows) of a glide's staff group in crop coordinates: the playhead and the motion are
+    measured on the first, and the mosaic reaches up to the chord names and labels in the second."""
+    top = group_top(group) - seg.y0
+    bottom = float(np.median([s.tab.bottom for s in group])) - seg.y0
+    g = float(np.median([s.tab.gap for s in group]))
+    rows = (max(0, int(top - ABOVE_GAPS * g)), min(seg.y1 - seg.y0, int(bottom + BELOW_GAPS * g)))
+    return rows, (max(0, int(top - PRINT_ABOVE_GAPS * g)), rows[1])
+
+
+def group_top(group: list) -> float:
+    """The median top of a staff group's systems, over those seen with a notation staff when at least half were:
+    one system's notation staff can be found in some frames and missed in others."""
+    noted = [s.top for s in group if s.notation is not None]
+    return float(np.median(noted if 2 * len(noted) >= len(group) else [s.top for s in group if s.notation is None]))
+
+
+def build_track(path: Path, crop, seg: Segment, group: list, thr: float, t0: float):
+    """The mosaic of one staff group gliding from t0 on, or None if it doesn't move."""
+    rows, print_rows = group_rows(seg, group)
+    top = group_top(group) - seg.y0
+    bottom = float(np.median([s.tab.bottom for s in group])) - seg.y0
+    staff_rows = (max(rows[0], int(top)), min(rows[1], int(bottom) + 1))
+    staff_x = (int(np.median([s.tab.x0 for s in group])) - seg.x0, int(np.median([s.tab.x1 for s in group])) - seg.x0)
+    return glide.build(path, crop, print_rows, staff_rows, seg.polarity, thr, seg.gap, t0, seg.t1,
+                       analysis_rows=rows, staff_x=staff_x, redrawn=t0 > seg.t0,
+                       tab_rows=(float(np.median([s.tab.top for s in group])) - seg.y0, bottom))
+
+
+def mosaic_obs(m, systems: list, seg: Segment, si: int, index: int, t0: float, print_rows: tuple[int, int]) -> Obs:
+    """The view of a parsed glide mosaic whose image starts at crop row print_rows[0]."""
+    h, w = m.image.shape[:2]
     # Blank staff that scrolls on after the last barline is read as a tail cell holding only line residue
     cells = [c for ps in systems for c in ps.cells if not blank_tail(c)]
     if t0 <= seg.t0:
@@ -1921,6 +1972,121 @@ def glide_obs(path: Path, crop, seg: Segment, si: int, found, thr: float, fthr: 
     o.systems = systems
     o.print_rect = (0, 0, w, h)
     return o
+
+
+def stacked_tracks(groups: list[list]) -> list[list]:
+    """The staff groups that are tracks stacked in one glide, top to bottom, or [] when there is only one. Groups
+    whose tab staffs sit at one height are one track, seen with and without its notation staff. At most TRACK_MAX
+    tracks are kept, the most seen first."""
+    merged: list[list] = []
+    for g in sorted(groups, key=lambda g: float(np.median([s.tab.top for s in g]))):
+        if merged and (float(np.median([s.tab.top for s in g])) - float(np.median([s.tab.top for s in merged[-1]]))
+                       < 2 * float(np.median([s.tab.gap for s in g]))):
+            merged[-1] = merged[-1] + g
+        else:
+            merged.append(g)
+    most = max(merged, key=len)
+    gap = float(np.median([s.tab.gap for s in most]))
+    tracks = [g for g in merged if len(g) >= TRACK_SEEN_SHARE * len(most)
+              and abs(float(np.median([s.tab.gap for s in g])) - gap) <= TRACK_GAP_SHARE * gap]
+    kept = sorted(tracks, key=len, reverse=True)[:TRACK_MAX]
+    return [g for g in tracks if any(g is k for k in kept)] if len(tracks) >= 2 else []
+
+
+def track_score(group: list, systems: list, gap: float) -> tuple[bool, float, int]:
+    """How far a stacked track's barlines can be trusted: whether its typical measure is as wide as bars of music,
+    the share of its measures numbered one more than the measure before, and how often its staff was seen."""
+    cells = [c for ps in systems for c in ps.cells]
+    widths = [c.x1 - c.x0 for c in cells if c.kind == "full"]
+    wide = bool(widths) and float(np.median(widths)) >= TRACK_WIDE_GAPS * gap
+    reads = [None if c.number_crop is None else ocr.read_number(c.number_crop) for c in cells]
+    counting = sum(a is not None and b == a + 1 for a, b in zip(reads, reads[1:])) / max(len(cells) - 1, 1)
+    return wide, counting, len(group)
+
+
+def stacked_obs(path: Path, crop, seg: Segment, si: int, tracks: list[list], thr: float, fthr: float, index: int,
+                t0: float, tried: dict) -> Obs | None:
+    """One view of a glide whose tracks are stacked on screen, each gliding past the playhead at its own speed. Its
+    measures are those of the track whose barlines and numbers are clearest; each prints with every track's rows
+    over the time it was played. None when no track shows TRACK_MIN_BARS whole measures; the mosaics built are then
+    left in `tried` by their group's id."""
+    built = []
+    best = None
+    gap = float(np.median([s.tab.gap for s in tracks[0]]))
+    # The most seen first, so that of equal scores the track seen most, then the top one, is the reference
+    for group in sorted(tracks, key=len, reverse=True):
+        m = build_track(path, crop, seg, group, thr, t0)
+        tried[id(group)] = m
+        if m is None:
+            continue
+        rows, print_rows = group_rows(seg, group)
+        w = m.image.shape[1]
+        systems = parse_mosaic(index, m.image, (0, rows[0] - print_rows[0], w, rows[1] - print_rows[0]),
+                               seg.polarity, thr, fthr, seg.gap)
+        if sum(c.kind == "full" for ps in systems for c in ps.cells) < TRACK_MIN_BARS:
+            continue
+        built.append((group, rows, print_rows, m))
+        # Only the best track's parse is kept: each can hold a whole song's cells
+        score = track_score(group, systems, gap)
+        if best is None or score > best[0]:
+            best = (score, built[-1], systems)
+        del systems
+    if best is None:
+        return None
+    _, ref, systems = best
+    group, rows, print_rows, m = ref
+    best = None
+    # One playhead crosses every track at one screen column; a track whose own wasn't found is lined up by another's
+    found = [b[3] for b in built if not b[3].centred]
+    x = m.ref_x if not m.centred or not found else found[0].ref_x
+    left_out = 0
+    if not found and len(built) > 1:
+        # With no playhead found, tracks gliding at their own speeds can't be lined up in time
+        left_out, built = len(built) - 1, [ref]
+    tried.clear()
+    if len(built) == 1:
+        o = mosaic_obs(m, systems, seg, si, index, t0, print_rows)
+        o.tracks_left_out = left_out
+        return o
+    del systems
+    built.sort(key=lambda b: group_top(b[0]))
+    # Each track gives the rows from midway between its staff and the next track's
+    top, bottom = built[0][2][0], built[-1][1][1]
+    w = m.image.shape[1]
+    image = np.empty((bottom - top, w, 3), np.uint8)
+    image[:] = np.median(m.image.reshape(-1, 3), axis=0).astype(np.uint8)
+    staff_tops = [group_top(b[0]) - seg.y0 for b in built]
+    staff_bottoms = [float(np.median([s.tab.bottom for s in b[0]])) - seg.y0 for b in built]
+    upper = min(built[0][0], key=lambda s: abs(s.top - group_top(built[0][0])))
+    lower = built[-1][0][len(built[-1][0]) // 2]
+    for k, (b_group, b_rows, b_print, b_m) in enumerate(built):
+        lo = b_print[0] if k == 0 else max(b_print[0], int((staff_bottoms[k - 1] + staff_tops[k]) / 2))
+        hi = b_rows[1] if k == len(built) - 1 else min(b_rows[1], int((staff_bottoms[k] + staff_tops[k + 1]) / 2))
+        if hi > lo:
+            rows_of = b_m.image[lo - b_print[0]:hi - b_print[0]]
+            if b_m is m:
+                image[lo - top:hi - top] = rows_of
+            else:
+                # Columns the track has no picture for keep the paper
+                cols = glide.carried_columns(b_m, m, x)
+                image[lo - top:hi - top, cols >= 0] = rows_of[:, cols[cols >= 0]]
+        # Each other track's mosaic is let go once its rows are taken, as it can hold a whole song
+        if b_m is not m:
+            built[k] = (b_group, b_rows, b_print, None)
+    m.image, m.y0 = image, m.y0 - print_rows[0] + top
+    built.clear()
+    b_m = rows_of = None
+    systems = parse_mosaic(index, image, (0, rows[0] - top, w, rows[1] - top), seg.polarity, thr, fthr, seg.gap)
+    # Every track's rows print with each measure: the system reaches from the top track's staff to the bottom one's
+    dy = seg.y0 + top
+    above = upper.notation or upper.tab
+    span = System(Staff([y - dy for y in lower.tab.lines], 0, w, lower.tab.gap, lower.tab.polarity),
+                  Staff([y - dy for y in above.lines], 0, w, above.gap, above.polarity))
+    for ps in systems:
+        ps.system, ps.band = span, (0, image.shape[0])
+        for c in ps.cells:
+            c.band = ps.band
+    return mosaic_obs(m, systems, seg, si, index, t0, (top, bottom))
 
 
 def without_lead_in(cells: list[Cell], lead: int, gap: float, inked_playhead: bool) -> list[Cell]:

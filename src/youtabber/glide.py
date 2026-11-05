@@ -92,6 +92,7 @@ class Mosaic:
     until_offset: float | None = None   # how far the band had moved by then, as measured frame to frame
     doubtful: list = field(default_factory=list)   # slit columns where the step left the speed unconfirmed
     inked_playhead: bool = False    # the playhead is an uncolored line fixed to the screen, drawn on the first frame
+    centred: bool = False           # no playhead was found, so ref_x is the panel's centre
 
     def time_at(self, canvas_x: float) -> float:
         """When the canvas column reached ref_x on screen. Columns still right of it when the band last moved get
@@ -103,6 +104,26 @@ class Mosaic:
         if reached <= self.offsets[k]:
             return float(np.interp(reached, self.offsets[:k + 1], self.times[:k + 1]))
         return float(self.times[k] + (reached - self.offsets[k]) / self.last_speed())
+
+    def times_at(self, xs: np.ndarray) -> np.ndarray:
+        """time_at of many canvas columns at once."""
+        reached = np.asarray(xs, dtype=float) - self.lead
+        if self.offsets[-1] <= self.offsets[0]:
+            return np.full(len(reached), float(self.times[0]))
+        k = self.last_move()
+        out = np.interp(reached, self.offsets[:k + 1], self.times[:k + 1])
+        past = reached > self.offsets[k]
+        out[past] = self.times[k] + (reached[past] - self.offsets[k]) / self.last_speed()
+        return out
+
+    def columns_at(self, ts: np.ndarray) -> np.ndarray:
+        """The canvas columns that reached ref_x at times ts: the inverse of time_at."""
+        ts = np.asarray(ts, dtype=float)
+        k = self.last_move()
+        out = np.interp(ts, self.times[:k + 1], self.offsets[:k + 1])
+        late = ts > self.times[k]
+        out[late] = self.offsets[k] + (ts[late] - self.times[k]) * self.last_speed()
+        return out + self.lead
 
     def last_move(self) -> int:
         """The frame after which the band no longer moves (blank staff past the end, or the video holding still)."""
@@ -373,7 +394,8 @@ def build(path: Path, crop: tuple[int, int, int, int], rows: tuple[int, int], st
     else:
         ref_x = still_playhead(samples, staff_x or (0, w), gap)
         inked = ref_x is not None
-    if ref_x is None:
+    centred = ref_x is None
+    if centred:
         # No playhead: measures are said to be played at the panel's centre, and the whole first screen is read
         ref_x, start = w / 2, 0
     elif ref_x < slit:
@@ -387,7 +409,20 @@ def build(path: Path, crop: tuple[int, int, int, int], rows: tuple[int, int], st
     unsure = [slit - start + offsets[k] - offsets[k0] for k in doubtful if k0 < k <= k1]
     return Mosaic(image, y0, off, np.array(times[k0:k1 + 1]), ref_x, int(ref_x) - start, slit - start,
                   image.shape[1] - (last.shape[1] - slit), moved_at=moved_at, until=float(times[-1]),
-                  until_offset=float(offsets[-1] - offsets[k0]), doubtful=unsure, inked_playhead=inked)
+                  until_offset=float(offsets[-1] - offsets[k0]), doubtful=unsure, inked_playhead=inked,
+                  centred=centred)
+
+
+def carried_columns(src: Mosaic, ref: Mosaic, x: float) -> np.ndarray:
+    """For each canvas column of `ref`, the column of `src` that stood at screen column x at the same time, or -1 where
+    src has none: two tracks stacked on one screen glide past one playhead at x, each at its own speed. Columns left
+    of x on ref's first screen are matched on that screen."""
+    reached = np.arange(ref.image.shape[1], dtype=float) - ref.lead - (x - ref.ref_x)
+    ts = ref.times_at(np.maximum(reached, 0.0) + ref.lead)
+    cols = np.round(src.columns_at(ts) + (x - src.ref_x) + np.minimum(reached, 0.0)).astype(int)
+    # A track whose mosaic starts later or ends sooner has no column for those times
+    cols[(ts < src.times[0] - 1e-6) | (cols < 0) | (cols >= src.image.shape[1])] = -1
+    return cols
 
 
 def vertical_marks(staff: np.ndarray, thr: float, gap: float, fixed: np.ndarray | None) -> np.ndarray:
