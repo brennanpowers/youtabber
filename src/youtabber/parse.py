@@ -851,6 +851,14 @@ def header_cell(edges: list[tuple[int, int, str]], bars: list[tuple[int, int]], 
             and width < min(HEADER_SHARE * float(np.median(fulls)), HEADER_MAX_GAPS * gap))
 
 
+def header_lead(edges: list[tuple[int, int, str]], starts_inside: bool, gap: float) -> bool:
+    """True when a system's first cell runs from the frame's left edge to the first barline and is no wider than a
+    clef, key and time signature: a page that keeps the system's clef drawn at that edge, whatever measure it shows."""
+    if len(edges) < 2 or edges[0][2] != "lead" or starts_inside:
+        return False
+    return edges[0][0] <= INSIDE_GAPS * gap and edges[0][1] - edges[0][0] <= HEADER_MAX_GAPS * gap
+
+
 def staff_ink(c: Cell, skip: int) -> tuple[float, float]:
     """Solid ink on a cell's tab staff and on the notation staff above it, in square line gaps, over the columns
     from `skip` past its left edge to its right barline."""
@@ -881,6 +889,53 @@ def mark_header(c: Cell) -> None:
     otherwise a possible header that is kept as a measure."""
     c.header = bare_header(c)
     c.maybe_header = not c.header
+
+
+# A clef and key signature hold at least this many square line gaps of ink on the notation staff; a cut measure of
+# rests on a page with no notation staff holds next to none
+HEADER_NOTATION_INK = 1.0
+# A clef kept at a page's left edge draws its tab sign in the first HEADER_CLEF_GAPS line gaps, and past it less than
+# HEADER_MARKS square line gaps of ink off the tab staff's lines; a fret digit can stand just past it, half on a line
+HEADER_CLEF_GAPS, HEADER_MARKS = 1.5, 0.01
+# The tab sign's letters stand one above another, so their ink off the lines reaches over at least HEADER_SIGN_GAPS
+# line gaps of the staff; a fret digit spans under one, and a measure of notes tied over from the bar before has none
+HEADER_SIGN_GAPS = 1.5
+
+
+def tab_rows_off_lines(c: Cell, skip: int, width: int | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """A cell's tab staff ink from `skip` past its left edge, over `width` columns or up to its right barline, and
+    which of its rows lie off the staff's lines. Bits of staff line left where a line turns darker or lighter lie on
+    them; fret digits stand between and across the lines."""
+    start = max(0, c.x0 - (c.x1 + 1 - c.ink.shape[1]) + skip)
+    end = c.ink.shape[1] - 2 if width is None else min(c.ink.shape[1] - 2, start + width)
+    bottom = int(round(2 * c.mid_y)) - (c.y0 + c.ref_y) - c.y0
+    tab_top = max(0, c.ref_y - int(round(c.gap / 2)))
+    band = c.ink[tab_top:bottom + 1, start:end]
+    rows = np.arange(tab_top, tab_top + band.shape[0])
+    n = max(2, int(round((bottom - c.ref_y) / c.gap)) + 1)
+    lines = np.linspace(c.ref_y, bottom, n)
+    return band, np.abs(rows[:, None] - lines[None, :]).min(axis=1) > max(2.0, 0.1 * c.gap)
+
+
+def tab_marks(c: Cell, skip: int) -> float:
+    """Ink on a cell's tab staff off its lines, in square line gaps, from `skip` past its left edge to its right
+    barline."""
+    band, off = tab_rows_off_lines(c, skip)
+    return float(band[off].sum()) / (c.gap * c.gap)
+
+
+def tab_sign(c: Cell) -> bool:
+    """True when the first HEADER_CLEF_GAPS line gaps of a cell's tab staff hold marks off its lines reaching over
+    HEADER_SIGN_GAPS line gaps, as the letters of a tab sign do."""
+    band, off = tab_rows_off_lines(c, 0, int(HEADER_CLEF_GAPS * c.gap))
+    marked = np.flatnonzero(band.any(axis=1) & off)
+    return len(marked) > 0 and marked[-1] - marked[0] >= HEADER_SIGN_GAPS * c.gap
+
+
+def clef_only(c: Cell) -> bool:
+    """True when a cell shows a clef on its notation staff and a tab sign on its tab staff, with nothing past it."""
+    return (tab_marks(c, int(HEADER_CLEF_GAPS * c.gap)) < HEADER_MARKS and tab_sign(c)
+            and staff_ink(c, 0)[1] >= HEADER_NOTATION_INK)
 
 
 # A run of blank rows this many line gaps tall ends the marks that belong to a system; chord names can sit
@@ -1087,6 +1142,7 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
         starts_inside = st.x0 >= rx0 + INSIDE_GAPS * st.gap or opening_line(dark, st)
         # Glides read barlines more loosely, so their first cell isn't judged
         header = not hidden_bars and header_cell(edges, xs, ps.repeat_bars, st.x0, st.gap)
+        clef_lead = not hidden_bars and header_lead(edges, starts_inside, st.gap)
         ends_inside = st.x1 <= rx1 - INSIDE_GAPS * st.gap
         for ci, (a, b, kind) in enumerate(edges):
             # The first measure of a system takes in the margin to its left, where some players print the
@@ -1123,6 +1179,8 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
                         faint_bar=any(a - 1 <= x <= b + 1 for x in ps.unsure_bars))
             if header and ci == 0:
                 mark_header(cell)
+            elif clef_lead and ci == 0:
+                cell.header = clef_only(cell)
             ps.cells.append(cell)
     return out
 

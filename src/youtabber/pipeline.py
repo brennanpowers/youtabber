@@ -492,7 +492,7 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
         r.candidates.append(Candidate("folded", "once", measures_of(folded, obs, folded.order)))
 
     notices = (join_notices(main, obs) + edge_notices(main, obs, r.candidates[0].measures)
-               + header_notices(obs) + header_kept_notices(obs) + colored_bar_notices(obs)
+               + header_notices(main, obs, typical) + header_kept_notices(obs) + colored_bar_notices(obs)
                + faint_bar_notices(obs))
     if r.intro is not None:
         notices.append(Notice(round(r.intro[0], 2), round(r.intro[1], 2), "intro",
@@ -1489,11 +1489,16 @@ def kept_cells(cells: list[Cell], typical: float, playhead: list = ()) -> list[C
     and empty bars however short. A clef and key header standing alone is no measure, and neither is a blank tail
     unless the view's `playhead` samples (t, x, y) show it played. A sample on the tail's left barline is the
     playhead parked at the end of the last measure, so it doesn't count."""
+    return [c for i, c in enumerate(cells) if not c.header and measure_cell(cells, i, typical, playhead)]
+
+
+def measure_cell(cells: list[Cell], i: int, typical: float, playhead: list = ()) -> bool:
+    """True when cell i is kept as a measure by kept_cells, leaving aside whether it is a header."""
     def played(c: Cell) -> bool:
         return sum(c.x0 + CELL_SLACK_PX < x <= c.x1 and on_system(c, y) for _, x, y in playhead) >= TAIL_PLAYED_SAMPLES
-    return [c for i, c in enumerate(cells)
-            if not c.header and not (blank_tail(c) and not played(c))
-            and (c.x1 - c.x0 >= EDGE_SHARE * typical or short_bar(c, typical) or empty_bar(c) or rest_run(cells, i))]
+    c = cells[i]
+    return (not (blank_tail(c) and not played(c))
+            and (c.x1 - c.x0 >= EDGE_SHARE * typical or short_bar(c, typical) or empty_bar(c) or rest_run(cells, i)))
 
 
 def blank_tail(c: Cell) -> bool:
@@ -1516,12 +1521,31 @@ def counted_header(o: Obs) -> bool:
     return c.number == 0 and not c.glided and c.x1 - c.x0 <= HEADER_WIDTH_GAPS * c.gap and bare_header(c)
 
 
-def header_notices(obs: list[Obs]) -> list[Notice]:
-    """One notice per stretch of screens whose first cell was left out as a clef and key header, since a short
-    first measure with no tab notes would look the same."""
+def header_printed(A: Assembly, obs: list[Obs], o: Obs, i: int, typical: float) -> bool:
+    """True when cell i of view o, left out as a header, would otherwise have printed as a new measure. A first cell
+    closed by a barline counts as one; a cell cut by the frame's left edge must be wide enough to be kept, and no
+    piece of the measure the view before it (the last earlier view with cells) ended on."""
+    if o.all_cells[i].kind != "lead":
+        return True
+    if not measure_cell(o.all_cells, i, typical, samples_on(o, o.all_cells)):
+        return False
+    slots = A.view_slots.get(o.index) or []
+    if not slots or slots[0] is None or slots[0] not in A.order:
+        return True
+    k = A.order.index(slots[0])
+    if k == 0:
+        return True
+    before = next((p for p in reversed(obs[:o.index]) if p.cells), None)
+    return before is None or not any(vi == before.index and c is before.cells[-1]
+                                     for vi, c in A.sightings.get(A.order[k - 1], []))
+
+
+def header_notices(A: Assembly, obs: list[Obs], typical: float) -> list[Notice]:
+    """One notice per stretch of screens whose first cell was left out as a clef and key header and would otherwise
+    have printed as a measure, since a short first measure with no tab notes would look the same."""
     out: list[Notice] = []
     for o in obs:
-        if not any(c.header for c in o.all_cells):
+        if not any(c.header and header_printed(A, obs, o, i, typical) for i, c in enumerate(o.all_cells)):
             continue
         if out and o.t0 - out[-1].t1 <= TURN_SECONDS:
             out[-1].t1 = round(o.t1, 2)
