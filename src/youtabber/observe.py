@@ -311,9 +311,12 @@ NUMBER_STAFF_GAPS = 0.5
 # A colored area at least this many line gaps wide reaching up from the staff into the number row is a cursor head or
 # a highlight box
 NUMBER_COVER_GAPS = 1.0
-# A printed number that changes differs by more than this in some color channel; the faint edge of a pale cursor box
-# differs less
-NUMBER_DIFF = 80
+# A changed mark in the number row differs by more than NUMBER_DIFF in some color channel. A mark gray in both frames
+# also counts above NUMBER_FLOOR, over video noise, when it differs by NUMBER_SHARE of its contrast with the paper
+NUMBER_FLOOR, NUMBER_SHARE, NUMBER_DIFF = 40, 0.5, 80
+# A light gray mark counts only while the paper around it holds still: at most NUMBER_RING_SHARE of the pixels within
+# two pixels of its box differ by more than NUMBER_RING_DIFF. A pale highlight moving under gray text changes the paper
+NUMBER_RING_SHARE, NUMBER_RING_DIFF = 0.25, 20
 # A changed mark in the number row is a digit when it covers this many square line gaps, is this many line gaps wide
 # and between these many line gaps tall; a thin line cursor is narrower, and a piece of one is taller
 NUMBER_AREA, NUMBER_W, NUMBER_H = 0.05, 0.25, (0.3, 1.0)
@@ -323,7 +326,7 @@ NUMBER_MAX_W = 3.0
 # A segment's views are told apart by their number rows once one of the first this many references whose number row
 # changes and that show a staff with two measures prints measure numbers
 NUMBER_CHECKS = 3
-# A changed dark mark is the same mark moved when one frame's pixels, shifted by up to NUMBER_SHIFT_PX pixels each
+# A changed mark is the same mark moved when one frame's pixels, shifted by up to NUMBER_SHIFT_PX pixels each
 # way, leave fewer than NUMBER_AREA square line gaps of it differing, or at most NUMBER_SHIFT_SHARE of the pixels that
 # differ unshifted: video compression and a page drifting by part of a pixel move strokes a pixel or two
 NUMBER_SHIFT_PX, NUMBER_SHIFT_SHARE = 2, 0.5
@@ -331,11 +334,10 @@ NUMBER_SHIFT_PX, NUMBER_SHIFT_SHARE = 2, 0.5
 
 def number_changed(a: np.ndarray, b: np.ndarray, rect, seed, gap: float, skip: np.ndarray | None = None,
                    tint: np.ndarray | None = None, keep: np.ndarray | None = None) -> bool:
-    """True when a digit-sized mark in the row of measure numbers differs between two color frames, leaving out the
-    pixels in `skip`, or counting only the pixels in `keep`. A mark counted through `keep` must also not be the same
-    mark moved by a pixel or two. Pages of one riff can differ only in their numbers, which the ink compare misses
-    when they are colored, faint, or change shape in place. False while a wide colored area of `tint` comes up from
-    the staff into the row."""
+    """True when a digit-sized mark in the row of measure numbers differs between two color frames, as pages of one
+    riff can differ only in their numbers. Pixels in `skip` and a wide colored area of `tint` coming up from the staff
+    are left out, or only pixels in `keep` count; a mark counted through `keep`, or a light gray one, must not be the
+    same mark moved by a pixel or two."""
     # Kept inside the panel, so footage above it doesn't count. A number over a system's first barline can stand left
     # of where the staffs were found, so the panel's whole width is compared
     y0 = max(rect[1] + 2, int(seed[1] - NUMBER_ROW_GAPS[0] * gap))
@@ -344,37 +346,62 @@ def number_changed(a: np.ndarray, b: np.ndarray, rect, seed, gap: float, skip: n
     x0, x1 = rect[0] + 2, rect[2] - 2
     if y1 <= y0 or y2 < y1 or x1 <= x0:
         return False
+    covered = np.zeros((y2 - y0, x1 - x0), bool)
     if tint is not None:
-        # A cursor head or highlight box over the row changes it as it moves, like a digit would; a thin line cursor
-        # is left to the shape test below
-        n, _, stats, _ = cv2.connectedComponentsWithStats(tint[y0:y2, x0:x1].astype(np.uint8), connectivity=8)
-        if any(stats[i][1] < y1 - y0 and stats[i][1] + stats[i][3] >= y2 - y0
-               and stats[i][2] >= NUMBER_COVER_GAPS * gap for i in range(1, n)):
-            return False
+        # A cursor head or highlight box over the row changes it as it moves, like a digit would, so its pixels are
+        # left out and the rest of the row is compared; a thin line cursor is left to the shape test below
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(tint[y0:y2, x0:x1].astype(np.uint8), connectivity=8)
+        for i in range(1, n):
+            if (stats[i][1] < y1 - y0 and stats[i][1] + stats[i][3] >= y2 - y0
+                    and stats[i][2] >= NUMBER_COVER_GAPS * gap):
+                covered |= labels == i
     pa, pb = a[y0:y2, x0:x1], b[y0:y2, x0:x1]
+    gray = gray_pixels(pa) & gray_pixels(pb)
     if keep is not None:
         # Dark marks are compared on brightness alone, so a pale highlight tinting them is no change
         pa, pb = cv2.cvtColor(pa, cv2.COLOR_BGR2GRAY), cv2.cvtColor(pb, cv2.COLOR_BGR2GRAY)
     d = channel_diff(pa, pb)
+    moving = d > NUMBER_RING_DIFF
     if skip is not None:
         d[skip[y0:y2, x0:x1]] = 0
     if keep is not None:
         d[~keep[y0:y2, x0:x1]] = 0
-    # Dilated, the 1-2 pixel strokes of a small digit join into one mark
-    m = cv2.dilate((d > NUMBER_DIFF).astype(np.uint8), np.ones((3, 3), np.uint8))
-    if not m[:y1 - y0].any():
-        return False
-    n, _, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
-    return any(stats[i][1] < y1 - y0 and stats[i][1] + stats[i][3] < y2 - y0
-               and stats[i][4] >= NUMBER_AREA * gap * gap and NUMBER_W * gap <= stats[i][2] <= NUMBER_MAX_W * gap
-               and NUMBER_H[0] * gap <= stats[i][3] <= NUMBER_H[1] * gap
-               and (keep is None or not moved(pa, pb, stats[i][:4], NUMBER_AREA * gap * gap)) for i in range(1, n))
+    d[covered] = 0
+    # How far each pixel of either frame is from the paper, the row's most common color; a mark's contrast is the
+    # largest within its box, so the soft edge of a dark mark is judged against the mark's dark middle
+    paper = np.median(pa.reshape(-1, pa.shape[2] if pa.ndim == 3 else 1), axis=0)
+    contrast = np.maximum(channel_diff(pa, np.full_like(pa, paper.astype(np.uint8))),
+                          channel_diff(pb, np.full_like(pb, paper.astype(np.uint8))))
+    # Marks of pixels differing by more than NUMBER_DIFF, then light gray marks of pixels differing by more than
+    # NUMBER_FLOOR, held to their own contrast and checked for a drift of a pixel or two
+    for faint in (False, True):
+        changed = (d > NUMBER_FLOOR) & gray if faint else d > NUMBER_DIFF
+        # Dilated, the 1-2 pixel strokes of a small digit join into one mark
+        m = cv2.dilate(changed.astype(np.uint8), np.ones((3, 3), np.uint8))
+        if not m[:y1 - y0].any():
+            continue
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+        for i in range(1, n):
+            x, y, w, h, area = stats[i]
+            if not (y < y1 - y0 and y + h < y2 - y0 and area >= NUMBER_AREA * gap * gap
+                    and NUMBER_W * gap <= w <= NUMBER_MAX_W * gap and NUMBER_H[0] * gap <= h <= NUMBER_H[1] * gap):
+                continue
+            level = NUMBER_DIFF
+            if faint:
+                level = min(level, max(NUMBER_FLOOR, NUMBER_SHARE * contrast[y:y + h, x:x + w].max()))
+                ring = ~(labels == i)[max(0, y - 2):y + h + 2, max(0, x - 2):x + w + 2]
+                around = moving[max(0, y - 2):y + h + 2, max(0, x - 2):x + w + 2][ring]
+                if d[labels == i].max() < level or around.mean() > NUMBER_RING_SHARE:
+                    continue
+            if not ((keep is not None or faint) and moved(pa, pb, stats[i][:4], NUMBER_AREA * gap * gap, level)):
+                return True
+    return False
 
 
-def moved(a: np.ndarray, b: np.ndarray, box, area: float) -> bool:
+def moved(a: np.ndarray, b: np.ndarray, box, area: float, level: float) -> bool:
     """True when the box (x, y, w, h) of b, grown by a pixel past NUMBER_SHIFT_PX on each side, matches a shifted by
     up to NUMBER_SHIFT_PX pixels each way, leaving under `area` pixels, or at most NUMBER_SHIFT_SHARE of those
-    differing unshifted, differing by more than NUMBER_DIFF. Grown, the box takes in the strokes around a small
+    differing unshifted, differing by more than `level`. Grown, the box takes in the strokes around a small
     changed piece of a digit, which alone could match a shifted stroke."""
     x, y, w, h = (int(v) for v in box)
     s = NUMBER_SHIFT_PX
@@ -382,9 +409,9 @@ def moved(a: np.ndarray, b: np.ndarray, box, area: float) -> bool:
     x, y, w, h = x0, y0, min(b.shape[1], x + w + s + 1) - x0, min(b.shape[0], y + h + s + 1) - y0
     pad = cv2.copyMakeBorder(a, s, s, s, s, cv2.BORDER_REPLICATE)
     part = b[y:y + h, x:x + w]
-    left = min(int((channel_diff(pad[y + s + dy:y + s + dy + h, x + s + dx:x + s + dx + w], part) > NUMBER_DIFF).sum())
+    left = min(int((channel_diff(pad[y + s + dy:y + s + dy + h, x + s + dx:x + s + dx + w], part) > level).sum())
                for dy in range(-s, s + 1) for dx in range(-s, s + 1))
-    unshifted = int((channel_diff(a[y:y + h, x:x + w], part) > NUMBER_DIFF).sum())
+    unshifted = int((channel_diff(a[y:y + h, x:x + w], part) > level).sum())
     return left < area or left <= NUMBER_SHIFT_SHARE * unshifted
 
 

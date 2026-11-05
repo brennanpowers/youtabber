@@ -430,10 +430,37 @@ def test_a_colored_digit_changing_in_the_number_row_is_a_change():
     assert observe.number_changed(*number_frames(300), PANEL, STAFFS, 18.0)
 
 
-def test_the_number_row_counts_a_channel_differing_by_more_than_80():
-    # White paper against gray 175 differs by 80, against 174 by 81
-    assert not observe.number_changed(*number_frames(300, (175, 175, 175)), PANEL, STAFFS, 18.0)
-    assert observe.number_changed(*number_frames(300, (174, 174, 174)), PANEL, STAFFS, 18.0)
+def test_a_light_gray_number_changing_is_a_change_and_one_lightening_by_under_half_its_contrast_is_not():
+    # A number of gray 182 on white paper differs from it by 73 where it appears
+    assert observe.number_changed(*number_frames(300, (182, 182, 182)), PANEL, STAFFS, 18.0)
+    # A mark of gray 100, 155 from the paper, turning to 177 differs by 77, under half of 155; to 178, by 78
+    a = number_frames(300, (100, 100, 100))[1]
+    assert not observe.number_changed(a, number_frames(300, (177, 177, 177))[1], PANEL, STAFFS, 18.0)
+    assert observe.number_changed(a, number_frames(300, (178, 178, 178))[1], PANEL, STAFFS, 18.0)
+
+
+def test_a_pale_colored_mark_in_the_number_row_is_held_to_a_change_of_80():
+    # Pale blue differs from white paper by 65 in its red channel: a gray mark would count, a colored one doesn't
+    assert not observe.number_changed(*number_frames(300, (250, 230, 190)), PANEL, STAFFS, 18.0)
+    assert observe.number_changed(*number_frames(300, (190, 190, 190)), PANEL, STAFFS, 18.0)
+
+
+def test_a_light_gray_mark_with_the_paper_around_it_changing_is_no_change():
+    # A pale gray highlight, 25 levels under the paper, comes in under a light gray mark: the paper around the mark
+    # changes too, as a highlight moving under gray text does
+    a, b = number_frames(300, (182, 182, 182))
+    b = b.copy()
+    b[40:66, 280:340] = (230, 230, 230)
+    b[45:60, 300:310] = (182, 182, 182)
+    assert not observe.number_changed(a, b, PANEL, STAFFS, 18.0)
+    # The same mark coming in on still paper is a change
+    assert observe.number_changed(*number_frames(300, (182, 182, 182)), PANEL, STAFFS, 18.0)
+
+
+def test_a_number_row_changing_by_no_more_than_40_is_no_change():
+    # Gray 215 differs from white paper by 40, gray 214 by 41
+    assert not observe.number_changed(*number_frames(300, (215, 215, 215)), PANEL, STAFFS, 18.0)
+    assert observe.number_changed(*number_frames(300, (214, 214, 214)), PANEL, STAFFS, 18.0)
 
 
 def test_a_line_cursor_or_a_speck_in_the_number_row_is_no_change():
@@ -499,7 +526,19 @@ def thin_digits(text: str, dx: int = 0, dy: int = 0) -> np.ndarray:
     return f
 
 
-def test_a_colored_box_coming_up_from_the_staff_over_the_number_row_stops_the_number_compare():
+def test_a_light_number_changing_beside_a_box_cursor_over_the_number_row_is_a_change():
+    # A pale box cursor from the staff up into the number row moves; a light gray number elsewhere in the row changes
+    a, b = PAGE.copy(), PAGE.copy()
+    a[50:120, 100:140] = (150, 230, 250)
+    b[50:120, 160:200] = (150, 230, 250)
+    tint = np.zeros(PAGE.shape[:2], bool)
+    tint[48:122, 98:202] = True
+    assert not observe.number_changed(a, b, PANEL, STAFFS, 18.0, tint=tint)
+    b[45:60, 600:610] = (182, 182, 182)
+    assert observe.number_changed(a, b, PANEL, STAFFS, 18.0, tint=tint)
+
+
+def test_a_colored_box_coming_up_from_the_staff_over_the_number_row_hides_the_number_under_it():
     # A pale highlight box over rows 50-120, 55 levels from the paper, recolors a gray number under it by 90 levels
     a = PAGE.copy()
     a[50:62, 300:308] = (150, 150, 150)
@@ -510,10 +549,10 @@ def test_a_colored_box_coming_up_from_the_staff_over_the_number_row_stops_the_nu
     tint[48:122, 278:502] = True
     assert observe.number_changed(a, b, PANEL, STAFFS, 18.0)
     assert not observe.number_changed(a, b, PANEL, STAFFS, 18.0, tint=tint)
-    # A colored line cursor 17 pixels wide, under the 18 of a line gap, leaves the number row compared
+    # A colored line cursor 17 pixels wide, under the 18 of a line gap, leaves the number row under it compared
     tint[48:122, 278:502] = False
-    tint[30:122, 600:617] = True
-    assert observe.number_changed(a, b, PANEL, STAFFS, 18.0, tint=tint)
+    tint[30:122, 296:313] = True
+    assert observe.number_changed(*number_frames(300), PANEL, STAFFS, 18.0, tint=tint)
 
 
 def test_a_mark_taller_than_a_line_gap_in_the_number_row_is_no_digit():
