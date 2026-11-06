@@ -46,6 +46,20 @@ WRAP_GAPS = 6
 # Just after the jump back, the playhead's next sample sits within this many line gaps of it, up or down: a box
 # cursor's middle rides up and down a system with its notes
 WRAP_STEADY_GAPS = 3.0
+# A playhead found only now and then, or wobbling up and down, still shows a page swept again: it sweeps for at least
+# SWEEP_SECONDS to within PAGE_END of the page's width, then jumps back to within PAGE_START of the page's start. The
+# page's ends are where most of the view's playhead samples lie
+SWEEP_SECONDS = 3.0
+PAGE_END, PAGE_START = 0.85, 0.15
+# The sweep leaves no stretch of the page unseen wider than this share of it, so a box cursor stepping over a few wide
+# measures doesn't count
+SWEEP_COVER = 0.3
+# Samples on either side of the jump are at most this many seconds apart
+SWEEP_HOLE = 2.0
+# The page's ends lie at least this share of the panel's width apart, or no page is being swept
+SWEEP_WIDTH = 0.4
+# Each side of the jump is judged on the median of this many samples, as one sample can land on a stray mark
+SWEEP_SAMPLES = 3
 # On dark paper a staff area can show too little ink to measure; the ink is then taken to be at least this share
 # of the way from the paper to white, so a see-through cursor bar a little lighter than the paper isn't ink
 DARK_INK_REACH = 0.6
@@ -635,6 +649,43 @@ def within(rect: tuple[int, int, int, int], bound: tuple[int, int, int, int] | N
     return x0, y0, max(x0 + 1, x1), max(y0 + 1, y1)
 
 
+def page_swept_again(ph: list[tuple[float, float, float]], gap: float, width: float) -> list[float]:
+    """Times in a view's playhead samples (t, x, y) where it jumps from the page's end back to its start after
+    sweeping the page, and the page held still while it did: the same page played again, or a page that looks the
+    same."""
+    if len(ph) < 2 * SWEEP_SAMPLES:
+        return []
+    xs = sorted(x for _, x, _ in ph)
+    # The page's ends, past the few samples that land on stray marks
+    left, right = xs[int(0.05 * (len(xs) - 1))], xs[int(0.95 * (len(xs) - 1))]
+    page = right - left
+    if page < WRAP_GAPS * gap or page < SWEEP_WIDTH * width:
+        return []
+    out = []
+    since = 0
+    for k in range(len(ph) - 1):
+        (ta, xa, _), (tb, xb, _) = ph[k], ph[k + 1]
+        if tb - ta > SWEEP_HOLE or xb >= xa - WRAP_GAPS * gap:
+            continue
+        before = [p for p in ph[max(0, k + 1 - SWEEP_SAMPLES):k + 1] if p[0] >= ta - SWEEP_HOLE]
+        after = [p for p in ph[k + 1:k + 1 + SWEEP_SAMPLES] if p[0] <= tb + SWEEP_HOLE]
+        if len(after) < 2:
+            continue
+        # Going down to the next system is no jump back
+        if np.median([p[2] for p in after]) >= np.median([p[2] for p in before]) + 2 * gap:
+            continue
+        sweep = sorted(x for _, x, _ in ph[since:k + 1])
+        start = ph[since][0]
+        since = k + 1
+        unseen = max(b - a for a, b in zip(sweep, sweep[1:])) if len(sweep) > 1 else page
+        if (np.median([p[1] for p in before]) >= left + PAGE_END * page
+                and np.median([p[1] for p in after]) <= left + PAGE_START * page
+                and ta - start >= SWEEP_SECONDS and unseen <= SWEEP_COVER * page
+                and np.median([p[1] for p in after[1:]]) >= xb - gap):
+            out.append(tb)
+    return out
+
+
 def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: float, paper: np.ndarray,
              seed_at, t_start: float, t_end: float, use_playhead: bool = True,
              progress: Callable[[float], None] | None = None, lead: float = 0.0,
@@ -674,6 +725,9 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
     # right after a view, showing another page than that view and than the picture after it, holds music no other
     # screen shows
     after_view, view_ink = False, None
+    # Where the frames end of a pass that a cut started but that was too short to keep. A view starting within a second
+    # of it carries that pass on, so it is marked as wrapped too
+    dropped_pass: list[float] = []
     paper_level = float(to_gray(np.asarray(paper, dtype=np.uint8)[None, None], polarity)[0, 0])
 
     def plates_of(chunk, clear: bool = True) -> tuple[np.ndarray, np.ndarray]:
@@ -769,7 +823,8 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
             # Any jump back starts a new sweep: a beat cursor going over one measure again and again never sweeps
             if jumped:
                 since = k + 1
-        return out
+        out += [t for t in page_swept_again(ph, gap, width) if all(abs(t - c) >= SWEEP_HOLE for c in out)]
+        return sorted(out)
 
     def close(last: bool = False, cut: bool = False) -> None:
         """End the current view; `last` says the segment ends after it, `cut` that it is another page between a view
@@ -790,7 +845,9 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         whole, plates = build(cur)
         whole.brief = seconds < MIN_VIEW_SECONDS
         cuts = wraps(whole) if use_playhead else []
+        carried = bool(dropped_pass) and cur[0][0] - dropped_pass.pop() <= 1.0
         if not cuts:
+            whole.wrapped = carried
             views.append(whole)
             return
         bounds = [cur[0][0]] + cuts + [cur[-1][0] + 1]
@@ -800,8 +857,10 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
             chunk = [c for c in cur if a <= c[0] < b]
             if chunk and chunk[-1][0] - chunk[0][0] + 1 / OBS_FPS >= MIN_VIEW_SECONDS:
                 v, _ = build(chunk, shared)
-                v.wrapped = n > 0
+                v.wrapped = n > 0 or carried
                 views.append(v)
+            elif chunk and n == len(cuts):
+                dropped_pass.append(chunk[-1][0])
 
     def held_for(chunk) -> float:
         # Rounded, since frame times carry float error and three frames are exactly EDGE_VIEW_SECONDS

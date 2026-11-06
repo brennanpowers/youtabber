@@ -90,6 +90,66 @@ def test_a_cursor_going_back_after_less_than_a_view_does_not_cut(monkeypatch):
     assert [(v.t0, v.wrapped) for v in views] == [(0.0, False)]
 
 
+def sparse_sweeps(n: int, sweep: int):
+    """A fake `frames`: one page held for n frames, its cursor crossing the page every `sweep` frames but drawn in
+    only every third frame, as a thin cursor that is often lost."""
+    swept = held_page(n, sweep, [])
+
+    def frames(path, fps, crop=None, start=0.0, length=None):
+        for i, (t, f) in enumerate(swept(path, fps)):
+            yield t, (f if i % 3 == 0 else PAGE.copy())
+    return frames
+
+
+def test_a_still_page_swept_twice_by_a_cursor_seen_now_and_then_is_cut_in_two(monkeypatch):
+    monkeypatch.setattr(observe, "frames", sparse_sweeps(120, 60))
+    observe.set_paper(PAPER)
+    views = observe.views_in(None, (0, 0, 1280, 270), "dark", 18.0, PAPER, lambda t: STAFFS, 0.0, 20.0)[0]
+    assert [(round(v.t0, 2), v.wrapped) for v in views] == [(0.0, False), (10.0, True)]
+
+
+def test_a_still_page_swept_once_by_a_cursor_seen_now_and_then_is_not_cut(monkeypatch):
+    monkeypatch.setattr(observe, "frames", sparse_sweeps(60, 60))
+    observe.set_paper(PAPER)
+    views = observe.views_in(None, (0, 0, 1280, 270), "dark", 18.0, PAPER, lambda t: STAFFS, 0.0, 10.0)[0]
+    assert [(v.t0, v.wrapped) for v in views] == [(0.0, False)]
+
+
+def test_a_pass_too_short_to_keep_after_a_cut_carries_on_into_the_next_view(monkeypatch):
+    # The second pass shows for 1 s, then a card covers the page for half a second before the pass goes on
+    swept = sparse_sweeps(120, 60)
+
+    def frames(path, fps, crop=None, start=0.0, length=None):
+        for i, (t, f) in enumerate(swept(path, fps)):
+            if 66 <= i < 69:
+                f = PAGE.copy()
+                f[:, 300:1000] = 0
+            yield t, f
+    monkeypatch.setattr(observe, "frames", frames)
+    observe.set_paper(PAPER)
+    views = observe.views_in(None, (0, 0, 1280, 270), "dark", 18.0, PAPER, lambda t: STAFFS, 0.0, 20.0)[0]
+    assert [(round(v.t0, 2), v.wrapped) for v in views] == [(0.0, False), (11.5, True)]
+
+
+def test_page_swept_again_needs_a_sweep_to_the_end_and_a_jump_back_to_the_start():
+    # A sample every half second sweeps x 100 to 1000 over 5 s, then the playhead goes on from x 100
+    sweep = [(i / 2, 100 + 90 * i, 200.0) for i in range(11)]
+    again = [(5.5 + i / 2, 100 + 90 * i, 200.0) for i in range(6)]
+    assert observe.page_swept_again(sweep + again, 18.0, 1280) == [5.5]
+    # Back only to the page's middle
+    middle = [(5.5 + i / 2, 550 + 90 * i, 200.0) for i in range(6)]
+    assert observe.page_swept_again(sweep + middle, 18.0, 1280) == []
+    # A jump forward
+    forward = [(i / 2, 100 + 40 * i, 200.0) for i in range(6)] + [(3.0 + i / 2, 900 + 20 * i, 200.0) for i in range(6)]
+    assert observe.page_swept_again(forward, 18.0, 1280) == []
+    # Down to the start of the next system
+    below = [(5.5 + i / 2, 100 + 90 * i, 300.0) for i in range(6)]
+    assert observe.page_swept_again(sweep + below, 18.0, 1280) == []
+    # One stray sample high above the jump doesn't hide it
+    stray = sweep[:-1] + [(5.0, 1000, 60.0)]
+    assert observe.page_swept_again(stray + again, 18.0, 1280) == [5.5]
+
+
 def test_a_view_that_opens_with_the_cursor_left_at_the_right_end_is_not_cut_there(monkeypatch):
     # The first frame still shows the cursor where the page before ended; then it sweeps the page once
     sweep = held_page(80, 80, [])
