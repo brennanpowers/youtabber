@@ -82,6 +82,8 @@ TRACK_WIDE_GAPS = 12.0
 TRACK_MIN_BARS = 2
 # At most this many stacked tracks are read, the most seen first; each takes a decode and a parse of the glide
 TRACK_MAX = 4
+# Tracks whose playhead columns lie within this many line gaps of each other found the same playhead
+TRACK_PLAYHEAD_GAPS = 1.0
 # A glide is read in at most this many pieces, each at least this long, with rows from the staffs seen in its
 # first GLIDE_ROWS_SECONDS
 MAX_GLIDE_PIECES, GLIDE_PIECE_SECONDS, GLIDE_ROWS_SECONDS = 8, 2.0, 10.0
@@ -2004,6 +2006,31 @@ def track_score(group: list, systems: list, gap: float) -> tuple[bool, float, in
     return wide, counting, len(group)
 
 
+def agreed_playhead(built: list, seg: Segment) -> None:
+    """Line the stacked tracks up at the playhead column most of them found, when more than half of those that found
+    one agree: one playhead crosses every track. A track whose own column lies elsewhere, or less than
+    PLAYHEAD_INSIDE_GAPS line gaps inside its staff's left end, takes that column."""
+    found = []
+    for group, _, _, m in built:
+        gap = float(np.median([s.tab.gap for s in group]))
+        x0 = float(np.median([s.tab.x0 for s in group])) - seg.x0
+        found.append(None if m.centred or m.ref_x < x0 + glide.PLAYHEAD_INSIDE_GAPS * gap else m.ref_x)
+    xs = [x for x in found if x is not None]
+    if not xs:
+        return
+    gap = float(np.median([s.tab.gap for b in built for s in b[0]]))
+    near = [[y for y in xs if abs(y - x) <= TRACK_PLAYHEAD_GAPS * gap] for x in xs]
+    most = max(near, key=len)
+    if 2 * len(most) <= len(xs):
+        return
+    x = float(np.median(most))
+    for (_, _, _, m), own in zip(built, found):
+        if own is None or abs(own - x) > TRACK_PLAYHEAD_GAPS * gap:
+            # The canvas stays as built; only the column that stood at the playhead on the first screen moves
+            start = int(m.ref_x) - m.lead
+            m.ref_x, m.lead, m.centred = x, int(x) - start, False
+
+
 def stacked_obs(path: Path, crop, seg: Segment, si: int, tracks: list[list], thr: float, fthr: float, index: int,
                 t0: float, tried: dict) -> Obs | None:
     """One view of a glide whose tracks are stacked on screen, each gliding past the playhead at its own speed. Its
@@ -2036,6 +2063,7 @@ def stacked_obs(path: Path, crop, seg: Segment, si: int, tracks: list[list], thr
     _, ref, systems = best
     group, rows, print_rows, m = ref
     best = None
+    agreed_playhead(built, seg)
     # One playhead crosses every track at one screen column; a track whose own wasn't found is lined up by another's
     found = [b[3] for b in built if not b[3].centred]
     x = m.ref_x if not m.centred or not found else found[0].ref_x

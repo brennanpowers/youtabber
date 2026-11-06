@@ -481,3 +481,26 @@ def test_the_track_counted_is_one_of_wide_measures_numbered_in_order(monkeypatch
     music = track_score([0] * 20, track(700, [1, 2, None, 4, 5]), 25.0)
     assert rests == (False, 1.0, 20) and music == (True, 0.5, 20)
     assert max([rests, music]) == music
+
+
+def test_stacked_tracks_take_the_playhead_column_most_of_them_found():
+    seg = Segment(0.0, 10.0, 25.0, "dark", y0=0, y1=1080, x0=40, x1=1880)
+
+    def track(ref_x, lead, centred=False):
+        group = [SimpleNamespace(tab=SimpleNamespace(gap=25.0, x0=50.0)) for _ in range(20)]
+        return group, None, None, Mosaic(np.zeros((5, 100, 3), np.uint8), 0, np.zeros(2), np.arange(2.0), ref_x, lead,
+                                         centred=centred)
+    # One of three tracks found its playhead 208 px left of the others'; its canvas started at screen x 160
+    built = [track(458.0, 90), track(250.0, 90), track(456.0, 90)]
+    pipeline.agreed_playhead(built, seg)
+    assert [(b[3].ref_x, b[3].lead) for b in built] == [(458.0, 90), (457.0, 297), (456.0, 90)]
+    # Columns at the staff's left end are no playhead, and a track with none found takes the one found
+    built = [track(6.0, 6), track(378.0, 102), track(0.0, 0), track(920.0, 920, centred=True)]
+    pipeline.agreed_playhead(built, seg)
+    assert [(b[3].ref_x, b[3].lead, b[3].centred) for b in built] == [
+        (378.0, 378, False), (378.0, 102, False), (378.0, 378, False), (378.0, 378, False)]
+    # Two tracks that disagree keep their own
+    built = [track(518.0, 102), track(300.0, 102)]
+    pipeline.agreed_playhead(built, seg)
+    assert [b[3].ref_x for b in built] == [518.0, 300.0]
+
