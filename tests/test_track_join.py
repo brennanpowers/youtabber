@@ -11,7 +11,7 @@ from youtabber.assemble import (RESTART_GAP_SECONDS, Assembly, Decision, Obs, Sl
                                 place_rest, playhead_at, playhead_join, playhead_restarts, playhead_track, register,
                                 register_marks, repeat_played, replay_evidence, rest_of, restart_before, same_cell,
                                 samples_on, scroll_shares, scroll_shifts, sequence_links, shown_again, split_measure,
-                                still_links, track_join, usual_slides, view_pairs)
+                                still_links, swept_again, track_join, usual_slides, view_pairs)
 from youtabber.observe import unmatched
 from youtabber.parse import Cell
 from youtabber.pipeline import Measure, Notice, edge_notices, join_notices, readings, repeat_notices
@@ -1442,3 +1442,105 @@ def test_no_page_is_shown_again_on_two_systems_with_another_cell_count_or_after_
         for k, v in change.items():
             setattr(first, k, v)
         assert not shown_again(p, o, [first, p, o], 10.0)
+
+
+def swept(numbered: bool, sign: bool = False, first: int = 1):
+    """Bars 1-4 and then a view of bars from `first` on the same held band, the playhead leaving the first view at
+    x 700 and starting the second at x 20; the measures carry printed numbers when `numbered`, and the first view
+    ends on an end-repeat sign at x 800 when `sign`."""
+    p, o = band_view(0, 1), band_view(1, first)
+    o.move = Move("still", steps=5)
+    played(p, (9.5, 700, 30))
+    played(o, (0.1, 20, 30))
+    if numbered:
+        for v, n in ((p, 1), (o, first)):
+            for k, c in enumerate(v.cells):
+                c.number = n + k
+    if sign:
+        p.repeat_end, p.repeat_bars = True, [(0, 800)]
+    return p, o
+
+
+def test_a_held_page_the_playhead_sweeps_again_is_swept_again_and_one_it_carries_on_over_is_not():
+    p, o = swept(numbered=False)
+    assert swept_again(p, o, 10.0) is True
+    p, o = held(p_end=300, o_start=320)
+    assert swept_again(p, o, 10.0) is False
+
+
+def test_a_numbered_page_swept_again_without_a_sign_prints_every_pass_and_the_folded_reading_folds_it():
+    p, o = swept(numbered=True)
+    main = assemble([p, o], 10.0, False, EVIDENCE, lambda v: [])
+    assert main.view_slots[1] == [4, 5, 6, 7]
+    assert [main.slots[s].number for s in main.view_slots[1]] == [1, 2, 3, 4]
+    assert main.unresolved_folds == [(10.0, 20.0, 0, 3)]
+    assert [(d.chosen, d.basis, d.resolved) for d in main.decisions if d.kind == "fold"] == [("new", "held", False)]
+    p, o = swept(numbered=True)
+    folded = assemble([p, o], 10.0, True, EVIDENCE, lambda v: [])
+    assert folded.view_slots[1] == [0, 1, 2, 3]
+
+
+def test_a_numbered_page_swept_again_after_a_repeat_sign_the_playhead_played_folds():
+    p, o = swept(numbered=True, sign=True)
+    main = assemble([p, o], 10.0, False, EVIDENCE, lambda v: [])
+    assert main.view_slots[1] == [0, 1, 2, 3] and main.unresolved_folds == []
+
+
+def test_a_jump_back_to_an_earlier_page_with_the_same_numbers_folds():
+    # Bars 1-4, 5-8, then 1-4 again from where the playhead went back
+    p, o = swept(numbered=True, first=5)
+    back = band_view(2, 1)
+    for k, c in enumerate(back.cells):
+        c.number = 1 + k
+    back.move = Move("still", steps=5)
+    played(o, (0.1, 20, 30), (9.5, 700, 30))
+    played(back, (0.1, 20, 30))
+    main = assemble([p, o, back], 10.0, False, EVIDENCE, lambda v: [])
+    assert main.view_slots[2] == [0, 1, 2, 3] and main.unresolved_folds == []
+    assert [(d.view, d.basis, d.resolved) for d in main.decisions if d.kind == "fold"] == [(2, "numbers", True)]
+
+
+def numbered_evidence(sign: bool, held: bool):
+    """Replay evidence for a numbered page shown again on the slots of the numbered page before."""
+    p, o = swept(numbered=True, sign=sign)
+    A = Assembly(slots=[Slot(k, c, 0, c.number) for k, c in enumerate(p.cells)])
+    return replay_evidence(o, o.cells[:2], 0, A, 0.0, p, EVIDENCE, lambda v: [], held)
+
+
+def test_a_held_page_swept_again_folds_only_on_a_repeat_sign_whatever_its_numbers_say():
+    assert numbered_evidence(sign=False, held=True) == (False, "held", False)
+    assert numbered_evidence(sign=False, held=False) == (True, "numbers", True)
+    assert numbered_evidence(sign=True, held=True) == (True, "repeat_sign", True)
+
+
+def test_a_numbered_page_shown_again_after_six_seconds_without_tab_folds_by_its_numbers():
+    # Past HELD_GAP_SECONDS (5) the page left the screen, so it is no page held still
+    p, o = swept(numbered=True)
+    o.t0, o.t1 = 16.0, 26.0
+    played(o, (0.1, 20, 30))
+    main = assemble([p, o], 10.0, False, EVIDENCE, lambda v: [])
+    assert main.view_slots[1] == [0, 1, 2, 3] and main.unresolved_folds == []
+
+
+def test_a_playhead_that_jumps_up_to_a_system_below_the_top_does_not_sweep_the_page_again():
+    # Bars 1-2 on the top system, bar 3 on a middle one and bar 4 on a bottom one, 100 px apart; the first view's
+    # playhead ends in bar 4 and the second view's starts in bar 3, or in bar 1
+    p, o = swept(numbered=False)
+    for v in (p, o):
+        for k, c in enumerate(v.cells[2:], start=1):
+            c.system, c.x0, c.x1, c.y0, c.mid_y = k, c.x0 - 200 * (k + 1), c.x1 - 200 * (k + 1), 100 * k, 30.0 + 100 * k
+        v.single = False
+    played(p, (9.5, 100, 230))
+    played(o, (0.1, 20, 130))
+    assert playhead_restarts(p, o, 10.0) is True
+    assert swept_again(p, o, 10.0) is False
+    played(o, (0.1, 20, 30))
+    assert swept_again(p, o, 10.0) is True
+
+
+def test_a_numbered_page_the_playhead_left_before_its_last_measure_folds_as_a_repeat():
+    # The playhead leaves bar 3 of bars 1-4 and starts over: an end-repeat sign the reading didn't find
+    p, o = swept(numbered=True)
+    played(p, (9.5, 500, 30))
+    main = assemble([p, o], 10.0, False, EVIDENCE, lambda v: [])
+    assert main.view_slots[1] == [0, 1, 2, 3] and main.unresolved_folds == []

@@ -73,6 +73,8 @@ RESTART_NUMBERS = 4
 # A number read this many measures or fewer off its view's count points at a missed or extra barline
 CONFLICT_SPAN = 2
 NAV_WORDS = ("D.S", "DS.", "D.C", "DC.", "CODA", "FINE", "SEGNO")
+# A page shown again after this long without tab on screen left the screen, so it is no page held still
+HELD_GAP_SECONDS = 5.0
 # Two views of a band that didn't move show the same music when at most this share of their marks finds no partner;
 # what is left is cursor residue
 STILL_MISMATCH = 0.2
@@ -807,7 +809,37 @@ def navigation_before(o: Obs | None, words_of) -> str | None:
     return None
 
 
-def replay_evidence(o, run, j, A, gap_before, prev, use, words_of) -> tuple[bool, str, bool]:
+def swept_again(p: Obs | None, o: Obs, gap: float) -> bool:
+    """Whether view o is the page of view p held still while the playhead sweeps it again: the band didn't move, and
+    the playhead swept the whole page and went back to its top system."""
+    if p is None or p.seg != o.seg or o.mosaic is not None or p.mosaic is not None:
+        return False
+    if p.band is None or o.band is None or p.band.shape != o.band.shape:
+        return False
+    r = register(p, o, 0, gap, 2)
+    return r is not None and r[1] <= STILL_MISMATCH and swept_from_start(p, o, gap)
+
+
+def swept_from_start(p: Obs, o: Obs, gap: float) -> bool:
+    """Whether the playhead swept the whole page of view p and went back to start o on its top system. Leaving p
+    before its last measure is how an end-repeat sign the reading missed sends it back; after more than
+    PLAYHEAD_EDGE_SECONDS between the views, where it left p is unknown. A sample that only jumps up a system can be
+    a stray mark on a page swept once."""
+    i = cell_at(o, playhead_at(o, at_start=True))
+    whole = (cell_at(p, playhead_at(p, at_start=False)) == len(p.cells) - 1
+             or o.t0 - p.t1 > PLAYHEAD_EDGE_SECONDS)
+    return (playhead_restarts(p, o, gap) is True and whole and i is not None
+            and o.cells[i].system == o.cells[0].system)
+
+
+def sign_sends_back(p: Obs | None, j: int, A) -> bool:
+    """Whether view p shows an end-repeat sign the playhead had still to play, which sends it back to slot j: near
+    where the sign sent it before, when p itself was placed by the sign."""
+    return (p is not None and p.repeat_end and repeat_played(p)
+            and abs(A.sign_folds.get(p.index, j) - j) <= SIGN_SLACK)
+
+
+def replay_evidence(o, run, j, A, gap_before, prev, use, words_of, held: bool = False) -> tuple[bool, str, bool]:
     """(fold, basis, resolved) for cells that repeat slots j, j+1, ...
 
     Folding needs evidence that the video went back to the same place in the score: equal printed
@@ -815,15 +847,18 @@ def replay_evidence(o, run, j, A, gap_before, prev, use, words_of) -> tuple[bool
     from the first measure after a break, the opening shown right after the piece's closing barline, or a sliding
     band cut back to its opening. A run that only looks like earlier music is an unresolved fold: the main reading
     prints it again and the folded reading folds it.
+
+    `held` says o is the page before held still and swept again. It folds only on a repeat sign or after a break:
+    a held page shows the same numbers and markings on every pass, so they can't tell a replay from the song playing
+    the page again.
     """
     first = run[0]
-    if "numbers" in use and first.number is not None and A.slots[j].number is not None:
+    if "numbers" in use and first.number is not None and A.slots[j].number is not None and not held:
         return first.number == A.slots[j].number, "numbers", True
     if "navigation" in use:
-        if (prev is not None and prev.repeat_end and repeat_played(prev)
-                and abs(A.sign_folds.get(prev.index, j) - j) <= SIGN_SLACK):
+        if sign_sends_back(prev, j, A):
             return True, "repeat_sign", True
-        word = navigation_before(prev, words_of)
+        word = None if held else navigation_before(prev, words_of)
         if word:
             return True, f"navigation:{word}", True
     # A view right after a break that shows the opening measures of an earlier segment again (an intro or
@@ -833,6 +868,8 @@ def replay_evidence(o, run, j, A, gap_before, prev, use, words_of) -> tuple[bool
     slid = o.move is not None and o.move.kind == "slide"
     if near_start and gap_before >= RESTART_GAP_SECONDS and not slid:
         return True, "restart", True
+    if held:
+        return False, "held", False
     # The opening measures right after the piece's closing barline are the song starting over
     if near_start and prev is not None and closes_piece(prev, A.staff_ends.get((prev.seg, prev.part))):
         return True, "end_restart", True
@@ -1358,6 +1395,9 @@ def place_views(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str]
         if "numbers" in use and all(c.number is not None for c in cells):
             slots_before = len(A.slots)
             place_numbered(o, slot_of, A, prev, prev_slots, gap, seg_of, held, o.index in others)
+            if (gap_before < HELD_GAP_SECONDS and numbered_again(o, slot_of, prev, prev_slots, gap)
+                    and not sign_sends_back(prev, min(slot_of), A)):
+                print_again(o, slot_of, A, fold_unresolved)
             seen = earlier_music(o, slot_of, A, prev_slots, slots_before, gap)
             if not seen or (watch is not None and watch[0].seg != o.seg):
                 watch = None
@@ -1516,6 +1556,28 @@ def fold_view(o: Obs, slot_of: list, prev_slots: list, A: Assembly, fold_unresol
         if not fold_unresolved:
             A.unsure_slots[slot_of[i]] = (o.t0, o.t1)
     A.replay_next = None
+
+
+def numbered_again(o: Obs, slot_of: list, prev: Obs | None, prev_slots: list, gap: float) -> bool:
+    """Whether a numbered view shows the measures of the view before, all of them by their numbers, with the
+    playhead gone back over the whole page: the page before held still and swept again. In one layout the band must
+    also have stayed still, as a page that scrolled up a system shows those numbers too."""
+    if (prev is None or len(slot_of) < 2 or None in slot_of or sorted(slot_of) != sorted(prev_slots)
+            or o.mosaic is not None or prev.mosaic is not None):
+        return False
+    return swept_again(prev, o, gap) if prev.seg == o.seg else swept_from_start(prev, o, gap)
+
+
+def print_again(o: Obs, slot_of: list, A: Assembly, fold_unresolved: bool) -> None:
+    """Read a page swept again with no repeat sign sending the playhead back: the main reading prints the pass again
+    as new measures and the folded one keeps it on the measures it repeats, with a notice either way."""
+    A.unresolved_folds.append((o.t0, o.t1, min(slot_of), max(slot_of)))
+    A.decisions.append(Decision(o.t0, "fold", "fold" if fold_unresolved else "new",
+                                ["new" if fold_unresolved else "fold"], "held", False))
+    if not fold_unresolved:
+        for i, c in enumerate(o.cells):
+            slot_of[i] = new_slot(A, c, o)
+            A.unsure_slots[slot_of[i]] = (o.t0, o.t1)
 
 
 def carry_numbers(slot_of, A) -> None:
@@ -1805,7 +1867,8 @@ def place_rest(o, slot_of, A, gap, gap_before, prev, use, words_of, fold_unresol
                 # The replay already under way goes on
                 fold, basis, resolved = True, "replay_continues", True
             else:
-                fold, basis, resolved = replay_evidence(o, run, j, A, gap_before, prev, use, words_of)
+                fold, basis, resolved = replay_evidence(o, run, j, A, gap_before, prev, use, words_of,
+                                                        gap_before < HELD_GAP_SECONDS and swept_again(prev, o, gap))
                 if (fold and resolved and (basis == "repeat_sign" or basis.startswith("navigation"))
                         and not any(has_notes(c) for c in run)):
                     # Measures without notes match earlier ones at any offset: a repeat sign or a D.S. says the
