@@ -84,6 +84,10 @@ TRACK_MIN_BARS = 2
 TRACK_MAX = 4
 # Tracks whose playhead columns lie within this many line gaps of each other found the same playhead
 TRACK_PLAYHEAD_GAPS = 1.0
+# The lowest four-line track is a bass's tab, and the song's bars are counted on it when its measures are wide, it
+# shows at least TRACK_BASS_SHARE as many whole measures as the clearest track, and its bottom line sits at least
+# TRACK_EDGE_GAPS line gaps above the crop's bottom (a staff nearer the frame's edge is cut off by it)
+TRACK_BASS_SHARE, TRACK_EDGE_GAPS = 0.9, 1.5
 # A glide is read in at most this many pieces, each at least this long, with rows from the staffs seen in its
 # first GLIDE_ROWS_SECONDS
 MAX_GLIDE_PIECES, GLIDE_PIECE_SECONDS, GLIDE_ROWS_SECONDS = 8, 2.0, 10.0
@@ -2034,12 +2038,14 @@ def agreed_playhead(built: list, seg: Segment) -> None:
 def stacked_obs(path: Path, crop, seg: Segment, si: int, tracks: list[list], thr: float, fthr: float, index: int,
                 t0: float, tried: dict) -> Obs | None:
     """One view of a glide whose tracks are stacked on screen, each gliding past the playhead at its own speed. Its
-    measures are those of the track whose barlines and numbers are clearest; each prints with every track's rows
-    over the time it was played. None when no track shows TRACK_MIN_BARS whole measures; the mosaics built are then
-    left in `tried` by their group's id."""
+    measures are those of the bass's track or of the one whose barlines and numbers are clearest; each prints with
+    every track's rows over the time it was played. None when no track shows TRACK_MIN_BARS whole measures; the
+    mosaics built are then left in `tried` by their group's id."""
     built = []
-    best = None
+    best = bass = None
     gap = float(np.median([s.tab.gap for s in tracks[0]]))
+    four = [g for g in tracks if round(float(np.median([len(s.tab.lines) for s in g]))) == 4]
+    lowest = max(four, key=lambda g: float(np.median([s.tab.top for s in g])), default=None)
     # The most seen first, so that of equal scores the track seen most, then the top one, is the reference
     for group in sorted(tracks, key=len, reverse=True):
         m = build_track(path, crop, seg, group, thr, t0)
@@ -2050,17 +2056,25 @@ def stacked_obs(path: Path, crop, seg: Segment, si: int, tracks: list[list], thr
         w = m.image.shape[1]
         systems = parse_mosaic(index, m.image, (0, rows[0] - print_rows[0], w, rows[1] - print_rows[0]),
                                seg.polarity, thr, fthr, seg.gap)
-        if sum(c.kind == "full" for ps in systems for c in ps.cells) < TRACK_MIN_BARS:
+        whole = sum(c.kind == "full" for ps in systems for c in ps.cells)
+        if whole < TRACK_MIN_BARS:
             continue
         built.append((group, rows, print_rows, m))
-        # Only the best track's parse is kept: each can hold a whole song's cells
+        # Only the best track's parse and the bass's are kept: each can hold a whole song's cells
         score = track_score(group, systems, gap)
         if best is None or score > best[0]:
-            best = (score, built[-1], systems)
+            best = (score, built[-1], systems, whole)
+        if group is lowest:
+            bass = (score, built[-1], systems, whole)
         del systems
     if best is None:
         return None
-    _, ref, systems = best
+    if bass is not None and bass[1] is not best[1] and bass[0][0] and bass[3] >= TRACK_BASS_SHARE * best[3]:
+        bottom = float(np.median([s.tab.bottom for s in lowest]))
+        if bottom + TRACK_EDGE_GAPS * float(np.median([s.tab.gap for s in lowest])) <= seg.y1:
+            best = bass
+    bass = None
+    _, ref, systems, _ = best
     group, rows, print_rows, m = ref
     best = None
     agreed_playhead(built, seg)

@@ -504,3 +504,33 @@ def test_stacked_tracks_take_the_playhead_column_most_of_them_found():
     pipeline.agreed_playhead(built, seg)
     assert [b[3].ref_x for b in built] == [518.0, 300.0]
 
+
+def bass_glide(monkeypatch, y1):
+    """glide_obs on a six-line track at crop row 130 with a barline every 300 columns over a four-line track at
+    crop row 300 with one every 320, both gliding 50 px a second; the crop ends at row y1."""
+    seg = Segment(0.0, 10.0, GAP_S, "dark", y0=0, y1=y1, x0=0, x1=800)
+    bass = Staff([300 + i * GAP_S for i in range(4)], 0, 800, GAP_S, "dark")
+    upper, lower = System(stack_staff(130), None), System(bass, None)
+    found = {t: [upper, lower] for t in np.arange(1.0, 10.0, 0.5)}
+
+    def build_track(path, crop, s, group, thr, t0):
+        _, print_rows = pipeline.group_rows(s, group)
+        top = int(group[0].tab.top)
+        m = stack_mosaic(print_rows, top, 300 if top == 130 else 320, 50.0, 0.0)
+        if top == 300:
+            # Paper over the two lower lines the six-line drawing added
+            m.image[top - print_rows[0] + 3 * GAP_S + 2:] = 255
+        return m
+    monkeypatch.setattr(pipeline, "build_track", build_track)
+    monkeypatch.setattr(ocr, "read_number", lambda crop: None)
+    return pipeline.glide_obs(None, (0, 0, 800, y1), seg, 0, found, 140.0, 229.0, 0, 0.0)
+
+
+def test_a_stacked_glide_counts_the_measures_of_its_bass_track(monkeypatch):
+    o = bass_glide(monkeypatch, 400)
+    assert [(c.x0, c.x1) for c in o.cells[:2] if c.kind == "full"] == [(99, 419), (419, 739)]
+
+
+def test_a_bass_track_cut_by_the_frame_edge_does_not_count_the_measures(monkeypatch):
+    o = bass_glide(monkeypatch, 360)
+    assert [(c.x0, c.x1) for c in o.cells[:2] if c.kind == "full"] == [(99, 399), (399, 699)]
