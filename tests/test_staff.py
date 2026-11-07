@@ -128,6 +128,20 @@ def test_notation_far_above_its_tab_pairs_when_only_paper_lies_between():
     assert system.notation is not None and len(system.notation.lines) == 5
 
 
+def test_notation_with_a_ledger_row_pairs_with_four_string_tab():
+    # Five notation lines and a ledger row read as 6 lines 14 px apart, over bass tab 20 px apart (0.7 of it)
+    rows = [(80 + i * 14, 50, 750) for i in range(6)] + [(220 + i * 20, 50, 750) for i in range(4)]
+    (system,) = systems_in(lined(rows, 400))
+    assert len(system.tab.lines) == 4 and system.notation is not None and len(system.notation.lines) == 6
+
+
+def test_six_lines_spaced_far_closer_than_the_tab_below_stay_their_own_staff():
+    # 8 px apart over 20 px is 0.4 of the tab's spacing, under the ledger share
+    rows = [(100 + i * 8, 50, 750) for i in range(6)] + [(220 + i * 20, 50, 750) for i in range(4)]
+    systems = systems_in(lined(rows, 400))
+    assert [len(s.tab.lines) for s in systems] == [6, 4] and all(s.notation is None for s in systems)
+
+
 def test_notation_far_above_its_tab_does_not_pair_across_a_ruled_row():
     rows = [(60 + i * 10, 50, 750) for i in range(5)] + [(254 + i * 16, 50, 750) for i in range(6)]
     img = lined(rows, 400)

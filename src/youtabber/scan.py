@@ -58,6 +58,10 @@ BAR_GAPS = 2.0
 NOTATION_GAPS = 9
 # ...or up to this many when nothing but small marks (H, P, fingerings) lies between them
 NOTATION_FAR_GAPS = 12
+# A 6-line group above a tab staff with fewer lines is notation plus a row of ledger lines when its line gap is at
+# least LEDGER_GAP_SHARE of the tab's (and under 0.85 of it, as for any notation) and at least LEDGER_CLEAR_GAPS tab
+# line gaps of paper lie between them; strings drawn under a tab staff sit right against it
+LEDGER_GAP_SHARE, LEDGER_CLEAR_GAPS = 0.5, 1.0
 # Between a far notation staff and its tab, no line or row of ink may run across more than this share of the staffs
 OPEN_ROW_SHARE = 0.5
 # A system spaced closer than this share of the frame's widest is a title bar or text lines, which don't set the theme
@@ -400,6 +404,7 @@ def systems_in(gray: np.ndarray, whole_lines: bool = False) -> list[System]:
         # Closer-spaced lines above are notation (a ledger line can add a sixth), unless they outnumber the lines
         # below: then the lower group is strings or frets under a tab staff, not a tab staff. Two 5-line staffs
         # spaced alike are two systems of 5-string tab, and notation set far above its tab is spaced closer than it.
+        # Six lines spaced from half to 0.85 of the lines below are notation with a row of ledger lines.
         twin = (above is not None and len(above.lines) == len(s.lines) == 5
                 and abs(above.gap - s.gap) <= 0.1 * s.gap)
         if (above is not None and above.polarity == s.polarity and 0 < s.top - above.bottom
@@ -407,7 +412,9 @@ def systems_in(gray: np.ndarray, whole_lines: bool = False) -> list[System]:
                      or s.top - above.bottom < NOTATION_FAR_GAPS * s.gap and above.gap < 0.85 * s.gap
                      and open_between(gray, above, s))
                 and (len(above.lines) == 5 and above.gap <= 1.1 * s.gap and not twin
-                     or above.gap < 0.85 * s.gap and len(above.lines) <= len(s.lines))):
+                     or above.gap < 0.85 * s.gap and len(above.lines) <= len(s.lines)
+                     or len(above.lines) == 6 and LEDGER_GAP_SHARE * s.gap <= above.gap < 0.85 * s.gap
+                     and s.top - above.bottom >= LEDGER_CLEAR_GAPS * s.gap)):
             # Strings in the footage above a tab band can pass for notation; they lie on the footage, not on the
             # tab's paper, so they are dropped
             out.append(System(s, above if on_paper_of(gray, above, s) else None))
