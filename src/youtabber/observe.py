@@ -40,8 +40,8 @@ MAX_VIEW_FRAMES = 8 * MAX_PLATE_FRAMES
 INK_LEVEL = 0.55
 # Pixels that differ from the plate by this much (any color channel) are cursor, not paper
 CURSOR_DIFF = 45
-# ...except where more than this share of the plate's pixels within 7 px are strongly colored: a colored strip
-# showing the next page changes while the page holds, so the playhead is not looked for there
+# The playhead is not looked for where more than this share of the plate's pixels within 7 px are strongly colored:
+# a colored strip showing the next page changes while the page holds
 STRIP_SHARE = 0.5
 # A playhead that sweeps at least this many line gaps, then jumps back as many into its sweep's left half, starts
 # the page over
