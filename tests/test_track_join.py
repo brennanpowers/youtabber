@@ -11,7 +11,7 @@ from youtabber.assemble import (RESTART_GAP_SECONDS, Assembly, Decision, Obs, Sl
                                 place_rest, playhead_at, playhead_join, playhead_restarts, playhead_track, register,
                                 register_marks, repeat_played, replay_evidence, rest_of, restart_before, same_cell,
                                 samples_on, scroll_shares, scroll_shifts, sequence_links, shown_again, split_measure,
-                                still_links, swept_again, track_join, usual_slides, view_pairs)
+                                still_links, swept_again, track_join, turned_in_last, usual_slides, view_pairs)
 from youtabber.observe import unmatched
 from youtabber.parse import Cell
 from youtabber.pipeline import Measure, Notice, edge_notices, join_notices, readings, repeat_notices
@@ -1544,6 +1544,54 @@ def test_a_numbered_page_the_playhead_left_before_its_last_measure_folds_as_a_re
     played(p, (9.5, 500, 30))
     main = assemble([p, o], 10.0, False, EVIDENCE, lambda v: [])
     assert main.view_slots[1] == [0, 1, 2, 3] and main.unresolved_folds == []
+
+
+def turned_pair(p_end: int, o_start: int = 30):
+    """A page of bars 1-4 (200 px each), bar 4 cut by the page edge, left with the playhead at x p_end, and a next
+    page whose first cell, cut by the page edge, holds the clef and key and the rest of bar 4, with the playhead at
+    o_start."""
+    p, o = band_view(0, 1), band_view(1, 4)
+    p.cells[3] = replace(p.cells[3], kind="tail", complete=False)
+    played(p, (9.9, p_end, 30))
+    o.cells[0] = replace(o.cells[0], kind="lead", complete=False, x1=150)
+    played(o, (0.1, o_start, 30))
+    return p, o
+
+
+def test_a_page_turned_while_the_playhead_was_inside_its_last_measure_joins_the_next_pages_cut_first_cell():
+    # The playhead left at x 700, half way across the last cell (600-800)
+    p, o = turned_pair(700)
+    assert turned_in_last(p, o) == ({0: 3}, True, True)
+    # 750 is exactly three quarters of the way across
+    assert turned_in_last(*turned_pair(750)) == ({0: 3}, True, True)
+
+
+def test_no_last_measure_turn_join_when_the_playhead_had_nearly_played_the_measure_or_was_elsewhere():
+    # 760 is past three quarters of the last cell: that measure was played out and the next page starts a new one
+    assert turned_in_last(*turned_pair(760)) is None
+    # The playhead left on the cell before the last, or started the next page past its first cell
+    assert turned_in_last(*turned_pair(500)) is None
+    assert turned_in_last(*turned_pair(700, o_start=300)) is None
+    # A whole first cell is a measure of its own
+    p, o = turned_pair(700)
+    o.cells[0] = replace(o.cells[0], complete=True)
+    assert turned_in_last(p, o) is None
+    # A page of two systems
+    p, o = turned_pair(700)
+    p.cells[0] = replace(p.cells[0], system=1)
+    assert turned_in_last(p, o) is None
+
+
+def test_a_whole_last_measure_joins_only_when_a_narrow_sliver_follows_it_to_the_page_edge():
+    p, o = turned_pair(700)
+    p.cells[3] = replace(p.cells[3], kind="full", complete=True)
+    p.all_cells = list(p.cells)
+    assert turned_in_last(p, o) is None
+    # A 90 px sliver is under half of a 200 px measure; a 100 px cell is staff going on past the last measure
+    p.all_cells = p.cells + [replace(p.cells[3], kind="tail", complete=False, x0=800, x1=890)]
+    assert turned_in_last(p, o) == ({0: 3}, True, True)
+    p.all_cells = p.cells + [replace(p.cells[3], kind="tail", complete=False, x0=800, x1=900)]
+    assert turned_in_last(p, o) is None
 
 
 def test_on_one_system_a_scroll_stands_though_the_playhead_was_seen_at_another_height():

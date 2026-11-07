@@ -110,6 +110,12 @@ LEAD_SHARE, REST_SPAN = 0.5, (0.85, 1.4)
 # After a page flip the playhead can't place, a new page's cut first cell narrower than this share of the previous
 # page's typical whole measure is the rest of that page's cut last measure
 FLIP_LEAD_SHARE = 0.7
+# A page that turned while the playhead was at most this share of the way across its last cell, with the playhead
+# starting the next page on its cut first cell, turned inside that measure: the cut first cell holds the rest of it
+TURN_PLAYED_SHARE = 0.75
+# ...unless the page drew a dropped cell at least this share of its typical whole measure after its last cell: staff
+# going on to the right means the playhead hadn't reached the page's end. A sliver cut by the page edge is narrower
+TURN_AFTER_SHARE = 0.5
 # A page's first measure starts at most this many line gaps right of the staff start (clef, key, time signature)
 STAFF_START_GAPS = 10
 # Two pieces of a measure split by a page turn are together at most this share of a typical whole measure wide,
@@ -1213,6 +1219,31 @@ def page_flip_join(p: Obs, o: Obs) -> tuple[dict[int, int], bool, bool] | None:
     return None
 
 
+def turned_in_last(p: Obs, o: Obs) -> tuple[dict[int, int], bool, bool] | None:
+    """(links, continues, edge) tying o's cut first cell to p's last cell when the page turned while the playhead was
+    inside that measure: it left p on its last cell, at most TURN_PLAYED_SHARE of the way across, and starts o on its
+    first cell. o's first cell then holds the page's clef and key and the rest of the measure. None otherwise."""
+    if not p.cells or not o.cells or len({c.system for c in p.cells}) > 1:
+        return None
+    h, t, last = o.cells[0], p.cells[-1], len(p.cells) - 1
+    if h.kind != "lead" or h.complete:
+        return None
+    a, b = playhead_at(p, at_start=False), playhead_at(o, at_start=True)
+    if a is None or b is None or cell_at(p, a) != last or cell_at(o, b) != 0:
+        return None
+    if (a[0] - t.x0) / max(1, t.x1 - t.x0) > TURN_PLAYED_SHARE:
+        return None
+    after = [c for c in p.all_cells if c.x0 >= t.x1 - CELL_SLACK_PX]
+    # A last measure closed by its barline with no staff after it ends the page's music, so the next page starts
+    # a new measure
+    if t.complete and not after:
+        return None
+    widths = [c.x1 - c.x0 for c in p.cells if c.kind == "full"]
+    if widths and any(c.x1 - c.x0 >= TURN_AFTER_SHARE * float(np.median(widths)) for c in after):
+        return None
+    return {0: last}, True, True
+
+
 class _Columns:
     """Columns a..b of a cell's maps, read as a cell by `same_part`."""
 
@@ -1446,7 +1477,8 @@ def place_views(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str]
                     A.decisions.append(Decision(o.t0, "join", tj[1].replace("?", ""), [], "track", resolved))
                 elif not probed:
                     links = existing_join(prev, o, gap, shift_cache, scroll_share, usual, use, A, obs, beats.get(o.seg))
-                pj = playhead_join(prev, o, beats.get(o.seg), gap) if not links and tj is None else None
+                pj = ((playhead_join(prev, o, beats.get(o.seg), gap) or turned_in_last(prev, o))
+                      if not links and tj is None else None)
                 if pj is not None:
                     links, continues, edge = pj
                     # A first cell unlike the cut measure is still the next page unless it opens a run of measures
