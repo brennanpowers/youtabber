@@ -1544,3 +1544,19 @@ def test_a_numbered_page_the_playhead_left_before_its_last_measure_folds_as_a_re
     played(p, (9.5, 500, 30))
     main = assemble([p, o], 10.0, False, EVIDENCE, lambda v: [])
     assert main.view_slots[1] == [0, 1, 2, 3] and main.unresolved_folds == []
+
+
+def test_on_one_system_a_scroll_stands_though_the_playhead_was_seen_at_another_height():
+    # 40 px is four line gaps: a line cursor's sampled height can swing that much along one system
+    p, o = slid(400, False)
+    played(p, (9.5, 700, 10))
+    played(o, (0.1, 320, 50))
+    assert choose_shift(p, o, [(398, 0.0)], 0.9, {"playhead"}, 10.0) == (398, "playhead", True)
+
+
+def test_with_several_systems_a_playhead_seen_at_another_height_rules_the_scroll_out():
+    p, o = slid(400, False)
+    played(p, (9.5, 700, 10))
+    played(o, (0.1, 320, 50))
+    o.single = False
+    assert choose_shift(p, o, [(398, 0.0)], 0.9, {"playhead"}, 10.0) == (None, "playhead", True)

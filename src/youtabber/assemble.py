@@ -574,7 +574,11 @@ def pick_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float, 
             unseen = playhead_track(o)[0][0] - playhead_track(p)[-1][0]
             extra = max(0.0, unseen) / beat if beat else 0.0
             reach = (CARRY_MEASURES + extra) * width
-            fits = [dx for dx, _ in shifts if -gap <= (b[0] + dx) - a[0] <= reach and abs(b[1] - a[1]) < 3 * gap]
+            # With one system on both views the playhead can only carry on along it, and a line cursor's sampled
+            # height swings along the system, so the height is compared only when there are several
+            one_system = p.single and o.single
+            fits = [dx for dx, _ in shifts if -gap <= (b[0] + dx) - a[0] <= reach
+                    and (one_system or abs(b[1] - a[1]) < 3 * gap)]
             if len(fits) == 1:
                 if drawn_against(o, fits[0], gap):
                     # A drawn slide can be measured short, so the page turn it says is left unsettled
