@@ -1643,3 +1643,24 @@ def test_a_view_that_opens_a_segment_with_the_playhead_elsewhere_or_in_the_same_
     assert split_pass(30) == (False, "none", False)
     assert split_pass(425) == (False, "none", False)
     assert split_pass(410, o_seg=0) == (False, "none", False)
+
+
+def straight_into(p_last: int):
+    """Replay evidence for the opening bars 1-4 shown a break after a page of bars 9-12, whose playhead moves 100 px a
+    second and was last seen at x p_last 0.5 s before the opening's view starts with the playhead on its first
+    measure."""
+    p, o = band_view(0, 9), band_view(1, 1)
+    played(p, (8.5, p_last - 100, 30), (9.5, p_last, 30))
+    played(o, (0.1, 10, 30))
+    return replay_evidence(o, o.cells[:2], 0, Assembly(), RESTART_GAP_SECONDS, p, EVIDENCE, lambda v: [])
+
+
+def test_a_page_the_playhead_plays_straight_into_from_the_page_before_is_no_restart():
+    # The last barline at x 800 is reached at 10.5 s, 0.5 s after the opening's view starts at 10.0 s
+    assert straight_into(700) == (False, "none", False)
+
+
+def test_a_page_the_playhead_reaches_well_after_the_page_before_ended_restarts():
+    # The last barline is reached at 11.0 s and 13.5 s, over 0.75 s from the opening's start
+    assert straight_into(650) == (True, "restart", True)
+    assert straight_into(400) == (True, "restart", True)

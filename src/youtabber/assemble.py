@@ -17,6 +17,10 @@ from youtabber.observe import WRAP_GAPS, unmatched
 RESTART_GAP_SECONDS = 1.5
 # ...and shows music from at most this many measures after a segment's first measure
 RESTART_SLACK = 3
+# ...unless, in the same segment, the view starts on its first measure within this many seconds of when the view
+# before's playhead, at its speed over its last RESTART_SPEED_SECONDS, reaches that view's last barline: the song
+# played straight on, and the gap is only frames no view took in
+ON_TIME_SECONDS, RESTART_SPEED_SECONDS = 0.75, 1.5
 # A view that opens a new segment carries on the same pass when its first playhead sample lies within this many line
 # gaps of where the view before's playhead would be, at its speed over its last CARRY_SPEED_SECONDS, at most
 # CARRY_WITHIN_SECONDS later
@@ -886,7 +890,7 @@ def replay_evidence(o, run, j, A, gap_before, prev, use, words_of, held: bool = 
     near_start = j <= RESTART_SLACK or any(0 <= j - s <= RESTART_SLACK for s in A.segment_starts)
     # A band seen sliding since the view before stayed on screen, so the time between is no break
     slid = o.move is not None and o.move.kind == "slide"
-    if near_start and gap_before >= RESTART_GAP_SECONDS and not slid:
+    if near_start and gap_before >= RESTART_GAP_SECONDS and not slid and not played_into(prev, o, use):
         return True, "restart", True
     if held:
         return False, "held", False
@@ -916,6 +920,19 @@ def playhead_speed(o: Obs, seconds: float) -> float | None:
         return None
     v = (tail[-1][1] - tail[0][1]) / (tail[-1][0] - tail[0][0])
     return v if v > 0 else None
+
+
+def played_into(p: Obs | None, o: Obs, use: set[str]) -> bool:
+    """Whether the playhead went from view p straight on to view o in the same segment: o starts on its first measure
+    within ON_TIME_SECONDS of when p's playhead, at its speed, reaches p's last barline."""
+    if "playhead" not in use or p is None or p.seg != o.seg or not p.cells:
+        return False
+    v = playhead_speed(p, RESTART_SPEED_SECONDS)
+    if v is None:
+        return False
+    t, x, _ = playhead_track(p)[-1]
+    arrive = t + (max(c.x1 for c in p.cells) - x) / v
+    return abs(o.t0 - arrive) <= ON_TIME_SECONDS and cell_at(o, playhead_at(o, at_start=True)) == 0
 
 
 def carries_on(p: Obs | None, o: Obs, use: set[str]) -> bool:
