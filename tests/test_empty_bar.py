@@ -154,3 +154,31 @@ def test_a_blank_tail_the_playhead_was_seen_on_twice_is_a_measure():
     # Nor do samples on its left barline or within two pixels of it
     assert kept_cells([blank], typical=300, playhead=[(1.0, 100, 85), (1.2, 102, 85)]) == []
     assert kept_cells([blank], typical=300, playhead=[(1.0, 103, 85), (1.2, 103, 85)]) == [blank]
+
+
+def glided_bars(seeded: int, short_seconds: float):
+    """Three 300 px glided measures and a 50 px one with notes after them, at x 0-950, on a mosaic seeded up to x
+    `seeded` whose playhead takes 3 s over each wide measure and short_seconds over the narrow one."""
+    from dataclasses import replace
+    from types import SimpleNamespace
+    wide, narrow = cell(300, True), cell(50, True)
+    cells = [replace(wide, x0=0, x1=300), replace(wide, x0=300, x1=600), replace(narrow, x0=600, x1=650),
+             replace(wide, x0=650, x1=950)]
+    times = [0.0, 3.0, 6.0, 6.0 + short_seconds, 9.0 + short_seconds]
+    mosaic = SimpleNamespace(seeded=seeded, time_at=lambda x: float(np.interp(x, [0, 300, 600, 650, 950], times)))
+    return cells, mosaic
+
+
+def test_a_narrow_glided_bar_played_for_much_of_a_measure_is_kept():
+    # 1.5 s is half of a typical measure's 3 s
+    cells, mosaic = glided_bars(100, 1.5)
+    assert kept_cells(cells, typical=300, mosaic=mosaic) == cells
+    assert kept_cells(cells, typical=300) == [cells[0], cells[1], cells[3]]
+
+
+def test_a_narrow_glided_bar_played_briefly_or_seeded_from_the_first_frame_is_dropped():
+    # 1.0 s is a third of a typical measure's 3 s; before x 700 the mosaic shows the first frame, where nothing moved
+    cells, mosaic = glided_bars(100, 1.0)
+    assert kept_cells(cells, typical=300, mosaic=mosaic) == [cells[0], cells[1], cells[3]]
+    cells, mosaic = glided_bars(700, 1.5)
+    assert kept_cells(cells, typical=300, mosaic=mosaic) == [cells[0], cells[1], cells[3]]

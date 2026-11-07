@@ -39,6 +39,9 @@ EMPTY_BAR_INK = 0.1
 # ...and, in a system's first cell, less than this many on the notation staff above it, room for a rest but not a clef
 # and key signature
 EMPTY_NOTATION_INK = 1.0
+# A whole glided cell that takes at least this share of its glide's typical measure time to pass the playhead is a
+# measure, however narrow
+SLOW_BAR_SHARE = 0.4
 # Line gaps at a cell's left taken up by its barline, a thick or double one included
 BAR_SKIP_GAPS = 0.7
 # A view's first cell counted as measure 0 with a bare tab staff past the clef is a clef and key header when at most
@@ -480,7 +483,7 @@ def finish(path, info, r, segments, scrolls, clips, obs, gaps, dropped, unread, 
     full_widths = [c.x1 - c.x0 for o in obs for c in o.all_cells if c.kind == "full"]
     typical = float(np.median(full_widths)) if full_widths else 0.0
     for o in obs:
-        o.cells = kept_cells(o.all_cells, typical, samples_on(o, o.all_cells))
+        o.cells = kept_cells(o.all_cells, typical, samples_on(o, o.all_cells), o.mosaic)
         o.bars = sorted({c.x0 for c in o.all_cells if c.kind != "lead"}
                         | {c.x1 for c in o.all_cells if c.kind != "tail"})
     carry_on(r.parts, obs, ocr.read_number)
@@ -1507,12 +1510,24 @@ def read_spans(obs: list[Obs]) -> list[tuple[float, float]]:
             if (o.systems and (o.cells or o.brief or not o.own_paper)) or o.mosaic is not None]
 
 
-def kept_cells(cells: list[Cell], typical: float, playhead: list = ()) -> list[Cell]:
+def kept_cells(cells: list[Cell], typical: float, playhead: list = (), mosaic=None) -> list[Cell]:
     """The cells that are measures: those at least EDGE_SHARE of a typical measure wide, short bars on still screens,
     and empty bars however short. A clef and key header standing alone is no measure, and neither is a blank tail
     unless the view's `playhead` samples (t, x, y) show it played. A sample on the tail's left barline is the
-    playhead parked at the end of the last measure, so it doesn't count."""
-    return [c for i, c in enumerate(cells) if not c.header and measure_cell(cells, i, typical, playhead)]
+    playhead parked at the end of the last measure, so it doesn't count. In a glide's `mosaic`, a whole cell past
+    the columns seeded from its first frame that takes at least SLOW_BAR_SHARE of a typical measure's time to pass
+    the playhead is a measure too, however narrow: a bar holding one tied note is drawn short but played in full."""
+    slow = set()
+    if mosaic is not None:
+        def played_for(c: Cell) -> float:
+            return mosaic.time_at(c.x1) - mosaic.time_at(c.x0)
+        times = [played_for(c) for c in cells if c.kind == "full"]
+        usual = float(np.median(times)) if times else 0.0
+        # The seeded columns were on screen before the band moved, so time spent over them says nothing
+        slow = {id(c) for c in cells if c.kind == "full" and c.x0 >= mosaic.seeded and usual > 0
+                and played_for(c) >= SLOW_BAR_SHARE * usual}
+    return [c for i, c in enumerate(cells)
+            if not c.header and (measure_cell(cells, i, typical, playhead) or id(c) in slow)]
 
 
 def measure_cell(cells: list[Cell], i: int, typical: float, playhead: list = ()) -> bool:
