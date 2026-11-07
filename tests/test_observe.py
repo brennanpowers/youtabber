@@ -976,3 +976,42 @@ def test_a_panel_ending_under_a_line_gap_or_over_two_into_footage_keeps_its_edge
     # 5 px and 25 px of footage
     assert footage_tail(90)[2] == 95
     assert footage_tail(70)[2] == 95
+
+
+def swept_frames(n: int, mark):
+    """A fake `frames`: the page held for n frames with the cursor sweeping x 20 to 1100 once, and `mark(i, f)`
+    drawing on frame i."""
+    def frames(path, fps, crop=None, start=0.0, length=None):
+        for i in range(n):
+            f = PAGE.copy()
+            mark(i, f)
+            x = 20 + int(1080 * i / n)
+            f[:, x:x + 8] = (f[:, x:x + 8] * 0.5 + np.array(SONG.cursor) * 0.5).astype(np.uint8)
+            yield i / fps, f
+    return frames
+
+
+def cursor_xs(monkeypatch, mark) -> list[int]:
+    """Playhead x of each frame of the sweep, against where the cursor is drawn."""
+    monkeypatch.setattr(observe, "frames", swept_frames(90, mark))
+    observe.set_paper(PAPER)
+    views = observe.views_in(None, (0, 0, 1280, 270), "dark", 18.0, PAPER, lambda t: STAFFS, 0.0, 15.0)[0]
+    assert len(views) == 1
+    return [round(x - (24 + 1080 * i / 90)) for i, (_, x, _) in enumerate(views[0].playhead)]
+
+
+def test_the_playhead_is_not_looked_for_on_a_colored_strip_that_changes_while_the_page_holds(monkeypatch):
+    def strip(i, f):
+        # A blue strip whose dark rows move down 3 px halfway through, as when it starts showing the next page
+        f[:, 1150:1270] = (200, 90, 20)
+        for y in range(70 + (3 if i >= 45 else 0), 160, 6):
+            f[y:y + 3, 1160:1260] = 30
+    off = cursor_xs(monkeypatch, strip)
+    assert len(off) == 90 and max(abs(d) for d in off) <= 2
+
+
+def test_the_playhead_is_found_crossing_a_thin_colored_line_on_the_page(monkeypatch):
+    def line(i, f):
+        f[:, 600:603] = (200, 90, 20)
+    off = cursor_xs(monkeypatch, line)
+    assert len(off) == 90 and max(abs(d) for d in off) <= 2

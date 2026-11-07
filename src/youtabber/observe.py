@@ -40,6 +40,9 @@ MAX_VIEW_FRAMES = 8 * MAX_PLATE_FRAMES
 INK_LEVEL = 0.55
 # Pixels that differ from the plate by this much (any color channel) are cursor, not paper
 CURSOR_DIFF = 45
+# ...except where more than this share of the plate's pixels within 7 px are strongly colored: a colored strip
+# showing the next page changes while the page holds, so the playhead is not looked for there
+STRIP_SHARE = 0.5
 # A playhead that sweeps at least this many line gaps, then jumps back as many into its sweep's left half, starts
 # the page over
 WRAP_GAPS = 6
@@ -752,7 +755,9 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
 
     def playhead_at(f, plate, rect) -> tuple[float, float] | None:
         x0, y0, x1, y1 = rect
-        b, g, r = cv2.split(cv2.absdiff(f[y0:y1, x0:x1], plate[y0:y1, x0:x1]))
+        diff = cv2.absdiff(f[y0:y1, x0:x1], plate[y0:y1, x0:x1])
+        diff[cv2.blur(colored(plate[y0:y1, x0:x1]).astype(np.float32), (15, 15)) > STRIP_SHARE] = 0
+        b, g, r = cv2.split(diff)
         dev = (cv2.max(cv2.max(b, g), r) > CURSOR_DIFF).astype(np.uint8)
         dev = cv2.morphologyEx(dev, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
         ys, xs = np.nonzero(dev)
