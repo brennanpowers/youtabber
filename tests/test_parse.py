@@ -906,3 +906,28 @@ def test_notation_seen_in_one_part_is_not_counted_for_another_part():
     # A page part takes the segment's staffs within its rows
     assert part_notation(found, seg, Part(0, 0, (0, 1000), "page", found)) == [17.0]
     assert part_notation(found, seg, Part(0, 0, (500, 1000), "page", found)) == []
+
+
+def system_page(top: int, bottom: int) -> tuple[np.ndarray, Staff]:
+    """Gray paper (240) with a 5-line notation staff at rows 20-60 over a 4-line tab at rows 120-150, line gap 10,
+    lines at 100, and a 1-pixel line at x 200 of level 180 from row `top` to row `bottom`."""
+    g = np.full((200, 400), 240, np.uint8)
+    for y in (20, 30, 40, 50, 60, 120, 130, 140, 150):
+        g[y, 10:390] = 100
+    g[top:bottom + 1, 200] = 180
+    return g, Staff([120.0, 130.0, 140.0, 150.0], 10, 390, 10.0, "dark")
+
+
+def test_a_thin_light_line_through_the_whole_system_is_a_barline():
+    g, st = system_page(20, 150)
+    # The notation staff's second and next-to-last lines
+    assert parse.system_bar(g, st, (30.0, 50.0), (200, 200))
+
+
+def test_a_thin_light_line_running_on_above_and_below_the_system_is_no_barline():
+    # A cursor line from the top of the plate to below the tab
+    g, st = system_page(0, 190)
+    assert not parse.system_bar(g, st, (30.0, 50.0), (200, 200))
+    # A stroke on the tab alone, with paper between the staffs
+    g, st = system_page(120, 150)
+    assert not parse.system_bar(g, st, (30.0, 50.0), (200, 200))

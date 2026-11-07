@@ -698,6 +698,34 @@ def drawn_bars(gray: np.ndarray, st, bars: list[tuple[int, int]]) -> list[tuple[
     return [bar for bar, level in zip(bars, levels) if level <= max(lighter_than_lines, lighter_than_bars)]
 
 
+# A dropped line at most SYSTEM_BAR_PX pixels wide is still a barline when it is dark on at least SYSTEM_BAR_BETWEEN
+# of the rows between the notation and tab staffs and on under SYSTEM_BAR_OUTSIDE of the rows just above the
+# notation staff and just below the tab: a barline drawn through the whole system. A cursor runs on above and below
+SYSTEM_BAR_PX, SYSTEM_BAR_BETWEEN, SYSTEM_BAR_OUTSIDE = 3, 0.9, 0.5
+
+
+def system_bar(gray: np.ndarray, st, notation: tuple[float, float], bar: tuple[int, int]) -> bool:
+    """True when a thin line dropped as light crosses the gap between the notation staff and the tab and stops at the
+    system's top and bottom. `notation` holds the notation staff's second and next-to-last lines."""
+    p, q = bar
+    g = st.gap
+    if q - p > SYSTEM_BAR_PX or p - st.x0 < g or st.x1 - q < g:
+        return False
+    a, b = int(round(st.top)), int(round(st.bottom))
+    col = gray[:, max(0, p - 1):q + 2].min(axis=1).astype(float)
+    _, paper = line_darkness(gray, st)
+    half = (float(np.median(col[a:b + 1])) + paper) / 2
+
+    def share(y0: float, y1: float) -> float:
+        r = col[max(0, int(y0)):max(0, int(y1))]
+        return float((r < half).mean()) if r.size else 1.0
+
+    top = notation[0] - g
+    return (share(notation[1] + 1.5 * g, a - 0.5 * g) >= SYSTEM_BAR_BETWEEN
+            and share(top - 2 * g, top - 0.5 * g) < SYSTEM_BAR_OUTSIDE
+            and share(b + 0.5 * g, b + 2 * g) < SYSTEM_BAR_OUTSIDE)
+
+
 # A barline drawn light, thin or across two pixel columns can miss BAR_COVER on the faint-ink mask. Columns the rule
 # passed over are looked at again on gray levels: a row of the staff counts when the darker of two neighbouring
 # columns is darker than the paper on both sides by FAINT_HIT of the staff lines' contrast...
@@ -1095,6 +1123,8 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
             if closing:
                 bars = [bar for bar in bars if bar[1] < closing[0][0]] + closing[:1]
         kept = drawn_bars(bar_sub, st, bars)
+        if notation is not None:
+            kept = [bar for bar in bars if bar in kept or system_bar(bar_sub, st, notation, bar)]
         dropped = [bar for bar in bars if bar not in kept]
         bars = kept
         unsure: set[int] = set()
