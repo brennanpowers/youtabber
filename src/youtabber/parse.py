@@ -16,6 +16,9 @@ BAR_COVER = 0.92
 BAR_WIDTH = 0.6
 # Barline columns closer than this many gaps belong to one barline
 BAR_MERGE = 0.7
+# Covered columns wider than a barline whose tab-staff pixels are more than this share colored are a colored strip
+# beside the page (the next page shown at its edge), cleared before the merge so a barline next to it is kept
+STRIP_COLORED_SHARE = 0.5
 # The columns this many line gaps either side of a barline are checked for ink...
 BAR_SIDE_GAPS = 0.12
 # ...and a stroke with more than this share of the tab staff's rows inked there on both sides is not a barline
@@ -365,6 +368,12 @@ def barlines(gray: np.ndarray, thr: float, fthr: float, tab_top: float, tab_bott
         cover = np.maximum(cover, np.roll(cover, 1, axis=1))
         cover = np.maximum(cover, np.roll(cover, -1, axis=1))
         full &= cover.mean(axis=0) >= BAR_COVER
+    if plate is not None and plate.shape[:2] == gray.shape:
+        on = np.flatnonzero(full)
+        for run in np.split(on, np.flatnonzero(np.diff(on) > 1) + 1):
+            if (run.size and run[-1] - run[0] > BAR_WIDTH * gap * 2.5
+                    and colored(plate[a:b + 1, x0 + run[0]:x0 + run[-1] + 1]).mean() > STRIP_COLORED_SHARE):
+                full[run] = False
     bars: list[list[int]] = []
     for x in np.flatnonzero(full):
         x = int(x) + x0

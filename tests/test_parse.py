@@ -980,3 +980,27 @@ def test_end_repeat_dots_on_a_4_line_staff_may_centre_on_its_second_line():
 def test_end_repeat_dots_centred_between_lines_off_the_middle_are_no_sign():
     # Row 50 is a whole gap from the middle and half a gap from the nearest line
     assert four_line_dots(50) == []
+
+
+def strip_page(color: tuple[int, int, int]) -> tuple[np.ndarray, np.ndarray]:
+    """(gray, plate) of a tab staff (lines at rows 60-130, line gap 14) with a barline at x 200 and a double barline
+    at x 700 and 708 that ends the page, then a solid strip of `color` over the staff rows from x 718 to 790."""
+    plate = np.full((200, 800, 3), 245, np.uint8)
+    for i in range(6):
+        plate[60 + i * 14, 20:790] = 150
+    for x in (200, 700, 708):
+        plate[60:131, x:x + 2] = 40
+    plate[60:131, 718:790] = color
+    return cv2.cvtColor(plate, cv2.COLOR_BGR2GRAY), plate
+
+
+def test_a_double_barline_beside_a_colored_strip_is_kept():
+    gray, plate = strip_page((200, 60, 0))
+    bars = parse.barlines(gray, 120.0, 200.0, 60.0, 130.0, 14.0, 0, 800, None, plate=plate)
+    assert bars == [(200, 201), (700, 709)]
+
+
+def test_a_gray_strip_beside_a_double_barline_still_merges_with_it():
+    gray, plate = strip_page((60, 60, 60))
+    bars = parse.barlines(gray, 120.0, 200.0, 60.0, 130.0, 14.0, 0, 800, None, plate=plate)
+    assert bars == [(200, 201)]
