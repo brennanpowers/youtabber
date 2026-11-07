@@ -758,3 +758,28 @@ def test_a_screen_read_from_its_own_paper_counts_as_read_only_when_it_kept_cells
     brief = screen_on(True, False)
     brief.brief = True
     assert pipeline.read_spans([brief]) == [(6.0, 9.0)]
+
+
+def test_a_parts_first_brief_screen_on_darker_paper_is_fading_in_and_gives_no_measures():
+    # Paper at 187 is 64 levels darker than the long screens' 251; 241 is only 10 darker
+    parts, segments = [SimpleNamespace(id=0, seg=0)], [SimpleNamespace(polarity="dark")]
+
+    def papered(o, level):
+        o.plate, o.rect = np.full((60, 600, 3), level, np.uint8), (0, 0, 600, 60)
+        return o
+
+    def first_after(level):
+        first = papered(contrasted(0, 100.0, 50.0, brief=True), level)
+        mark_fades([first] + [papered(contrasted(i, 100.0, 50.0), 251) for i in (1, 2, 3)], parts, segments, 0)
+        return len(first.all_cells)
+    assert first_after(187) == 0
+    assert first_after(241) == 3
+
+
+def test_a_brief_screen_on_darker_paper_after_its_parts_first_keeps_its_measures():
+    parts, segments = [SimpleNamespace(id=0, seg=0)], [SimpleNamespace(polarity="dark")]
+    obs = [contrasted(i, 100.0, 50.0, brief=i == 3) for i in range(4)]
+    for o, level in zip(obs, (251, 251, 251, 187)):
+        o.plate, o.rect = np.full((60, 600, 3), level, np.uint8), (0, 0, 600, 60)
+    mark_fades(obs, parts, segments, 0)
+    assert len(obs[3].all_cells) == 3

@@ -106,7 +106,7 @@ BLANK_TAIL_INK, BLANK_TAIL_TALL, TALL_MARK_GAPS = 0.02, 0.02, 0.25
 # edge, not staff running on past the end
 TAIL_PLAYED_SAMPLES = 2
 # A part's last longer views whose paper is more than this many gray levels darker than its usual paper are
-# fading out
+# fading out, and its first brief view so darker is fading in
 FADE_PAPER_DROP = 20
 # Where a glide starts, cells holding no more ink than an empty bar are left out when they are the staff's header
 # ending within LEAD_IN_GAPS line gaps of the playhead's column, or, with an uncolored playhead line (which passes for
@@ -1103,7 +1103,8 @@ def lead_before(segments: list[Segment], si: int) -> float:
 
 def mark_fades(obs: list[Obs], parts: list[Part], segments: list[Segment], last_seg: int) -> None:
     """Clear the cells of each view caught in a fade, or mark it `faded` when it is a brief screen in the video's
-    last segment (`last_seg`) that is not its part's first."""
+    last segment (`last_seg`) that is not its part's first. A part's first brief view on darker paper is fading in,
+    and its cells are cleared too."""
     # A view caught in a fade has weak contrast and loses its barlines; its music is shown again at full
     # contrast, so it is left out. Both its darkest ink and its staff lines are weak. A part of one or two views
     # is judged against the clearest views of its theme.
@@ -1132,6 +1133,14 @@ def mark_fades(obs: list[Obs], parts: list[Part], segments: list[Segment], last_
                     # The last page may show only while the video fades out, so a screen read from its own darker
                     # paper keeps its measures when its barlines stand elsewhere than the page before's
                     o.all_cells = []
+        # A part's first screen, held briefly while its page fades in, can keep its contrast yet show paper darker
+        # than the part's longer screens; the next screen shows that page clearly
+        shown = [o for o in group if o.plate is not None]
+        levels = [lv for o in shown if not o.brief and (lv := paper_level(o, segments[o.seg])) is not None]
+        if shown and shown[0].brief and levels:
+            first = paper_level(shown[0], segments[shown[0].seg])
+            if first is not None and first < float(np.median(levels)) - FADE_PAPER_DROP:
+                shown[0].all_cells = []
 
 
 def new_page(o: Obs, group: list[Obs]) -> bool:
