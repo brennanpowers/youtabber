@@ -523,6 +523,9 @@ FLAT_STEP = 4
 BORDER_LEVEL = 40
 # A row (or column) belongs to the panel when this share of it is paper colored
 PANEL_SHARE = 0.5
+# A panel whose last columns are footage for more than the first and at most the second of these line gaps is cut
+# back to the paper: staff lines running on into footage carry the staffs' box past the paper's edge
+FOOTAGE_TAIL_GAPS = (1.0, 2.0)
 # The panel reaches at most this many tab line gaps above the top staff and below the tab staff
 ABOVE_GAPS, BELOW_GAPS = 2.5, 3.0
 # Marks printed with a system (chord names, section labels, tempo, beams, P.M.) sit within this many line gaps
@@ -632,6 +635,11 @@ def panel_rect(frame: np.ndarray, paper: np.ndarray, seed: tuple[int, int, int, 
     # them: the bracket joining a system's staffs, with the measure number printed above it
     x0 = grow(cols, sx0, -1, max(3, int(gap / 2)) if for_print else 3)
     x1 = grow(cols, sx1 - 1, 1) + 1
+    last = min(x1, w) - 1
+    while last > x0 and not cols[last]:
+        last -= 1
+    if FOOTAGE_TAIL_GAPS[0] * gap < x1 - 1 - last <= FOOTAGE_TAIL_GAPS[1] * gap:
+        x1 = last + 1
     return x0, y0, x1, y1
 
 

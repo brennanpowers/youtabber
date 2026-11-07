@@ -957,3 +957,22 @@ def test_a_digit_changing_beside_a_moving_line_cursor_is_a_change():
     a, b = cut_line_cursor()
     b[60:74, 300:310] = True
     assert observe.significant_change(a, b, 20.0, 2, cursor=True)
+
+
+def footage_tail(paper_to: int) -> tuple[int, int, int, int]:
+    """panel_rect of a white page whose paper ends at x `paper_to`, with dark footage after it, for staffs whose box
+    runs on to x 95 (line gap 10)."""
+    frame = np.full((100, 100, 3), 255, np.uint8)
+    frame[:, paper_to:] = 30
+    return observe.panel_rect(frame, PAPER.astype(np.float64), (10, 40, 95, 60), 10.0)
+
+
+def test_a_panel_ending_one_to_two_line_gaps_into_footage_is_cut_back_to_the_paper():
+    # 15 px of footage, 1.5 gaps
+    assert footage_tail(80) == (0, 15, 80, 90)
+
+
+def test_a_panel_ending_under_a_line_gap_or_over_two_into_footage_keeps_its_edge():
+    # 5 px and 25 px of footage
+    assert footage_tail(90)[2] == 95
+    assert footage_tail(70)[2] == 95
