@@ -86,6 +86,31 @@ def test_a_gray_playhead_line_is_found(monkeypatch):
     assert m.lead == int(m.ref_x) - int(m.ref_x - glide.SEED_BACK_GAPS * GAP)
 
 
+def walking_frames(strip: np.ndarray, still: int, walk_from: int, count: int = 60):
+    """frames() for a band that holds still for `still` frames while a red playhead walks from x `walk_from` to x 300,
+    then glides left 20 px per frame under the playhead fixed at x 300."""
+    def frames(path, fps, crop=None, start=0.0, length=None):
+        for k in range(count):
+            x = max(0, k - still + 1) * 20
+            f = strip[:, x:x + 800].copy()
+            at = walk_from + (300 - walk_from) * min(k, still - 1) // (still - 1)
+            f[:, at:at + 3] = (0, 0, 255)
+            yield start + k / fps, f
+    return frames
+
+
+def test_a_playhead_walking_a_held_first_screen_keeps_the_bars_it_walked_over(monkeypatch):
+    m = mosaic_of(monkeypatch, walking_frames(sheet(3000), still=10, walk_from=150))
+    assert 300 <= m.ref_x <= 302
+    # The canvas starts SEED_BACK_GAPS line gaps left of where the first frame shows the playhead
+    assert m.lead == int(m.ref_x) - int(150 - glide.SEED_BACK_GAPS * GAP)
+
+
+def test_a_playhead_fixed_from_the_first_frame_starts_the_canvas_near_it(monkeypatch):
+    m = mosaic_of(monkeypatch, walking_frames(sheet(3000), still=10, walk_from=300))
+    assert m.lead == int(m.ref_x) - int(m.ref_x - glide.SEED_BACK_GAPS * GAP)
+
+
 def test_the_mosaic_starts_after_a_fade_in(monkeypatch):
     m = mosaic_of(monkeypatch, fake_frames(sheet(3000), 60, faded=5))
     assert m.times[0] == 0.5 and m.offsets[0] == 0.0

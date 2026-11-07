@@ -261,6 +261,7 @@ def build(path: Path, crop: tuple[int, int, int, int], rows: tuple[int, int], st
     strips: list[tuple[int, np.ndarray]] = []    # (frame, columns that crossed the slit at that frame)
     offsets, times, contrast = [], [], []
     head: list[np.ndarray] = []                  # the first END_FRAMES bands
+    head_color: list[np.ndarray] = []            # colored share of each column in the first END_FRAMES frames
     tail: list[tuple[int, np.ndarray]] = []      # the last END_FRAMES bands, with their frame index
     color_votes = None
     samples: list[np.ndarray] = []
@@ -303,6 +304,7 @@ def build(path: Path, crop: tuple[int, int, int, int], rows: tuple[int, int], st
         k = len(times)
         if k < END_FRAMES:
             head.append(band.copy())
+            head_color.append(colored(f[a0:a1]).mean(axis=0))
         tail.append((k, band.copy()))
         if len(tail) > END_FRAMES:
             tail.pop(0)
@@ -409,7 +411,10 @@ def build(path: Path, crop: tuple[int, int, int, int], rows: tuple[int, int], st
         # No playhead: measures are said to be played at the panel's centre, and the whole first screen is read
         ref_x, start = w / 2, 0
     elif ref_x < slit:
-        start = max(0, int(ref_x - SEED_BACK_GAPS * gap))
+        # A playhead can walk across a held first screen before the band starts moving, so the canvas starts from
+        # where the first clear frame shows it, keeping the bars it walked over
+        first_x = float(np.argmax(head_color[k0])) if not inked and head_color[k0].max() > PLAYHEAD_SHARE else ref_x
+        start = max(0, int(min(ref_x, first_x) - SEED_BACK_GAPS * gap))
     else:
         start = slit
     kept = [s for k, s in strips if k0 < k <= k1]
