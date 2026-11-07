@@ -20,6 +20,9 @@ NOTATION_PAPER_SHARE = 0.55
 # A staff whose lines run on past the paper into footage is cut at the paper's edge when what is left is at least this
 # share of it and passes the paper test; less than that is footage with a short stretch of paper-like rows
 PAPER_KEPT_SHARE = 0.5
+# A staff failing the paper test may be cut to the columns of a 5-line staff just above whose line gap is within this
+# share of its own
+CUT_UNDER_GAP_SHARE = 0.15
 # Staffs in one segment keep their line spacing within this share
 GAP_DRIFT = 0.35
 # Frames without tab shorter than this don't end a segment (page turns, fades)
@@ -141,6 +144,24 @@ def on_paper(gray: np.ndarray, st: Staff) -> Staff | None:
     if x1 == st.x1 or x1 - st.x0 < PAPER_KEPT_SHARE * (st.x1 - st.x0):
         return None
     cut = replace(st, x1=x1)
+    return cut if paper_between_lines(gray, cut) else None
+
+
+def cut_under(gray: np.ndarray, st: Staff, found: list[Staff]) -> Staff | None:
+    """The staff cut to the columns of the 5-line staff on paper just above it, when that cut passes the paper test.
+
+    A tab staff's lines can run on far into footage on both sides of the paper, so its rows fail the paper test and
+    the paper's edge can't be found from them. A notation staff right above, spaced alike, shows where the paper is."""
+    above = [o for o in found if o is not st and len(o.lines) == 5 and o.bottom < st.top
+             and st.top - o.bottom < NOTATION_GAPS * st.gap and abs(o.gap - st.gap) <= CUT_UNDER_GAP_SHARE * st.gap
+             and paper_between_lines(gray, o)]
+    if not above:
+        return None
+    o = max(above, key=lambda q: q.bottom)
+    x0, x1 = max(st.x0, o.x0), min(st.x1, o.x1)
+    if x1 - x0 < gray.shape[1] / 5:
+        return None
+    cut = replace(st, x0=x0, x1=x1)
     return cut if paper_between_lines(gray, cut) else None
 
 
@@ -350,7 +371,8 @@ def systems_in(gray: np.ndarray, whole_lines: bool = False) -> list[System]:
     before pairing. The scan keeps them: the broken staff that paper shows between light lines on a dark theme
     marks frames the scan must not join to its neighbors."""
     h, w = gray.shape
-    staffs = [s for s in find_staffs(gray) if s.x1 - s.x0 >= w / 5 and s.gap >= 4]
+    found = find_staffs(gray)
+    staffs = [s for s in found if s.x1 - s.x0 >= w / 5 and s.gap >= 4]
     if staffs:
         staffs = sorted(staffs + short_staffs(gray, staffs), key=lambda s: s.top)
     # A light "staff" between dark lines is the paper showing between them, and the other way round;
@@ -364,7 +386,7 @@ def systems_in(gray: np.ndarray, whole_lines: bool = False) -> list[System]:
                for o in clash):
             continue
         keep.append(s)
-    staffs = [p for p in (on_paper(gray, s) for s in keep)
+    staffs = [p for p in (on_paper(gray, s) or cut_under(gray, s, found) for s in keep)
               if p is not None and not (whole_lines and broken_up(gray, p)) and not fretboard(gray, p)]
     out: list[System] = []
     used = set()

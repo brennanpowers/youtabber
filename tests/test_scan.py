@@ -353,3 +353,37 @@ def test_tab_with_barlines_ends_a_segment_held_by_a_card_s_strings(monkeypatch):
     monkeypatch.setattr(scan_module, "frames", frames)
     segments = scan_module.scan(None, 1280, 720)[0]
     assert [(s.polarity, s.t0) for s in segments] == [("light", 0.0), ("dark", 2.0)]
+
+
+def tab_in_footage(notation_gap: float = 10.0, notation_paper: bool = True) -> tuple[np.ndarray, list]:
+    """An 800-wide frame with paper (240) over columns 100-500 and noisy footage elsewhere: a 5-line notation staff
+    at rows 20-60 on the paper, and a 4-line tab at rows 100-130 whose lines run across the whole frame."""
+    from youtabber.staff import Staff
+    rng = np.random.default_rng(0)
+    g = rng.integers(0, 256, (160, 800)).astype(np.uint8)
+    if notation_paper:
+        g[10:70, 100:500] = 240
+    g[90:140, 100:500] = 240
+    notation = Staff([20.0 + i * notation_gap for i in range(5)], 100, 500, notation_gap, "dark")
+    for y in notation.lines:
+        g[int(y), 100:500] = 60
+    tab = Staff([100.0, 110.0, 120.0, 130.0], 0, 800, 10.0, "dark")
+    for y in tab.lines:
+        g[int(y)] = 60
+    return g, [notation, tab]
+
+
+def test_a_tab_staff_run_into_footage_is_cut_to_the_notation_staff_on_paper_above_it():
+    g, (notation, tab) = tab_in_footage()
+    assert not scan_module.paper_between_lines(g, tab)
+    cut = scan_module.cut_under(g, tab, [notation, tab])
+    assert (cut.x0, cut.x1) == (100, 500)
+
+
+def test_a_tab_staff_in_footage_is_not_cut_without_a_like_spaced_staff_on_paper_above():
+    # Notation spaced 0.7 of the tab's gap
+    g, (notation, tab) = tab_in_footage(notation_gap=7.0)
+    assert scan_module.cut_under(g, tab, [notation, tab]) is None
+    # Notation lines over footage
+    g, (notation, tab) = tab_in_footage(notation_paper=False)
+    assert scan_module.cut_under(g, tab, [notation, tab]) is None
