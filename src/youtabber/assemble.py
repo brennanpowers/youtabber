@@ -17,6 +17,10 @@ from youtabber.observe import WRAP_GAPS, unmatched
 RESTART_GAP_SECONDS = 1.5
 # ...and shows music from at most this many measures after a segment's first measure
 RESTART_SLACK = 3
+# A view that opens a new segment carries on the same pass when its first playhead sample lies within this many line
+# gaps of where the view before's playhead would be, at its speed over its last CARRY_SPEED_SECONDS, at most
+# CARRY_WITHIN_SECONDS later
+CARRY_GAPS, CARRY_SPEED_SECONDS, CARRY_WITHIN_SECONDS = 1.0, 1.0, 3.0
 # A still view whose last staff ends on a barline at least END_BAR_GAPS line gaps wide, at most STAFF_END_GAPS from
 # the staff's end with no measure after it, and stops at least SHORT_GAPS short of the segment's furthest staff end,
 # shows the closing barline of the piece
@@ -860,7 +864,8 @@ def replay_evidence(o, run, j, A, gap_before, prev, use, words_of, held: bool = 
     Folding needs evidence that the video went back to the same place in the score: equal printed
     measure numbers, an end-repeat sign or a D.S./D.C. marking on the page played just before, a restart
     from the first measure after a break, the opening shown right after the piece's closing barline, or a sliding
-    band cut back to its opening. A run that only looks like earlier music is an unresolved fold: the main reading
+    band cut back to its opening. A view that opens a new segment while the playhead carries on from the view before
+    is the same pass read again. A run that only looks like earlier music is an unresolved fold: the main reading
     prints it again and the folded reading folds it.
 
     `held` says o is the page before held still and swept again. It folds only on a repeat sign or after a break:
@@ -892,8 +897,41 @@ def replay_evidence(o, run, j, A, gap_before, prev, use, words_of, held: bool = 
     # Settled only when the playhead went from the end of the page before straight to the first measure here
     if near_start and o.move is not None and o.move.kind == "cut" and A.sliding.get(o.seg, False):
         from_end = prev is not None and cell_at(prev, playhead_at(prev, at_start=False)) == len(prev.cells) - 1
-        return True, "track_restart", from_end and cell_at(o, playhead_at(o, at_start=True)) == 0
+        if from_end and cell_at(o, playhead_at(o, at_start=True)) == 0:
+            return True, "track_restart", True
+        if not carries_on(prev, o, use):
+            return True, "track_restart", False
+    # The scan can start a new segment in the middle of a pass over a page, and the view after the split shows cells
+    # the view before showed
+    if carries_on(prev, o, use):
+        return True, "carries_on", True
     return False, "none", False
+
+
+def playhead_speed(o: Obs, seconds: float) -> float | None:
+    """The playhead's speed in pixels a second over the last `seconds` of view o, when it moved right."""
+    track = playhead_track(o)
+    tail = [q for q in track if q[0] >= track[-1][0] - seconds] if track else []
+    if len(tail) < 2 or tail[-1][0] <= tail[0][0]:
+        return None
+    v = (tail[-1][1] - tail[0][1]) / (tail[-1][0] - tail[0][0])
+    return v if v > 0 else None
+
+
+def carries_on(p: Obs | None, o: Obs, use: set[str]) -> bool:
+    """Whether view o opens a new segment while its playhead goes on from where view p's left off, at p's speed.
+    Crops can differ between segments, so positions are compared in frame columns."""
+    if "playhead" not in use or p is None or p.seg == o.seg or not o.cells:
+        return False
+    v = playhead_speed(p, CARRY_SPEED_SECONDS)
+    track = playhead_track(o)
+    if v is None or not track:
+        return False
+    t, x, _ = playhead_track(p)[-1]
+    dt = track[0][0] - t
+    if dt > CARRY_WITHIN_SECONDS:
+        return False
+    return abs(track[0][1] + o.offset[0] - (x + p.offset[0] + v * dt)) <= CARRY_GAPS * o.cells[0].gap
 
 
 def closes_piece(p: Obs, staff_end: float | None) -> bool:

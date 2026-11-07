@@ -1620,3 +1620,26 @@ def test_a_lone_shift_in_a_segment_where_few_pairs_line_up_is_a_page_turn():
     assert choose_shift(p, o, [(398, 0.1)], 0.17, set(), 10.0, pages=[p, o]) == (None, "prior", False)
     # Two shifts lining up need the segment's usual share
     assert choose_shift(p, o, [(398, 0.1), (198, 0.2)], 0.67, set(), 10.0, pages=[p, o]) == (None, "prior", False)
+
+
+def split_pass(o_start: int, o_seg: int = 1):
+    """Replay evidence for a view of bars 1-4 shown again right after a view of the same bars, the playhead leaving the
+    first at x 350 moving 100 px a second and starting the second, 0.6 s later, at x o_start; the second view is in
+    segment o_seg."""
+    p, o = band_view(0, 1), band_view(1, 1)
+    o.seg = o_seg
+    played(p, (9.0, 300, 30), (9.5, 350, 30))
+    played(o, (0.1, o_start, 30))
+    return replay_evidence(o, o.cells[1:3], 1, Assembly(), 0.0, p, EVIDENCE, lambda v: [])
+
+
+def test_a_view_that_opens_a_segment_with_the_playhead_carrying_on_folds_as_the_same_pass():
+    # At 100 px a second the playhead reaches x 410 after 0.6 s; 418 is within a line gap of it
+    assert split_pass(410) == (True, "carries_on", True)
+    assert split_pass(418) == (True, "carries_on", True)
+
+
+def test_a_view_that_opens_a_segment_with_the_playhead_elsewhere_or_in_the_same_segment_is_not_the_same_pass():
+    assert split_pass(30) == (False, "none", False)
+    assert split_pass(425) == (False, "none", False)
+    assert split_pass(410, o_seg=0) == (False, "none", False)
