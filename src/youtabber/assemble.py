@@ -41,6 +41,8 @@ SCROLL_MISMATCH = 0.35
 PROFILE_CANDIDATES = 8
 # A scroll overlap must be at least this many line gaps wide to be told from chance
 MIN_OVERLAP_GAPS = 4
+# Columns past the end of a sticky header's fixed ink that still belong to it
+HEADER_SLACK_PX = 8
 # A segment scrolls when this share of its view pairs line up under some shift
 SCROLL_SEGMENT_SHARE = 0.8
 # ...or this share when only one shift lines up: in a segment that turns pages, few pairs line up by chance
@@ -483,12 +485,18 @@ def scroll_shifts(p: Obs, o: Obs, gap: float) -> list[tuple[int, float]]:
     scored = []
     # Neighbouring candidates try some of the same shifts
     tried: dict[int, float | None] = {}
+    head_p, head_o = header_end(p), header_end(o)
 
     def mismatch(dx: int) -> float | None:
         # Columns both panels show once o is moved right by dx
         lo, hi = max(p.rect[0], o.rect[0] + dx), min(p.rect[2], o.rect[2] + dx)
         if hi - lo < MIN_OVERLAP_GAPS * gap:
             return None
+        # A sticky header's time signature can change from view to view, so its columns are left out when enough
+        # of the overlap is left
+        past = max(lo, head_p, head_o + dx)
+        if hi - past >= MIN_OVERLAP_GAPS * gap:
+            lo = past
         total = int(left_p[hi] - left_p[lo] + left_o[hi - dx] - left_o[lo - dx])
         if total < 20 * gap:
             return None
@@ -512,6 +520,13 @@ def scroll_shifts(p: Obs, o: Obs, gap: float) -> list[tuple[int, float]]:
         if all(abs(dx - d) > gap for d, _ in out) and keeps_widths(p, o, dx):
             out.append((dx, s))
     return out
+
+
+def header_end(o: Obs) -> int:
+    """The first column right of a view's ink fixed to the frame, a sticky clef, key and time signature header, with
+    HEADER_SLACK_PX to spare; 0 when none is fixed."""
+    cols = np.flatnonzero(o.fixed.any(axis=0))
+    return int(cols[-1]) + 1 + HEADER_SLACK_PX if cols.size else 0
 
 
 def keeps_widths(p: Obs, o: Obs, dx: int) -> bool:

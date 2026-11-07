@@ -1664,3 +1664,25 @@ def test_a_page_the_playhead_reaches_well_after_the_page_before_ended_restarts()
     # The last barline is reached at 11.0 s and 13.5 s, over 0.75 s from the opening's start
     assert straight_into(650) == (True, "restart", True)
     assert straight_into(400) == (True, "restart", True)
+
+
+def header_scroll(fixed_header: bool):
+    """The shifts lining up a scroll of 400 px from bars 1-4 to bars 3-6, where the second view also shows a time
+    signature at x 10-58 that the first view's header doesn't, beside a clef fixed to the frame at x 0-50 when
+    `fixed_header`."""
+    p, o = band_view(0, 1), band_view(1, 3)
+    o.tall = o.tall.copy()
+    o.tall[5:58, 10:58] = True
+    for v in (p, o):
+        v.fixed = np.zeros_like(v.band)
+        if fixed_header:
+            v.fixed[0:4, 0:50] = True
+    return scroll_shifts(p, o, 10.0)
+
+
+def test_a_scroll_is_scored_right_of_a_sticky_header_whose_time_signature_changed():
+    assert [dx for dx, _ in header_scroll(True)] == [398]
+
+
+def test_without_a_header_fixed_to_the_frame_the_changed_marks_count_against_the_scroll():
+    assert 398 not in [dx for dx, _ in header_scroll(False)]
