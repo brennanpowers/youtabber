@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import numpy as np
 
 from youtabber import assemble as assemble_module
@@ -295,3 +297,37 @@ def test_a_video_too_short_to_count_as_numbered_keeps_no_starts():
     obs = [read_view(0, run("a", 1, 2), [3, 4]), read_view(1, run("a", 3, 4), [5, 6])]
     assert number_views(obs, lambda crop: int(crop[0, 0])) == "unnumbered"
     assert [o.start for o in obs] == [None, None]
+
+
+def borrowing_pair(j: int, i: int):
+    """An unnumbered page of seven measures, then a numbered page of five whose cell i draws the same music as the
+    first page's cell j. Returns the slots of the two pages."""
+    first = view(0, run("a", 1, 7))
+    for c in first.cells:
+        c.number = None
+    second = view(1, run("z", 20, 24))
+    second.cells[i] = replace(second.cells[i], ink=first.cells[j].ink)
+    A = assemble([first, second], 10.0, False, {"numbers"}, lambda o: [])
+    return A.view_slots[0], A.view_slots[1]
+
+
+def test_a_measure_lends_its_number_to_a_cell_at_its_own_place_or_further_left():
+    first, second = borrowing_pair(j=2, i=1)
+    assert second[1] == first[2]
+    first, second = borrowing_pair(j=2, i=2)
+    assert second[2] == first[2]
+
+
+def test_a_measure_near_the_page_end_lends_its_number_to_a_cell_further_right():
+    # Cell 4 is two cells before the first page's last one
+    first, second = borrowing_pair(j=4, i=4)
+    assert second[4] == first[4]
+    first, second = borrowing_pair(j=4, i=3)
+    assert second[3] == first[4]
+    first, second = borrowing_pair(j=5, i=4)
+    assert second[4] == first[5]
+
+
+def test_a_look_alike_measure_far_from_the_page_end_lends_no_number_to_a_cell_further_right():
+    first, second = borrowing_pair(j=2, i=4)
+    assert second[4] not in first

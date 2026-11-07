@@ -50,6 +50,9 @@ BORROW_RESEMBLE = 0.05
 # A view refuses the numbers a look-alike neighbor lends it when one of its own reads is this many measures or fewer
 # off them: the neighbor is another page of a riff
 BORROW_CONFLICT = 6
+# Music only moves left from one screen to the next, so a measure of the view before lends its number only to a cell
+# at its own place or further left, unless it lies at most BORROW_TAIL cells before that view's last cell
+BORROW_TAIL = 2
 # A numbered measure met again on a later screen is the same music when this alike (share of unmatched ink)
 REPLAY_RESEMBLE = 0.3
 # Two sightings of one screen that differ only above the tab staff (a caption or banner over the page) are compared
@@ -1642,7 +1645,7 @@ def place_numbered(o, slot_of, A, prev, prev_slots, gap, seg_of, held: dict, oth
         if sid is None and prev is not None and i not in refused and not glided_on(o):
             # The view before may have had no readable numbers; a measure it showed takes this number
             for j, (pc, ps) in enumerate(zip(prev.cells, prev_slots)):
-                if read_elsewhere(prev, j, c.number):
+                if read_elsewhere(prev, j, c.number) or (i > j and len(prev.cells) - 1 - j > BORROW_TAIL):
                     continue
                 if ps is not None and A.slots[ps].number is None and same_cell(pc, c, gap):
                     sid = ps
