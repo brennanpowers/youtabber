@@ -931,3 +931,29 @@ def test_a_thin_light_line_running_on_above_and_below_the_system_is_no_barline()
     # A stroke on the tab alone, with paper between the staffs
     g, st = system_page(120, 150)
     assert not parse.system_bar(g, st, (30.0, 50.0), (200, 200))
+
+
+def edge_page(edge_level: int, edge: tuple[int, int]) -> tuple[np.ndarray, Staff, list[tuple[int, int]]]:
+    """Gray paper (240) with a 4-line tab at rows 40-70, barlines of level 40 at x 200 and 400, and a line of
+    `edge_level` over columns `edge`."""
+    g = np.full((120, 500), 240, np.uint8)
+    for y in (40, 50, 60, 70):
+        g[y] = 100
+    for x in (200, 400):
+        g[40:71, x:x + 2] = 40
+    g[40:71, edge[0]:edge[1] + 1] = edge_level
+    return g, Staff([40.0, 50.0, 60.0, 70.0], 0, 500, 10.0, "dark"), [edge, (200, 201), (400, 401)]
+
+
+def test_a_light_wide_line_at_the_plates_left_edge_is_the_papers_edge():
+    # (240 - 160) / (240 - 40) = 0.4 of the other barlines' contrast
+    assert parse.paper_edge_line(*edge_page(160, (1, 4)))
+
+
+def test_a_dark_or_one_pixel_line_at_the_left_edge_stays_a_barline():
+    # As dark as the other barlines
+    assert not parse.paper_edge_line(*edge_page(40, (1, 4)))
+    # 1 pixel wide
+    assert not parse.paper_edge_line(*edge_page(160, (2, 2)))
+    # 0.4 of the contrast, but 10 pixels in from the edge
+    assert not parse.paper_edge_line(*edge_page(160, (10, 13)))

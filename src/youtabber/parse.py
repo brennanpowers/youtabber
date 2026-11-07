@@ -726,6 +726,27 @@ def system_bar(gray: np.ndarray, st, notation: tuple[float, float], bar: tuple[i
             and share(b + 0.5 * g, b + 2 * g) < SYSTEM_BAR_OUTSIDE)
 
 
+# The paper's edge, caught at the plate's left side, looks like a barline: a first barline within EDGE_LINE_PX
+# pixels of the plate's left edge, at least EDGE_LINE_WIDTH pixels wide and at most EDGE_LINE_CONTRAST as far from
+# the paper's gray as the staff's other barlines. Real barlines there reach 0.8 of the others' contrast or more, and
+# lines 1 pixel wide are left alone, as some faint real ones are lighter still
+EDGE_LINE_PX, EDGE_LINE_WIDTH, EDGE_LINE_CONTRAST = 4, 2, 0.6
+
+
+def paper_edge_line(gray: np.ndarray, st, bars: list[tuple[int, int]]) -> bool:
+    """True when a staff's first barline is the edge of the paper at the plate's left side, not a barline."""
+    if len(bars) < 2 or bars[0][0] > EDGE_LINE_PX or bars[0][1] - bars[0][0] + 1 < EDGE_LINE_WIDTH:
+        return False
+    rows = gray[int(st.lines[0]):int(st.lines[-1]) + 1].astype(float)
+    paper = float(np.median(rows))
+
+    def level(bar: tuple[int, int]) -> float:
+        return float(rows[:, bar[0]:bar[1] + 1].min(axis=1).mean())
+
+    others = float(np.median([level(bar) for bar in bars[1:]]))
+    return paper - level(bars[0]) <= EDGE_LINE_CONTRAST * (paper - others)
+
+
 # A barline drawn light, thin or across two pixel columns can miss BAR_COVER on the faint-ink mask. Columns the rule
 # passed over are looked at again on gray levels: a row of the staff counts when the darker of two neighbouring
 # columns is darker than the paper on both sides by FAINT_HIT of the staff lines' contrast...
@@ -1132,6 +1153,8 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
         if not hidden_bars:
             light, unsure = faint_bars(bar_sub, st, bars, notation, fthr, colored_plate, dropped)
             bars = sorted(bars + light)
+            if paper_edge_line(g, st, bars):
+                bars = bars[1:]
         repeats = end_repeats(dark, st, bars)
         # Glide mosaics are left out: a colored playhead caught over a barline there says nothing of the page
         tinted = set() if hidden_bars else colored_bars(faint_struct, colored_plate, st, bars)
