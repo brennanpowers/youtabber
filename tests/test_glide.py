@@ -396,10 +396,10 @@ def stack_mosaic(rows, top, bar_every, speed, t_start, width=None, centred=False
     return Mosaic(img, rows[0], off, times, 300.0, 100, centred=centred)
 
 
-def stacked_glide(monkeypatch, upper_args, lower_args):
+def stacked_glide(monkeypatch, upper_args, lower_args, y1=400):
     """glide_obs on two tracks stacked at crop rows 130 and 300, seen in every frame, with each track's mosaic made
-    by stack_mosaic; also returns how often each track's mosaic was built."""
-    seg = Segment(0.0, 10.0, GAP_S, "dark", y0=0, y1=400, x0=0, x1=800)
+    by stack_mosaic, in a crop ending at row y1; also returns how often each track's mosaic was built."""
+    seg = Segment(0.0, 10.0, GAP_S, "dark", y0=0, y1=y1, x0=0, x1=800)
     upper, lower = System(stack_staff(130), None), System(stack_staff(300), None)
     found = {t: [upper, lower] for t in np.arange(1.0, 10.0, 0.5)}
     made = {130: 0, 300: 0}
@@ -411,7 +411,7 @@ def stacked_glide(monkeypatch, upper_args, lower_args):
         return stack_mosaic(print_rows, top, *(upper_args if top == 130 else lower_args))
     monkeypatch.setattr(pipeline, "build_track", build_track)
     monkeypatch.setattr(ocr, "read_number", lambda crop: None)
-    return pipeline.glide_obs(None, (0, 0, 800, 400), seg, 0, found, 140.0, 229.0, 0, 0.0), made
+    return pipeline.glide_obs(None, (0, 0, 800, y1), seg, 0, found, 140.0, 229.0, 0, 0.0), made
 
 
 def test_a_stacked_glide_prints_every_track_over_the_measures_of_the_one_with_wide_measures(monkeypatch):
@@ -441,6 +441,18 @@ def test_a_glide_whose_stacked_tracks_show_too_few_measures_is_read_from_the_mos
     o, made = stacked_glide(monkeypatch, (600, 50.0, 0.0, 800), (600, 50.0, 0.0, 800))
     assert made == {130: 1, 300: 1}
     assert o.image.shape[0] == 242 - 32
+
+
+def test_a_stacked_track_with_wide_measures_counts_them_when_it_clears_the_frame_edge(monkeypatch):
+    # The upper track's measures are narrow, 150 px against TRACK_WIDE_GAPS * 14 = 168; the lower track ends at row
+    # 370, 1.5 line gaps (21 px) above the crop's bottom at 391
+    o, _ = stacked_glide(monkeypatch, (150, 50.0, 0.0), (300, 50.0, 0.0), y1=391)
+    assert [(c.x0, c.x1) for c in o.cells[:2] if c.kind == "full"] == [(99, 399), (399, 699)]
+
+
+def test_a_stacked_track_cut_by_the_frame_edge_does_not_count_the_measures(monkeypatch):
+    o, _ = stacked_glide(monkeypatch, (150, 50.0, 0.0), (300, 50.0, 0.0), y1=390)
+    assert [(c.x0, c.x1) for c in o.cells[:2] if c.kind == "full"] == [(99, 249), (249, 399)]
 
 
 def test_staff_groups_seen_as_often_and_spaced_alike_are_stacked_tracks():

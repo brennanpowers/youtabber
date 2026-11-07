@@ -87,9 +87,10 @@ TRACK_MIN_BARS = 2
 TRACK_MAX = 4
 # Tracks whose playhead columns lie within this many line gaps of each other found the same playhead
 TRACK_PLAYHEAD_GAPS = 1.0
-# The lowest four-line track is a bass's tab, and the song's bars are counted on it when its measures are wide, it
-# shows at least TRACK_BASS_SHARE as many whole measures as the clearest track, and its bottom line sits at least
-# TRACK_EDGE_GAPS line gaps above the crop's bottom (a staff nearer the frame's edge is cut off by it)
+# The lowest four-line track is a bass's tab, and the song's bars are counted on it when its measures are wide and it
+# shows at least TRACK_BASS_SHARE as many whole measures as the clearest track. A track counts the bars only when its
+# bottom line sits at least TRACK_EDGE_GAPS line gaps above the crop's bottom, unless every track is nearer: a staff
+# nearer the frame's edge is cut off by it
 TRACK_BASS_SHARE, TRACK_EDGE_GAPS = 0.9, 1.5
 # A glide is read in at most this many pieces, each at least this long, with rows from the staffs seen in its
 # first GLIDE_ROWS_SECONDS
@@ -2034,6 +2035,13 @@ def track_score(group: list, systems: list, gap: float) -> tuple[bool, float, in
     return wide, counting, len(group)
 
 
+def clear_of_edge(group: list, seg: Segment) -> bool:
+    """Whether a stacked track's bottom line sits at least TRACK_EDGE_GAPS line gaps above the crop's bottom, so the
+    frame's edge doesn't cut its staff off."""
+    bottom = float(np.median([s.tab.bottom for s in group]))
+    return bottom + TRACK_EDGE_GAPS * float(np.median([s.tab.gap for s in group])) <= seg.y1
+
+
 def agreed_playhead(built: list, seg: Segment) -> None:
     """Line the stacked tracks up at the playhead column most of them found, when more than half of those that found
     one agree: one playhead crosses every track. A track whose own column lies elsewhere, or less than
@@ -2085,7 +2093,7 @@ def stacked_obs(path: Path, crop, seg: Segment, si: int, tracks: list[list], thr
             continue
         built.append((group, rows, print_rows, m))
         # Only the best track's parse and the bass's are kept: each can hold a whole song's cells
-        score = track_score(group, systems, gap)
+        score = (clear_of_edge(group, seg), track_score(group, systems, gap))
         if best is None or score > best[0]:
             best = (score, built[-1], systems, whole)
         if group is lowest:
@@ -2093,10 +2101,9 @@ def stacked_obs(path: Path, crop, seg: Segment, si: int, tracks: list[list], thr
         del systems
     if best is None:
         return None
-    if bass is not None and bass[1] is not best[1] and bass[0][0] and bass[3] >= TRACK_BASS_SHARE * best[3]:
-        bottom = float(np.median([s.tab.bottom for s in lowest]))
-        if bottom + TRACK_EDGE_GAPS * float(np.median([s.tab.gap for s in lowest])) <= seg.y1:
-            best = bass
+    if (bass is not None and bass[1] is not best[1] and bass[0][0] and bass[0][1][0]
+            and bass[3] >= TRACK_BASS_SHARE * best[3]):
+        best = bass
     bass = None
     _, ref, systems, _ = best
     group, rows, print_rows, m = ref
