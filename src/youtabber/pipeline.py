@@ -106,7 +106,7 @@ BLANK_TAIL_INK, BLANK_TAIL_TALL, TALL_MARK_GAPS = 0.02, 0.02, 0.25
 # edge, not staff running on past the end
 TAIL_PLAYED_SAMPLES = 2
 # A part's last longer views whose paper is more than this many gray levels darker than its usual paper are
-# fading out, and its first brief view so darker is fading in
+# fading out, and a first brief view that much darker is fading in
 FADE_PAPER_DROP = 20
 # Where a glide starts, cells holding no more ink than an empty bar are left out when they are the staff's header
 # ending within LEAD_IN_GAPS line gaps of the playhead's column, or, with an uncolored playhead line (which passes for
