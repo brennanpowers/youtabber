@@ -35,6 +35,8 @@ PROFILE_CANDIDATES = 8
 MIN_OVERLAP_GAPS = 4
 # A segment scrolls when this share of its view pairs line up under some shift
 SCROLL_SEGMENT_SHARE = 0.8
+# ...or this share when only one shift lines up: in a segment that turns pages, few pairs line up by chance
+LONE_SHIFT_SHARE = 0.5
 # The width check allows this many line gaps of difference for a system's first measure, whose box starts at the
 # staff's start, and for a measure with a barline within KEEP_EDGE_GAPS of the columns both views show, where the
 # panel's edge may stand in for it
@@ -608,7 +610,7 @@ def pick_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float, 
                 # here points elsewhere
                 lone = len(shifts) == 1 and share >= SCROLL_SEGMENT_SHARE and (not drawn or agrees)
                 return near[0], "usual_slide", (agrees and confirmed) or lone
-    if share >= SCROLL_SEGMENT_SHARE:
+    if share >= SCROLL_SEGMENT_SHARE or len(shifts) == 1 and share >= LONE_SHIFT_SHARE:
         m = o.move
         measured = m.shifts if m is not None and m.kind == "slide" else []
         # The allowed shifts a slide measured here points at, nearest first

@@ -1608,3 +1608,15 @@ def test_with_several_systems_a_playhead_seen_at_another_height_rules_the_scroll
     played(o, (0.1, 320, 50))
     o.single = False
     assert choose_shift(p, o, [(398, 0.0)], 0.9, {"playhead"}, 10.0) == (None, "playhead", True)
+
+
+def test_the_only_shift_that_lines_up_scrolls_a_segment_where_half_the_pairs_line_up():
+    p, o = band_view(0, 1), band_view(1, 3)
+    assert choose_shift(p, o, [(398, 0.1)], 0.67, set(), 10.0, pages=[p, o]) == (398, "segment_scrolls", True)
+
+
+def test_a_lone_shift_in_a_segment_where_few_pairs_line_up_is_a_page_turn():
+    p, o = band_view(0, 1), band_view(1, 3)
+    assert choose_shift(p, o, [(398, 0.1)], 0.17, set(), 10.0, pages=[p, o]) == (None, "prior", False)
+    # Two shifts lining up need the segment's usual share
+    assert choose_shift(p, o, [(398, 0.1), (198, 0.2)], 0.67, set(), 10.0, pages=[p, o]) == (None, "prior", False)
