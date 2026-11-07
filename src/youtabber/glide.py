@@ -60,6 +60,8 @@ PLAYHEAD_INSIDE_GAPS = 2.0
 CLEAR_SHARE = 0.9
 # ...looking this many frames in from each end
 END_FRAMES = 60
+# The first screen is taken from the last clear frame before the band has moved this many pixels
+SEED_MOVE_PX = 0.5
 # The band's speed at the end of a mosaic is measured over this many seconds of its last movement
 LAST_SPEED_SECONDS = 2.0
 
@@ -387,7 +389,15 @@ def build(path: Path, crop: tuple[int, int, int, int], rows: tuple[int, int], st
     # A piece that starts or ends where the panel was redrawn joins the next piece there, so it keeps every frame
     k0 = 0 if redrawn else next((k for k in range(min(END_FRAMES, n)) if clear[k]), 0)
     k1 = n - 1 if moved_at is not None else next((k for k, _ in reversed(tail) if clear[k]), n - 1)
-    first, last = head[k0], dict(tail)[k1]
+    # A title wiping off the screen can leave the staff lines clear while it still covers the music, until the band
+    # starts moving; the last clear frame before the band has moved SEED_MOVE_PX shows the first screen uncovered
+    seed = k0
+    for j in range(k0, len(head)):
+        if offsets[j] - offsets[k0] >= SEED_MOVE_PX:
+            break
+        if clear[j]:
+            seed = j
+    first, last = head[seed], dict(tail)[k1]
     inked = False
     if color_votes.max() > 0.5 * voted:
         ref_x = float(np.argmax(color_votes))

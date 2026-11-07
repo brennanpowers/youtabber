@@ -91,6 +91,32 @@ def test_the_mosaic_starts_after_a_fade_in(monkeypatch):
     assert m.times[0] == 0.5 and m.offsets[0] == 0.0
 
 
+def covered_frames(strip: np.ndarray, still: int, covered: int, count: int = 60):
+    """frames() for a band that holds still for `still` frames and then glides left 20 px per frame; in the first
+    `covered` frames a gray block covers the music at columns 50-350, between the staff lines."""
+    def frames(path, fps, crop=None, start=0.0, length=None):
+        for k in range(count):
+            x = max(0, k - still + 1) * 20
+            f = strip[:, x:x + 800].copy()
+            if k < covered:
+                for i in range(5):
+                    f[33 + i * GAP:28 + (i + 1) * GAP, 50:350] = 128
+            yield start + k / fps, f
+    return frames
+
+
+def test_the_first_screen_is_the_last_clear_frame_before_the_band_moves(monkeypatch):
+    strip = sheet(3000)
+    m = mosaic_of(monkeypatch, covered_frames(strip, still=10, covered=4))
+    assert m.times[0] == 0.0
+    assert (m.image[:, :560] == strip[:, :560]).all()
+
+
+def test_a_band_moving_from_its_first_frame_keeps_that_frame_as_the_first_screen(monkeypatch):
+    m = mosaic_of(monkeypatch, covered_frames(sheet(3000), still=1, covered=1))
+    assert (m.image[40:100, 50:350] == 128).any()
+
+
 def test_a_sparse_intro_still_moves(monkeypatch):
     # Right of the reading column only barlines pass for the first 30 frames: an intro of rests
     m = mosaic_of(monkeypatch, fake_frames(sheet(3000, notes_from=1400), 60))
