@@ -631,6 +631,9 @@ DOT_SIZE, DOT_ALIGN, DOT_APART = (0.15, 0.7), 0.3, 0.5
 # The dots sit evenly above and below the staff's middle: their midpoint is at most DOT_CENTER line gaps from it.
 # Pieces of a time signature's digit, split by a staff line, are off center
 DOT_CENTER = 0.3
+# ...or of a staff line at most DOT_LINE_GAPS line gaps from the middle. Dots beside a bass clef on a misread staff
+# sit a whole gap off
+DOT_LINE_GAPS = 0.6
 # Both dots are one glyph printed twice, so their heights differ by at most this factor; a fret digit cut by a
 # staff line leaves two pieces of unequal height
 DOT_MATCH = 1.5
@@ -659,8 +662,10 @@ def end_repeats(dark: np.ndarray, st, bars: list[tuple[int, int]]) -> list[int]:
         dots = [s for s in stats[1:] if lo <= min(s[2], s[3]) and max(s[2], s[3]) <= hi and s[4] >= 0.5 * s[2] * s[3]
                 and max(s[2], s[3]) <= DOT_ELONGATION * min(s[2], s[3])]
         mid = (st.top + st.bottom) / 2 - a
+        # On a 4-line staff the dots sit either side of the second line, so a line near the middle is a centre too
+        centres = [mid] + [y - a for y in st.lines if abs(y - a - mid) <= DOT_LINE_GAPS * st.gap]
         if any(abs(u[0] - v[0]) <= DOT_ALIGN * st.gap and abs(u[1] - v[1]) >= DOT_APART * st.gap
-               and abs((u[1] + u[3] / 2 + v[1] + v[3] / 2) / 2 - mid) <= DOT_CENTER * st.gap
+               and any(abs((u[1] + u[3] / 2 + v[1] + v[3] / 2) / 2 - c) <= DOT_CENTER * st.gap for c in centres)
                and max(u[3], v[3]) <= DOT_MATCH * min(u[3], v[3])
                for u in dots for v in dots):
             out.append(p)

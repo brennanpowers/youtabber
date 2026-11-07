@@ -703,7 +703,7 @@ def dotted(gap: float, w: int, h: int, stacked: bool, bar: int = 200, before: in
     places = [(x, y), (x, int(y + 2 * gap))] if stacked else [(x - int(0.5 * gap), y), (x, y)]
     for px, py in places:
         dark[py:py + h, px:px + w] = True
-    st = SimpleNamespace(top=float(top), bottom=top + 5 * gap, gap=gap)
+    st = SimpleNamespace(top=float(top), bottom=top + 5 * gap, gap=gap, lines=[top + i * gap for i in range(6)])
     bars = ([(before, before)] if before is not None else []) + [(bar, bar + 2)]
     return end_repeats(dark, st, bars)
 
@@ -740,7 +740,7 @@ def test_an_end_repeat_sign_may_have_both_dots_in_one_line_space():
         dark[40 + i * 27] = True
     dark[94:103, 186:196] = True
     dark[112:122, 186:196] = True
-    st = SimpleNamespace(top=40.0, bottom=175.0, gap=27.0)
+    st = SimpleNamespace(top=40.0, bottom=175.0, gap=27.0, lines=[40.0 + i * 27 for i in range(6)])
     assert end_repeats(dark, st, [(200, 222)]) == [200]
     # The same pair one space lower is off the staff's middle, as pieces of a time signature's digit can be
     dark[95:121, 186:196] = False
@@ -757,7 +757,7 @@ def test_a_fret_digit_split_by_the_middle_line_is_no_end_repeat():
         dark[int(round(40 + i * 14.7))] = True
     dark[60:68, 181:185] = True
     dark[69:72, 181:185] = True
-    st = SimpleNamespace(top=40.0, bottom=40 + 4 * 14.7, gap=14.7)
+    st = SimpleNamespace(top=40.0, bottom=40 + 4 * 14.7, gap=14.7, lines=[40 + i * 14.7 for i in range(5)])
     assert end_repeats(dark, st, [(200, 202)]) == []
 
 
@@ -957,3 +957,26 @@ def test_a_dark_or_one_pixel_line_at_the_left_edge_stays_a_barline():
     assert not parse.paper_edge_line(*edge_page(160, (2, 2)))
     # 0.4 of the contrast, but 10 pixels in from the edge
     assert not parse.paper_edge_line(*edge_page(160, (10, 13)))
+
+
+def four_line_dots(centre: int) -> list[int]:
+    """end_repeats on a 4-line staff (lines at rows 40-100, line gap 20, middle at 70) with a barline at x 200 and
+    two 6 x 6 dots left of it, 20 rows apart, centred on row `centre`."""
+    dark = np.zeros((150, 300), bool)
+    for y in (40, 60, 80, 100):
+        dark[y] = True
+    for y in (centre - 13, centre + 7):
+        dark[y:y + 6, 186:192] = True
+    st = SimpleNamespace(top=40.0, bottom=100.0, gap=20.0, lines=[40.0, 60.0, 80.0, 100.0])
+    return end_repeats(dark, st, [(200, 202)])
+
+
+def test_end_repeat_dots_on_a_4_line_staff_may_centre_on_its_second_line():
+    # Row 60 is 0.5 gaps from the middle, so the middle alone wouldn't take them
+    assert four_line_dots(60) == [200]
+    assert four_line_dots(70) == [200]
+
+
+def test_end_repeat_dots_centred_between_lines_off_the_middle_are_no_sign():
+    # Row 50 is a whole gap from the middle and half a gap from the nearest line
+    assert four_line_dots(50) == []
