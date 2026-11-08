@@ -1719,3 +1719,34 @@ def test_a_scroll_is_scored_right_of_a_sticky_header_whose_time_signature_change
 
 def test_without_a_header_fixed_to_the_frame_the_changed_marks_count_against_the_scroll():
     assert 398 not in [dx for dx, _ in header_scroll(False)]
+
+
+def riff_page(differ: bool):
+    """Two screens of measures 1-4 whose notes are all colored, so the cells' ink is empty and their notes are tint,
+    the second's plates with every mark 5 rows lower when `differ`."""
+    p, o = band_view(0, 1), band_view(1, 1)
+    for c in p.cells + o.cells:
+        c.ink, c.tint = np.zeros_like(c.ink), c.ink.copy()
+    o.tall = np.roll(p.tall, 5, axis=0) if differ else p.tall.copy()
+    return p, o
+
+
+def test_a_page_of_colored_notes_whose_plates_differ_from_the_page_before_prints_as_new_music():
+    p, o = riff_page(differ=True)
+    assert register(p, o, 0, 10.0, 2)[1] > assemble_module.STILL_MISMATCH
+    A = assemble([p, o], 10.0, False, EVIDENCE, lambda v: [])
+    assert A.view_slots[1] == [4, 5, 6, 7]
+
+
+def test_a_page_of_colored_notes_held_with_the_same_plates_joins_the_page_before():
+    p, o = riff_page(differ=False)
+    A = assemble([p, o], 10.0, False, EVIDENCE, lambda v: [])
+    assert A.view_slots[1] == [0, 1, 2, 3]
+
+
+def test_a_page_whose_notes_are_gray_joins_the_page_before_whatever_its_plates():
+    p, o = band_view(0, 1), band_view(1, 1)
+    o.tall = np.roll(p.tall, 5, axis=0)
+    assert register(p, o, 0, 10.0, 2)[1] > assemble_module.STILL_MISMATCH
+    A = assemble([p, o], 10.0, False, EVIDENCE, lambda v: [])
+    assert A.view_slots[1] == [0, 1, 2, 3]
