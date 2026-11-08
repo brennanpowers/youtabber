@@ -150,6 +150,20 @@ def test_page_swept_again_needs_a_sweep_to_the_end_and_a_jump_back_to_the_start(
     assert observe.page_swept_again(stray + again, 18.0, 1280) == [5.5]
 
 
+def test_page_swept_again_allows_a_hole_in_the_sweep_of_a_third_of_the_page():
+    # Samples every quarter second sweep x 100 to 1000 but miss 400 to 670: 270 px of the 840 px page, 0.32 of it
+    sweep = [(i / 4, x, 200.0) for i, x in enumerate([x for x in range(100, 1001, 30) if not 400 < x < 670])]
+    again = [(5.75 + i / 4, 100 + 30 * i, 200.0) for i in range(6)]
+    assert observe.page_swept_again(sweep + again, 18.0, 1280) == [5.75]
+
+
+def test_page_swept_again_needs_a_sweep_with_no_hole_wider_than_a_third_of_the_page():
+    # The sweep misses 400 to 700: 300 px of the 840 px page, 0.36 of it, as a box cursor stepping over wide measures
+    sweep = [(i / 4, x, 200.0) for i, x in enumerate([x for x in range(100, 1001, 30) if not 400 < x < 700])]
+    again = [(5.5 + i / 4, 100 + 30 * i, 200.0) for i in range(6)]
+    assert observe.page_swept_again(sweep + again, 18.0, 1280) == []
+
+
 def test_a_view_that_opens_with_the_cursor_left_at_the_right_end_is_not_cut_there(monkeypatch):
     # The first frame still shows the cursor where the page before ended; then it sweeps the page once
     sweep = held_page(80, 80, [])

@@ -56,7 +56,7 @@ SWEEP_SECONDS = 3.0
 PAGE_END, PAGE_START = 0.85, 0.15
 # The sweep leaves no stretch of the page unseen wider than this share of it, so a box cursor stepping over a few wide
 # measures doesn't count
-SWEEP_COVER = 0.3
+SWEEP_COVER = 0.35
 # Samples on either side of the jump are at most this many seconds apart
 SWEEP_HOLE = 2.0
 # The page's ends lie at least this share of the panel's width apart, or no page is being swept
