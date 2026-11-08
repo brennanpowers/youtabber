@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, replace
 import cv2
 import numpy as np
 
+from youtabber import ocr
 from youtabber.match import WIDTH_PX, WIDTH_SHARE, resemble, resemble_scaled, same, same_part
 from youtabber.observe import WRAP_GAPS, unmatched
 
@@ -841,7 +842,8 @@ def navigation_before(o: Obs | None, words_of) -> str | None:
     if o is None:
         return None
     if o.words is None:
-        o.words = words_of(o)
+        # The whole plate is read, as a marking can stand above the staff, outside the panel's rows
+        o.words = ocr.find_words(o.image) if o.image is not None else words_of(o)
     for w in o.words:
         u = w.upper().replace(" ", "")
         for key in NAV_WORDS:

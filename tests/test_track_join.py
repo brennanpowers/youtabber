@@ -50,6 +50,26 @@ def test_the_playhead_track_keeps_three_first_samples_that_disagree():
     assert samples_on(o, o.cells) == o.playhead
 
 
+def plated(o, words):
+    """View o with a whole plate taller than its panel, on which the word reader finds `words`."""
+    o.image = np.full((300, 800, 3), 255, np.uint8)
+    o.plate = o.image[100:200]
+    reads = {id(o.image): words}
+    return lambda image: reads.get(id(image), [])
+
+
+def test_a_navigation_sign_above_the_panel_is_read(monkeypatch):
+    o = band_view(0, 1)
+    monkeypatch.setattr(assemble_module.ocr, "find_words", plated(o, ["(2nd time) D.S. al Coda"]))
+    assert assemble_module.navigation_before(o, lambda v: []) == "(2nd time) D.S. al Coda"
+
+
+def test_words_on_the_plate_that_are_no_navigation_sign_are_not_one(monkeypatch):
+    o = band_view(0, 1)
+    monkeypatch.setattr(assemble_module.ocr, "find_words", plated(o, ["Bass Tabs", "Verse 2"]))
+    assert assemble_module.navigation_before(o, lambda v: []) is None
+
+
 def test_a_playhead_first_seen_well_into_a_view_does_not_say_where_it_started():
     o = band_view(0, 1)
     o.playhead = [(o.t0 + 2.5, 100, 30)]
