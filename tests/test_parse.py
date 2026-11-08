@@ -1004,3 +1004,30 @@ def test_a_gray_strip_beside_a_double_barline_still_merges_with_it():
     gray, plate = strip_page((60, 60, 60))
     bars = parse.barlines(gray, 120.0, 200.0, 60.0, 130.0, 14.0, 0, 800, None, plate=plate)
     assert bars == [(200, 201)]
+
+
+def test_a_barline_running_on_to_the_image_s_bottom_edge_under_the_staff_is_no_stem():
+    # The image ends 20 rows under the staff, inside the rows where a stem would run on to its beam, and the line
+    # stops at a 2-row border
+    gray = stroke_staff()[:180]
+    gray[60:178, 250:252] = 0
+    assert [p for p, _ in staff_bars(gray)] == [100, 250]
+
+
+def test_a_stem_ending_above_the_image_s_bottom_edge_stays_a_stem():
+    gray = stroke_staff()[:180]
+    gray[60:176, 250:252] = 0
+    assert [p for p, _ in staff_bars(gray)] == [100]
+
+
+def test_a_line_into_a_dark_block_at_the_image_s_bottom_edge_stays_a_stem():
+    gray = stroke_staff()[:180]
+    gray[60:178, 250:252] = 0
+    gray[165:178, 236:266] = 0
+    assert [p for p, _ in staff_bars(gray)] == [100]
+
+
+def test_a_line_at_the_staff_s_end_running_on_to_the_image_s_bottom_edge_stays_a_stem():
+    gray = stroke_staff()[:180]
+    gray[60:178, 370:372] = 0
+    assert [p for p, _ in staff_bars(gray)] == [100]

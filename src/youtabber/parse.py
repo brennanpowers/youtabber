@@ -29,6 +29,10 @@ SIDE_LINE_SHARE = 0.45
 # A line lighter than the ink threshold is judged against its own gray level only when it is darker than the staff's
 # paper by at least this share of the way from the paper to the ink threshold: a lighter stripe is footage, not a line
 SIDE_LINE_DEPTH = 0.25
+# When the image ends inside the rows a stem runs down to its beam, a column inked from under the staff to within this
+# many line gaps of the image's bottom edge is a line cut off by the edge, not a stem: a video's last rows can be a
+# border the line stops at
+EDGE_STEM_GAPS = 0.1
 # A barline runs from the top line to the bottom one: a stroke leaving a run of paper longer than this many line gaps,
 # and than BAR_PAPER_PX rows, inside the staff is a strum arrow's shaft or a stem. At small line gaps a break of a few
 # rows in a faint barline is compression noise
@@ -359,6 +363,17 @@ def barlines(gray: np.ndarray, thr: float, fthr: float, tab_top: float, tab_bott
             lc = level[cols]
             stem = gray[r0:r1, xs] < np.minimum(fthr, lc + SIDE_LINE_SHARE * (paper - lc))
             below = np.where(own_level[None, :], stem, below)
+            keep = below.shape[0] - int(round(EDGE_STEM_GAPS * gap))
+            if r1 > dark.shape[0] and keep > 0:
+                # The last rows, and a run of ink reaching them, don't count as a stem in a thin line with paper on both
+                # sides inside the staff; a dark border or block of footage there is no line, and at the staff's ends
+                # a border can run on down the image
+                thin = (xs > x0 + gap) & (xs < x1 - gap)
+                for s in (-d, d):
+                    side = np.clip(xs + s, 0, w)
+                    thin &= (side == xs + s) & (dark[r0:r0 + keep, side].mean(axis=0) < BAR_SIDE_INK)
+                below = below[:keep]
+                below = below & ~(np.cumprod(below[::-1], axis=0)[::-1].astype(bool) & thin[None, :])
             full[cols] = below.mean(axis=0) < 0.5
     else:
         # Barlines cross the notation staff too (drawn through the space between the staffs or not)
