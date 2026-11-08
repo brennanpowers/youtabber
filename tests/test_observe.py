@@ -1082,3 +1082,79 @@ def test_a_colored_line_cursor_over_an_empty_staff_is_no_colored_ink():
         ink[y + 2:y + 50, 100:108] = True
     tint[45:205, 95:113] = True
     assert not observe.tinted_paper(tint, area, ink, 50.0)
+
+
+STRIP_STAFFS = (0, 60, 1280, 212)
+RED = (0, 0, 230)
+
+
+def strip_page(digits: list[tuple[int, int, int]], color=RED, mark: bool = False) -> np.ndarray:
+    """A 270x1280 page at line gap 50: four black staff lines from row 60, and solid digits (x, width, height) in
+    `color` between the second and third lines. With `mark`, a black 30x40 block at x 1200 is gray ink beside them."""
+    f = np.full((270, 1280, 3), 255, np.uint8)
+    for y in (60, 110, 160, 210):
+        f[y:y + 2] = 0
+    for x, w, h in digits:
+        f[120:120 + h, x:x + w] = color
+    if mark:
+        f[140:180, 1200:1230] = 0
+    return f
+
+
+def strip_views(monkeypatch, pages: list[np.ndarray], strip: bool | None = None) -> list:
+    """Views of the pages held 3 s each, read as a strip of colored notes or not, or left to views_in to judge."""
+    def frames(path, fps, crop=None, start=0.0, length=None):
+        for i in range(18 * len(pages)):
+            yield i / fps, pages[i // 18].copy()
+    monkeypatch.setattr(observe, "frames", frames)
+    observe.set_paper(PAPER)
+    return observe.views_in(None, (0, 0, 1280, 270), "dark", 50.0, PAPER, lambda t: STRIP_STAFFS, 0.0, 3.0 * len(pages),
+                            strip=strip)[0]
+
+
+# Six 16x24 digits, then the same with the fourth moved, then two 10x14 digits added, then the first moved
+BIG = [(100, 16, 24), (250, 16, 24), (400, 16, 24), (550, 16, 24), (700, 16, 24), (850, 16, 24)]
+MOVED = BIG[:3] + [(600, 16, 24)] + BIG[4:]
+SMALL = MOVED + [(950, 10, 14), (1050, 10, 14)]
+LAST = [(150, 16, 24)] + SMALL[1:]
+
+
+def test_a_digit_piece_smaller_than_a_mark_is_a_change_only_at_the_digit_size():
+    a, b = np.zeros((250, 600), bool), np.zeros((250, 600), bool)
+    b[100:114, 300:310] = True   # 140 pixels: 0.056 of a 50-pixel line gap squared
+    assert not observe.significant_change(a, b, 50.0, 2, cursor=True)
+    assert observe.significant_change(a, b, 50.0, 2, cursor=True, piece=observe.DIGIT_PIECE)
+
+
+def test_views_of_colored_digits_are_a_strip_and_of_black_digits_are_not(monkeypatch):
+    red = strip_views(monkeypatch, [strip_page(d) for d in (BIG, MOVED, LAST)], strip=False)
+    assert len(red) == 3 and observe.colored_strip(red, "dark", 128.0, 50.0)
+    black = strip_views(monkeypatch, [strip_page(d, (0, 0, 0)) for d in (BIG, MOVED, LAST)], strip=False)
+    assert len(black) == 3 and not observe.colored_strip(black, "dark", 128.0, 50.0)
+    # A cursor box colored over black digits is no strip either
+    boxed = [strip_page(d, (0, 0, 0)) for d in (BIG, MOVED, LAST)]
+    for f in boxed:
+        f[95:130, 90:130] = (230, 180, 0)
+    assert not observe.colored_strip(strip_views(monkeypatch, boxed, strip=False), "dark", 128.0, 50.0)
+    # Two views are too few to judge
+    assert not observe.colored_strip(red[:2], "dark", 128.0, 50.0)
+
+
+def test_a_strip_page_flip_adding_only_small_digits_starts_a_new_view(monkeypatch):
+    pages = [strip_page(d) for d in (BIG, MOVED, SMALL, LAST)]
+    assert [round(v.t0, 1) for v in strip_views(monkeypatch, pages, strip=False)] == [0.0, 3.0, 9.0]
+    # Read as no strip first, the segment's views show colored digits, so it is read again as a strip
+    assert [round(v.t0, 1) for v in strip_views(monkeypatch, pages)] == [0.0, 3.0, 6.0, 9.0]
+
+
+def test_small_black_digits_added_off_a_strip_are_no_change(monkeypatch):
+    pages = [strip_page(d, (0, 0, 0)) for d in (BIG, MOVED, SMALL, LAST)]
+    assert [round(v.t0, 1) for v in strip_views(monkeypatch, pages)] == [0.0, 3.0, 9.0]
+
+
+def test_colored_digits_flipping_beside_gray_ink_are_compared_on_a_strip(monkeypatch):
+    # Two digits and a black block: under TINT_INK of the marks are colored, so off a strip the digits are masked
+    two = [(100, 16, 24), (250, 16, 24)]
+    pages = [strip_page(two, mark=True), strip_page([(400, 16, 24), (550, 16, 24)], mark=True)]
+    assert [round(v.t0, 1) for v in strip_views(monkeypatch, pages, strip=False)] == [0.0]
+    assert [round(v.t0, 1) for v in strip_views(monkeypatch, pages, strip=True)] == [0.0, 3.0]

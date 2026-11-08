@@ -78,6 +78,13 @@ TINT_PAPER = 0.6
 # Colored pixels covering more than this share of the ink are the ink's own color (music drawn in color); the
 # compare keeps them too
 TINT_INK = 0.85
+# A segment whose median still view has at least this share of its marks colored is a strip of colored notes: its
+# colored ink is the page's ink in every compare, and a page flip there can change only small digits. Views with
+# under STRIP_MIN_MARKS pixels of marks don't count, and at least STRIP_MIN_VIEWS must be left
+STRIP_COLORED, STRIP_MIN_MARKS, STRIP_MIN_VIEWS = 0.78, 200, 3
+# A piece of change smaller than this many line gaps squared is no mark (DIGIT_PIECE on a strip of colored notes,
+# whose digits are small against the line gap)
+MARK_PIECE, DIGIT_PIECE = 0.1, 0.035
 # A pixel lighter than ink in the plate whose gray level spreads by more than this between a view's lighter and darker
 # frames is footage moving behind a see-through panel
 FOOTAGE_SPREAD = 12
@@ -295,6 +302,33 @@ def unmatched(a: np.ndarray, b: np.ndarray, radius: int = 1) -> np.ndarray:
     return ((a & ~nb) | (b & ~na)).astype(np.uint8)
 
 
+def marks_in(ink: np.ndarray, gap: float) -> np.ndarray:
+    """The pixels of `ink` that are marks, not lines: a piece is a line when its pixels would fill a stroke thinner
+    than a sliver `significant_change` skips along its longest side, or when it is thin and tall."""
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(ink.astype(np.uint8), connectivity=8)
+    w, h = stats[:, cv2.CC_STAT_WIDTH], stats[:, cv2.CC_STAT_HEIGHT]
+    mark = ((stats[:, cv2.CC_STAT_AREA] >= max(3, 0.12 * gap) * np.maximum(w, h))
+            & ~((h > 1.5 * gap) & (w < 0.5 * gap)))
+    mark[0] = False
+    return mark[labels]
+
+
+def colored_strip(views: list["View"], polarity: str, thr: float, gap: float) -> bool:
+    """True when the views are pages of colored notes on a strip: on the median still view, at least STRIP_COLORED
+    of the marks are colored. Views with under STRIP_MIN_MARKS pixels of marks are left out, and STRIP_MIN_VIEWS
+    views must be left to judge."""
+    shares = []
+    for v in views:
+        x0, y0, x1, y1 = v.rect
+        if v.brief or x1 <= x0 or y1 <= y0:
+            continue
+        plate = v.plate[y0:y1, x0:x1]
+        marks = marks_in(ink_map(to_gray(plate, polarity), thr, gap), gap)
+        if marks.sum() >= STRIP_MIN_MARKS:
+            shares.append((colored(plate) & marks).sum() / marks.sum())
+    return len(shares) >= STRIP_MIN_VIEWS and float(np.median(shares)) >= STRIP_COLORED
+
+
 def tinted_paper(tint: np.ndarray, area: np.ndarray, ink: np.ndarray, gap: float | None = None,
                  other: np.ndarray | None = None) -> bool:
     """True when colored pixels are the page's own colors: they cover so much of the compared area that they are
@@ -302,8 +336,7 @@ def tinted_paper(tint: np.ndarray, area: np.ndarray, ink: np.ndarray, gap: float
 
     With `gap`, nearly all the marks of `ink` and of the `other` frame's ink being colored is enough too: pieces of
     staff lines and barlines can be the only gray ink of a strip whose notes are all colored, and a page can open
-    with no notes at all. A piece of ink is a line when its pixels would fill a stroke thinner than a sliver
-    `significant_change` skips along its longest side, or when it is thin and tall.
+    with no notes at all. Lines are told from marks as `marks_in` does.
     """
     inked = ink & area
     if (tint & area).sum() > TINT_PAPER * area.sum() or (tint & inked).sum() > TINT_INK * inked.sum():
@@ -312,12 +345,7 @@ def tinted_paper(tint: np.ndarray, area: np.ndarray, ink: np.ndarray, gap: float
         return False
     if other is not None:
         inked = inked | (other & area)
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(inked.astype(np.uint8), connectivity=8)
-    w, h = stats[:, cv2.CC_STAT_WIDTH], stats[:, cv2.CC_STAT_HEIGHT]
-    mark = ((stats[:, cv2.CC_STAT_AREA] >= max(3, 0.12 * gap) * np.maximum(w, h))
-            & ~((h > 1.5 * gap) & (w < 0.5 * gap)))
-    mark[0] = False
-    marks = mark[labels]
+    marks = marks_in(inked, gap)
     # Colored pieces stacked in a column taller than a digit, once the staff lines' rows between them are closed, are a
     # line cursor, not notes
     joined = cv2.morphologyEx((inked & tint).astype(np.uint8), cv2.MORPH_CLOSE, np.ones((LINE_HOLE_ROWS, 1), np.uint8))
@@ -500,12 +528,13 @@ def line_holes(ink: np.ndarray, diff: np.ndarray, labels: np.ndarray, i: int, bo
     return all(e - s <= thin or inked[s:e].any() for s, e in zip(starts, ends))
 
 
-def significant_change(a: np.ndarray, b: np.ndarray, gap: float, radius: int = 1, cursor: bool = False) -> bool:
+def significant_change(a: np.ndarray, b: np.ndarray, gap: float, radius: int = 1, cursor: bool = False,
+                       piece: float = MARK_PIECE) -> bool:
     """True when some mark the size of a digit is in one ink map and not near the same place in the other.
 
     Thin tall marks are skipped: they are line cursors moving across a still page. With `cursor`, the pieces a
     moving cursor leaves are skipped too: a line cursor cut up by the staff lines, and the staff lines a box
-    cursor breaks up.
+    cursor breaks up. A mark has at least `piece` line gaps squared of pixels.
     """
     diff = unmatched(a, b, radius)
     if diff.sum() < 8:
@@ -519,7 +548,7 @@ def significant_change(a: np.ndarray, b: np.ndarray, gap: float, radius: int = 1
                 and line_holes(a | b, diff, labels, i, stats[i], gap)]
         diff[np.isin(labels, tall)] = 0
     n, _, stats, _ = cv2.connectedComponentsWithStats(diff, connectivity=8)
-    amin = max(12, 0.1 * gap * gap)
+    amin = max(12, piece * gap * gap)
     for i in range(1, n):
         x, y, w, h, area = stats[i]
         if area < amin:
@@ -728,8 +757,8 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
              progress: Callable[[float], None] | None = None, lead: float = 0.0,
              thresholds: tuple[float, float] | None = None,
              last_screen: bool = False, bound_at=None,
-             prints_numbers: Callable[[np.ndarray, tuple, float, float], bool | None] | None = None
-             ) -> tuple[list[View], float, float]:
+             prints_numbers: Callable[[np.ndarray, tuple, float, float], bool | None] | None = None,
+             strip: bool | None = None) -> tuple[list[View], float, float]:
     """Still views between t_start and t_end, and the ink threshold used. A brief screen in the `lead` seconds
     before t_start, which the scan's steps missed, comes first; it is read with the staffs' box at t_start and the
     threshold of the views after it. `thresholds` gives the ink thresholds instead of reading them from the first
@@ -741,7 +770,16 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
 
     `seed_at(t)` gives the staffs' box at time t in crop coordinates, from the scan. `progress(t)` is called with
     each frame's time.
+
+    `strip` says whether the segment is a strip of colored notes (see `colored_strip`). Left out, the segment is read
+    as no strip, and read again as one when its views turn out to be one.
     """
+    if strip is None:
+        def read(as_strip: bool) -> tuple[list[View], float, float]:
+            return views_in(path, crop, polarity, gap, paper, seed_at, t_start, t_end, use_playhead, progress, lead,
+                            thresholds, last_screen, bound_at, prints_numbers, as_strip)
+        views, thr, fthr = read(False)
+        return read(True) if colored_strip(views, polarity, thr, gap) else (views, thr, fthr)
     views: list[View] = []
     cur: list[tuple[float, np.ndarray, tuple, tuple]] = []   # (t, frame, panel rect, staffs' box)
     ref = None
@@ -932,10 +970,12 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         ink = ink_map(g, thr, gap)
         mask = area(r["rect"], r["seed"], ink.shape)
         tint = r["tint"] | tinted(f)
-        if not tinted_paper(tint, mask, r[key], gap, ink):
+        # On a strip of colored notes the colored ink is always the page's, even on a page with few notes
+        if not strip and not tinted_paper(tint, mask, r[key], gap, ink):
             mask &= ~tint
         # Two pixels of slack: a cursor passing over a note changes its soft edge
-        changed = significant_change(r[key] & mask, ink & mask, gap, radius=2, cursor=True)
+        changed = significant_change(r[key] & mask, ink & mask, gap, radius=2, cursor=True,
+                                     piece=DIGIT_PIECE if strip else MARK_PIECE)
         if not changed and prints_numbers is not None and numbers_differ(r, f, ink, mask, tint, key):
             changed = shows_numbers(r)
         return changed, f
@@ -1038,6 +1078,7 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         views.append(v)
     if lead and thr is not None and seed_at(t_start) is not None:
         before, _, _ = views_in(path, crop, polarity, gap, paper, lambda _: seed_at(t_start), t_start - lead, t_start,
-                                use_playhead, thresholds=(thr, fthr), bound_at=bound_at, prints_numbers=prints_numbers)
+                                use_playhead, thresholds=(thr, fthr), bound_at=bound_at, prints_numbers=prints_numbers,
+                                strip=strip)
         views[:0] = before
     return views, (thr or 128.0), (fthr or 230.0)
