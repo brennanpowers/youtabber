@@ -1029,3 +1029,56 @@ def test_the_playhead_is_found_crossing_a_thin_colored_line_on_the_page(monkeypa
         f[:, 600:603] = (200, 90, 20)
     off = cursor_xs(monkeypatch, line)
     assert len(off) == 90 and max(abs(d) for d in off) <= 2
+
+
+def strip_ink(gray_digit: bool) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(tint, area, ink) for a 250x600 strip at line gap 50: a gray barline at x 300 cut into pieces by the staff
+    lines, each with a stub of staff line across its middle, gray staff-line pieces, and five colored digits drawn as
+    24x36 outlines 7 pixels thick, the last one gray with `gray_digit`."""
+    area = np.ones((250, 600), bool)
+    ink = np.zeros_like(area)
+    tint = np.zeros_like(area)
+    for y in (50, 100, 150, 200):
+        ink[y + 3:y + 47, 300:304] = True
+        ink[y + 20:y + 22, 292:312] = True
+        ink[y:y + 2, 200:280] = True
+    for k, x in enumerate((60, 160, 400, 480, 540)):
+        ink[110:146, x:x + 24] = True
+        ink[117:139, x + 7:x + 17] = False
+        if not (gray_digit and k == 4):
+            tint[107:149, x - 3:x + 27] = True
+    return tint, area, ink
+
+
+def test_colored_digits_on_a_strip_whose_gray_ink_is_only_lines_are_the_ink_s_own_color():
+    tint, area, ink = strip_ink(gray_digit=False)
+    assert (tint & ink).sum() < observe.TINT_INK * ink.sum()
+    assert not observe.tinted_paper(tint, area, ink)
+    assert observe.tinted_paper(tint, area, ink, 50.0)
+
+
+def test_a_gray_digit_among_colored_ones_keeps_them_a_highlight():
+    tint, area, ink = strip_ink(gray_digit=True)
+    assert not observe.tinted_paper(tint, area, ink, 50.0)
+
+
+def test_colored_digits_in_the_frame_count_when_the_reference_shows_only_lines():
+    tint, area, ink = strip_ink(gray_digit=False)
+    lines = ink.copy()
+    lines[110:146] = False
+    assert not observe.tinted_paper(tint, area, lines, 50.0)
+    assert observe.tinted_paper(tint, area, lines, 50.0, ink)
+    tint, area, ink = strip_ink(gray_digit=True)
+    assert not observe.tinted_paper(tint, area, lines, 50.0, ink)
+
+
+def test_a_colored_line_cursor_over_an_empty_staff_is_no_colored_ink():
+    # A cursor 8 wide at x 100, cut by the staff lines every 50 rows, over a staff of gray line pieces only
+    area = np.ones((250, 600), bool)
+    ink = np.zeros_like(area)
+    tint = np.zeros_like(area)
+    for y in (50, 100, 150):
+        ink[y:y + 2, 200:280] = True
+        ink[y + 2:y + 50, 100:108] = True
+    tint[45:205, 95:113] = True
+    assert not observe.tinted_paper(tint, area, ink, 50.0)

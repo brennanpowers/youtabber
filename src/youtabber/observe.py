@@ -295,11 +295,37 @@ def unmatched(a: np.ndarray, b: np.ndarray, radius: int = 1) -> np.ndarray:
     return ((a & ~nb) | (b & ~na)).astype(np.uint8)
 
 
-def tinted_paper(tint: np.ndarray, area: np.ndarray, ink: np.ndarray) -> bool:
+def tinted_paper(tint: np.ndarray, area: np.ndarray, ink: np.ndarray, gap: float | None = None,
+                 other: np.ndarray | None = None) -> bool:
     """True when colored pixels are the page's own colors: they cover so much of the compared area that they are
-    the paper, or nearly all of its ink, so they are the ink. No cursor or highlight covers either."""
+    the paper, or nearly all of its ink, so they are the ink. No cursor or highlight covers either.
+
+    With `gap`, nearly all the marks of `ink` and of the `other` frame's ink being colored is enough too: pieces of
+    staff lines and barlines can be the only gray ink of a strip whose notes are all colored, and a page can open
+    with no notes at all. A piece of ink is a line when its pixels would fill a stroke thinner than a sliver
+    `significant_change` skips along its longest side, or when it is thin and tall.
+    """
     inked = ink & area
-    return bool((tint & area).sum() > TINT_PAPER * area.sum() or (tint & inked).sum() > TINT_INK * inked.sum())
+    if (tint & area).sum() > TINT_PAPER * area.sum() or (tint & inked).sum() > TINT_INK * inked.sum():
+        return True
+    if gap is None:
+        return False
+    if other is not None:
+        inked = inked | (other & area)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(inked.astype(np.uint8), connectivity=8)
+    w, h = stats[:, cv2.CC_STAT_WIDTH], stats[:, cv2.CC_STAT_HEIGHT]
+    mark = ((stats[:, cv2.CC_STAT_AREA] >= max(3, 0.12 * gap) * np.maximum(w, h))
+            & ~((h > 1.5 * gap) & (w < 0.5 * gap)))
+    mark[0] = False
+    marks = mark[labels]
+    # Colored pieces stacked in a column taller than a digit, once the staff lines' rows between them are closed, are a
+    # line cursor, not notes
+    joined = cv2.morphologyEx((inked & tint).astype(np.uint8), cv2.MORPH_CLOSE, np.ones((LINE_HOLE_ROWS, 1), np.uint8))
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(joined, connectivity=8)
+    tall = stats[:, cv2.CC_STAT_HEIGHT] > 1.5 * gap
+    tall[0] = False
+    marks &= ~tall[labels]
+    return bool(marks.any() and (tint & marks).sum() > TINT_INK * marks.sum())
 
 
 def faint_change(a: np.ndarray, b: np.ndarray, gap: float) -> bool:
@@ -906,7 +932,7 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         ink = ink_map(g, thr, gap)
         mask = area(r["rect"], r["seed"], ink.shape)
         tint = r["tint"] | tinted(f)
-        if not tinted_paper(tint, mask, r[key]):
+        if not tinted_paper(tint, mask, r[key], gap, ink):
             mask &= ~tint
         # Two pixels of slack: a cursor passing over a note changes its soft edge
         changed = significant_change(r[key] & mask, ink & mask, gap, radius=2, cursor=True)
