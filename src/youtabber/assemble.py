@@ -401,7 +401,8 @@ def playhead_track(o: Obs) -> list:
 
 def samples_on(o: Obs, cells: list) -> list:
     """The view's playhead samples that lie on the music of `cells`: inside the panel and near their staffs, without
-    a sample that jumps away from both its neighbors (footage moving beside the panel)."""
+    a sample that jumps away from both its neighbors (footage moving beside the panel), and without up to two first
+    samples away from the ones after them (caught while the page was still sliding in)."""
     if not cells:
         return []
     g = cells[0].gap
@@ -414,11 +415,13 @@ def samples_on(o: Obs, cells: list) -> list:
 
     def far(a, b):
         return abs(a[1] - b[1]) > 4 * g or abs(a[2] - b[2]) > 2 * g
+    # The track starts at the first of two samples in a row that agree, leaving out at most two before them
+    lead = next((k for k in range(min(3, len(pts) - 1)) if not far(pts[k], pts[k + 1])), 0)
+    pts = pts[lead:]
     return [q for k, q in enumerate(pts)
             if not (0 < k < len(pts) - 1 and far(q, pts[k - 1]) and far(q, pts[k + 1])
                     and not far(pts[k - 1], pts[k + 1]))
-            # A first or last sample away from the two next to it
-            and not (k == 0 and len(pts) >= 3 and far(q, pts[1]) and not far(pts[1], pts[2]))
+            # A last sample away from the two before it
             and not (k == len(pts) - 1 and len(pts) >= 3 and far(q, pts[-2]) and not far(pts[-2], pts[-3]))]
 
 

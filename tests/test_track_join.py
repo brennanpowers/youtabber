@@ -37,6 +37,19 @@ def test_the_samples_on_a_blank_tail_drop_a_lone_jump_and_a_sample_past_its_righ
     assert samples_on(o, o.cells[3:]) == [(0.0, 600, 30), (0.5, 640, 30), (1.5, 680, 30), (2.0, 720, 30)]
 
 
+def test_the_playhead_track_drops_two_first_samples_caught_while_the_page_slid_in():
+    o = band_view(0, 1)
+    o.playhead = [(0.0, 500, 30), (0.17, 700, 30), (0.33, 100, 30), (0.5, 120, 30), (0.67, 140, 30), (0.83, 160, 30)]
+    assert samples_on(o, o.cells) == [(0.33, 100, 30), (0.5, 120, 30), (0.67, 140, 30), (0.83, 160, 30)]
+
+
+def test_the_playhead_track_keeps_three_first_samples_that_disagree():
+    # No two of the first four samples agree, so none is taken for a stray
+    o = band_view(0, 1)
+    o.playhead = [(0.0, 500, 30), (0.17, 700, 30), (0.33, 300, 30), (0.5, 100, 30), (0.67, 120, 30), (0.83, 140, 30)]
+    assert samples_on(o, o.cells) == o.playhead
+
+
 def test_a_playhead_first_seen_well_into_a_view_does_not_say_where_it_started():
     o = band_view(0, 1)
     o.playhead = [(o.t0 + 2.5, 100, 30)]
