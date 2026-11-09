@@ -13,6 +13,7 @@ import numpy as np
 from youtabber import ocr
 from youtabber.match import WIDTH_PX, WIDTH_SHARE, resemble, resemble_scaled, same, same_part
 from youtabber.observe import WRAP_GAPS, unmatched
+from youtabber.parse import DOT_ALIGN, DOT_APART
 
 # A gap with no tab at least this long before a re-shown first page means the song started over
 RESTART_GAP_SECONDS = 1.5
@@ -145,6 +146,11 @@ OTHER_PART_MEASURES = 3
 SIGN_SLACK = 2
 # Barlines this many line gaps apart or closer on two views are in the same places
 SAME_BAR_GAPS = 0.25
+# A column of a cell's ink is a barline stroke when it covers this share of the tab staff's rows
+STROKE_COVER = 0.8
+# A repeat sign's two dots stand within REPEAT_DOT_REACH line gaps of its barline strokes, one above the other, each
+# DOT_GAPS line gaps across
+REPEAT_DOT_REACH, DOT_GAPS = 0.6, (0.1, 0.35)
 
 
 @dataclass
@@ -1949,10 +1955,12 @@ def staff_moved(c, dy: int):
 
 def place_rest(o, slot_of, A, gap, gap_before, prev, use, words_of, fold_unresolved) -> None:
     """Place the cells the join with the previous view didn't explain."""
+    jumps = glide_jumps(o.cells, gap) if o.mosaic is not None else []
+    again = {k for m, _ in jumps for k in m}
     if glided_on(o) and A.replay_next is None:
         # The band glided on from the piece before, so its measures are new music
         for i, c in enumerate(o.cells):
-            if slot_of[i] is None:
+            if slot_of[i] is None and not replay_in_glide(o, i, slot_of, jumps, A, fold_unresolved):
                 slot_of[i] = new_slot(A, c, o)
         A.decisions.append(Decision(o.t0, "join", "glide continues", [], "track", True))
         return
@@ -1965,10 +1973,14 @@ def place_rest(o, slot_of, A, gap, gap_before, prev, use, words_of, fold_unresol
         if slot_of[i] is not None:
             i += 1
             continue
+        if replay_in_glide(o, i, slot_of, jumps, A, fold_unresolved):
+            A.replay_next = None
+            i += 1
+            continue
         # A run of unexplained cells may repeat earlier slots
         run = []
         k = i
-        while k < len(cells) and slot_of[k] is None and len(run) < 4:
+        while k < len(cells) and slot_of[k] is None and k not in again and len(run) < 4:
             run.append(cells[k])
             k += 1
         # A single cell is enough to carry on a replay already under way
@@ -2022,6 +2034,101 @@ def place_rest(o, slot_of, A, gap, gap_before, prev, use, words_of, fold_unresol
         slot_of[i] = new_slot(A, cells[i], o)
         A.replay_next = None
         i += 1
+
+
+def glide_jumps(cells, gap: float) -> list[tuple[dict[int, int], bool]]:
+    """The passes of one glide played again after the video jumped back inside it, each as ({cell index: index of
+    the earlier cell it repeats}, whether a repeat sign is drawn where the pass jumps from or to).
+
+    A jump shows in the printed numbers: a number confirmed by a neighbour read one less or one more, at or below
+    the highest confirmed number before it, on a cell that looks like the earlier cell read with that number. Blank
+    cells look like anything, so the numbers are checked first. The cells between the last confirmed number before
+    the jump and the jump repeat the cells just before that earlier cell, and the cells from the jump on repeat the
+    cells after it, up to the cell the pass before the jump reached."""
+    reads = [c.read for c in cells]
+    confirmed = [n is not None and ((i > 0 and reads[i - 1] == n - 1) or (i + 1 < len(reads) and reads[i + 1] == n + 1))
+                 for i, n in enumerate(reads)]
+    passes: list = []
+    again: dict[int, int] = {}
+    top = last = None
+    for i, n in enumerate(reads):
+        if not confirmed[i]:
+            continue
+        if top is not None and n <= top and i not in again:
+            j = next((k for k in range(i - 1, -1, -1) if confirmed[k] and reads[k] == n), None)
+            if (j is not None and j - (i - last - 1) >= 0
+                    and resemble_scaled(cells[j], cells[i], gap) < GLIDE_CONTINUE):
+                m = {k: k - i + j for k in range(last + 1, i)}
+                k = i
+                while (k < len(cells) and k - i + j <= last
+                       and (reads[k] is None or reads[k - i + j] is None or reads[k] == reads[k - i + j])):
+                    m[k] = k - i + j
+                    k += 1
+                # A later pass repeats the cells the earlier pass repeated
+                m = {k: again.get(e, e) for k, e in m.items()}
+                to = min(m.values())
+                signed = (repeat_sign(cells[last], cells[last + 1], gap)
+                          or (to > 0 and repeat_sign(cells[to - 1], cells[to], gap)))
+                again.update(m)
+                passes.append((m, signed))
+        top = n if top is None else max(top, n)
+        last = i
+    return passes
+
+
+def staff_rows(c, rows: int):
+    """The cell's ink over its tab staff's first `rows` rows."""
+    return c.ink[c.ref_y:c.ref_y + rows]
+
+
+def repeat_sign(a, b, gap: float) -> bool:
+    """Whether the barline between consecutive cells a and b is a repeat sign: barline strokes with two dots one above
+    the other beside them, left of the strokes for an end-repeat and right of them for a start-repeat."""
+    rows = min(int(round(2 * (c.mid_y - c.y0))) - 2 * c.ref_y + 1 for c in (a, b))
+    # The strokes lie within a line gap of the cells' shared edge, and the dots within REPEAT_DOT_REACH of them
+    w = int(round((1 + REPEAT_DOT_REACH) * gap))
+    if rows <= 0 or a.ink.shape[1] < w or b.ink.shape[1] < w:
+        return False
+    strip = np.hstack([staff_rows(a, rows)[:, -w:], staff_rows(b, rows)[:, :w]]).astype(np.uint8)
+    strokes = [x for x in np.flatnonzero(strip.mean(axis=0) >= STROKE_COVER) if abs(x - w) <= gap]
+    if not strokes:
+        return False
+    s0, s1 = min(strokes), max(strokes)
+    strip[:, s0:s1 + 1] = 0
+    reach = REPEAT_DOT_REACH * gap
+    lo, hi = DOT_GAPS[0] * gap, DOT_GAPS[1] * gap
+    n, _, stats, _ = cv2.connectedComponentsWithStats(strip, connectivity=8)
+    for side in (lambda x0, x1: s0 - reach <= x0 and x1 < s0, lambda x0, x1: s1 < x0 and x1 <= s1 + reach):
+        dots = [(x + bw / 2, y + bh / 2) for x, y, bw, bh, _ in stats[1:]
+                if lo <= min(bw, bh) and max(bw, bh) <= hi and side(x, x + bw - 1)]
+        if any(abs(u[0] - v[0]) <= DOT_ALIGN * gap and abs(u[1] - v[1]) >= DOT_APART * gap
+               for u in dots for v in dots):
+            return True
+    return False
+
+
+def replay_in_glide(o, i: int, slot_of: list, jumps: list, A, fold_unresolved: bool) -> bool:
+    """Place cell i of glide view o when it lies in a pass the video jumped back to inside the glide (`glide_jumps`).
+    A pass jumped to over a repeat sign folds onto the cells it repeats. Without a sign the main reading prints it
+    again and the folded reading folds it, with a notice. False when cell i is in no such pass."""
+    for m, signed in jumps:
+        if i not in m:
+            continue
+        sid = slot_of[m[i]]
+        if sid is None:
+            return False
+        fold = signed or fold_unresolved
+        t0, t1 = (round(o.mosaic.time_at((o.cells[k].x0 + o.cells[k].x1) / 2), 2) for k in (min(m), max(m)))
+        if i == min(m):
+            if not signed:
+                A.unresolved_folds.append((t0, t1, slot_of[min(m.values())], slot_of[max(m.values())]))
+            A.decisions.append(Decision(t0, "fold", "fold" if fold else "new", ["new" if fold else "fold"],
+                                        "repeat_sign" if signed else "glide_jump", signed))
+        slot_of[i] = sid if fold else new_slot(A, o.cells[i], o)
+        if not fold:
+            A.unsure_slots[slot_of[i]] = (t0, t1)
+        return True
+    return False
 
 
 def restart_before(o, slot_of, i: int, j: int, start: int, A) -> None:
