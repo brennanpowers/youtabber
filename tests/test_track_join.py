@@ -372,6 +372,23 @@ def test_a_shift_lining_up_clearly_worse_is_not_tied_however_near_the_lone_shift
     assert choose_shift(p, o, shifts, 0.9, set(), 10.0, lone=800.0) == (591, "segment_scrolls", False)
 
 
+def test_a_pick_far_from_the_lone_shifts_gives_way_to_a_shift_near_them_lining_up_nearly_as_well():
+    # A two-bar riff lines up 575 px short; the shift near the segment's lone shifts lines up 0.06 worse
+    p, o = band_view(0, 1), band_view(1, 3)
+    shifts = [(126, 0.1197), (701, 0.1797)]
+    assert choose_shift(p, o, shifts, 0.9, set(), 10.0, lone=688.0) == (701, "segment_scrolls", False)
+
+
+def test_a_pick_far_from_the_lone_shifts_stands_when_no_shift_near_them_lines_up_nearly_as_well():
+    p, o = band_view(0, 1), band_view(1, 3)
+    # 701 lines up 0.08 worse than the best
+    assert choose_shift(p, o, [(126, 0.10), (701, 0.18)], 0.9, set(), 10.0, lone=688.0) == (126, "segment_scrolls",
+                                                                                              False)
+    # 780 lies 92 px from the lone shifts, more than a tenth of them
+    assert choose_shift(p, o, [(126, 0.12), (780, 0.16)], 0.9, set(), 10.0, lone=688.0) == (126, "segment_scrolls",
+                                                                                              False)
+
+
 def test_lone_shifts_are_the_median_per_segment_of_pairs_lining_up_one_way_only():
     obs = [band_view(i, 1) for i in range(5)]
     obs[4].seg = 1
