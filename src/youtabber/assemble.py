@@ -101,6 +101,8 @@ HELD_GAP_SECONDS = 5.0
 # Two views of a band that didn't move show the same music when at most this share of their marks finds no partner;
 # what is left is cursor residue
 STILL_MISMATCH = 0.2
+# Two views' barlines line up when they lie this many pixels apart or fewer
+BARLINE_MATCH_PX = 6
 # A held page the playhead started over, with at most this share of marks unmatched, is the same page played again;
 # a looser match can be a new page drawn on the same grid
 SAME_PAGE_MISMATCH = 0.1
@@ -1103,9 +1105,12 @@ def track_join(p: Obs, o: Obs, gap: float, cands=()) -> tuple[dict[int, int], st
     if m.kind == "slide" and abs(min(m.shifts, key=lambda d: abs(d + sum(m.moves)))) >= gap:
         return slide_join(p, o, gap, cands) if p.single and o.single else None
     r = register(p, o, 0, gap, 2)
-    if r is None or r[1] > STILL_MISMATCH:
-        return None
     restart = playhead_restarts(p, o, gap)
+    # An overlay drawn over a held page makes the plates differ; a band held still under a playhead that carries on,
+    # with every barline where it was, still shows the same page
+    held = m.kind == "still" and restart is False and not o.wrapped and same_barlines(p, o)
+    if (r is None or r[1] > STILL_MISMATCH) and not held:
+        return None
     # A view is cut where the playhead seemed to jump back; when its samples on the music carry on, it didn't
     if o.wrapped and restart is not False:
         return None
@@ -1121,6 +1126,13 @@ def track_join(p: Obs, o: Obs, gap: float, cands=()) -> tuple[dict[int, int], st
         links = {i: j + d for i, j in links.items() if 0 <= j + d < len(p.cells)}
         basis += f" {d:+d}"
     return links, basis
+
+
+def same_barlines(p: Obs, o: Obs) -> bool:
+    """Whether two views hold as many cells, each starting and ending within `BARLINE_MATCH_PX` of the other's."""
+    return (bool(p.cells) and len(p.cells) == len(o.cells)
+            and all(abs(a.x0 - b.x0) <= BARLINE_MATCH_PX and abs(a.x1 - b.x1) <= BARLINE_MATCH_PX
+                    for a, b in zip(p.cells, o.cells)))
 
 
 def slide_join(p: Obs, o: Obs, gap: float, cands) -> tuple[dict[int, int], str] | None:

@@ -121,6 +121,31 @@ def test_a_held_page_whose_playhead_starts_over_is_not_joined():
     assert o.restarted is True
 
 
+def overlaid(p_end: int | None = 300, o_start: int | None = 320):
+    """A held page whose second view has a banner drawn over the top half of its band."""
+    p, o = held(p_end=p_end, o_start=o_start)
+    o.band = o.band.copy()
+    o.band[:30] = True
+    o.tall = o.band
+    return p, o
+
+
+def test_a_held_page_under_an_overlay_joins_in_place_when_the_playhead_carries_on_and_the_barlines_match():
+    p, o = overlaid()
+    assert register(p, o, 0, 10.0, 2)[1] > 0.2
+    assert track_join(p, o, 10.0) == ({0: 0, 1: 1, 2: 2, 3: 3}, "still")
+
+
+def test_a_held_page_under_an_overlay_is_not_joined_when_a_barline_moved_or_the_playhead_is_unseen():
+    p, o = overlaid()
+    o.cells[2] = replace(o.cells[2], x0=o.cells[2].x0 + 7)
+    assert track_join(p, o, 10.0) is None
+    p, o = overlaid(p_end=None, o_start=None)
+    assert track_join(p, o, 10.0) is None
+    p, o = overlaid(p_end=700, o_start=20)
+    assert track_join(p, o, 10.0) is None
+
+
 def test_a_still_band_showing_other_music_is_not_joined():
     p, o = held(first=5)
     assert track_join(p, o, 10.0) is None
