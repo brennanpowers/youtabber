@@ -77,6 +77,9 @@ MIN_SHIFT_PX = 0.5
 MOVING_PAIRS, MOVING_WINDOWS = 2 / 3, 0.5
 # A pixel inked in this share of a window's frames is fixed to the screen
 STILL_SHARE = 0.8
+# A pixel whose content (0-1) varies by less than this standard deviation through a window is fixed to the screen
+# too: a still photo beside the tab is mid-gray, never fully inked
+STEADY_STD = 0.05
 
 
 @dataclass
@@ -188,9 +191,10 @@ def glides(path: Path, crop: tuple[int, int, int, int], polarity: str, paper: np
                 content[colored(band)] = 0
                 content[staff_lines(g, thr, gap)] = 0
                 contents.append(content)
-            # Ink in the same place in most of the window's frames is fixed to the screen (an uncolored playhead
-            # line, a clef) and would match at no shift
-            still = (np.stack(contents) > 0.5).mean(axis=0) >= STILL_SHARE
+            # Ink in the same place in most of the window's frames (an uncolored playhead line, a clef), and content
+            # that barely changes (a still photo), is fixed to the screen and would match at no shift
+            stack = np.stack(contents)
+            still = ((stack > 0.5).mean(axis=0) >= STILL_SHARE) | (stack.std(axis=0) < STEADY_STD)
             pairs = 0
             for prev, content in zip(contents, contents[1:]):
                 (dx, _), resp = cv2.phaseCorrelate(np.where(still, 0, prev).astype(np.float32),

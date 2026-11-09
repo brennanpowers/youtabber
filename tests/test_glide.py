@@ -177,6 +177,34 @@ def test_a_glide_behind_ink_fixed_to_the_screen_still_glides(monkeypatch):
     paper = np.array([255.0, 255.0, 255.0])
     assert glide.glides(None, (0, 0, 800, 130), "dark", paper, 0.0, 30.0, lambda t: [(20, 110)], GAP)
     monkeypatch.setattr(glide, "STILL_SHARE", 2.0)
+    monkeypatch.setattr(glide, "STEADY_STD", 0.0)
+    assert not glide.glides(None, (0, 0, 800, 130), "dark", paper, 0.0, 30.0, lambda t: [(20, 110)], GAP)
+
+
+def photo_frames(moving):
+    """frames() of `moving` with a still patterned mid-gray picture over its left 400 columns."""
+    xs, ys = np.arange(400), np.arange(130)
+    photo = np.clip(160 + 40 * np.sin(xs / 23.0)[None, :] * np.cos(ys / 17.0)[:, None], 0, 255).astype(np.uint8)
+
+    def frames(path, fps, crop=None, start=0.0, length=None):
+        for t, f in moving(path, fps, crop, start, length):
+            f[:, :400] = photo[:, :, None]
+            yield t, f
+    return frames
+
+
+def test_bars_of_rest_gliding_beside_a_still_photo_glide(monkeypatch):
+    monkeypatch.setattr(glide, "frames", photo_frames(fake_frames(sheet(4000, notes_from=10**6), glide.MOTION_FRAMES)))
+    paper = np.array([255.0, 255.0, 255.0])
+    assert glide.glides(None, (0, 0, 800, 130), "dark", paper, 0.0, 30.0, lambda t: [(20, 110)], GAP)
+    monkeypatch.setattr(glide, "STEADY_STD", 0.0)
+    assert not glide.glides(None, (0, 0, 800, 130), "dark", paper, 0.0, 30.0, lambda t: [(20, 110)], GAP)
+
+
+def test_a_still_page_beside_a_still_photo_does_not_glide(monkeypatch):
+    still = fake_frames(sheet(4000), glide.MOTION_FRAMES, step=0)
+    monkeypatch.setattr(glide, "frames", photo_frames(still))
+    paper = np.array([255.0, 255.0, 255.0])
     assert not glide.glides(None, (0, 0, 800, 130), "dark", paper, 0.0, 30.0, lambda t: [(20, 110)], GAP)
 
 
