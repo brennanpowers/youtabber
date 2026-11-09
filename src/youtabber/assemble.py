@@ -48,6 +48,9 @@ HEADER_SLACK_PX = 8
 SCROLL_SEGMENT_SHARE = 0.8
 # ...or this share when only one shift lines up: in a segment that turns pages, few pairs line up by chance
 LONE_SHIFT_SHARE = 0.5
+# Shifts lining up within this much mismatch of the best one are taken as tied: look-alike measures, such as
+# one-bar repeat signs, line up about as well at several measure lengths
+TIED_SHIFT_MISMATCH = 0.02
 # The width check allows this many line gaps of difference for a system's first measure, whose box starts at the
 # staff's start, and for a measure with a barline within KEEP_EDGE_GAPS of the columns both views show, where the
 # panel's edge may stand in for it
@@ -555,11 +558,11 @@ def keeps_widths(p: Obs, o: Obs, dx: int) -> bool:
 
 
 def choose_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float, usual: float | None = None,
-                 confirmed: bool = True, pages=(), beat: float | None = None):
+                 confirmed: bool = True, pages=(), beat: float | None = None, lone: float | None = None):
     """`pick_shift`'s answer, except that with navigation evidence in use, a page shown again after p stopped before
     an end-repeat sign (`shown_again`, against the earlier views in `pages`) takes no shift, left unsettled: the sign
     places its measures."""
-    dx, basis, resolved = pick_shift(p, o, shifts, share, use, gap, usual, confirmed, beat)
+    dx, basis, resolved = pick_shift(p, o, shifts, share, use, gap, usual, confirmed, beat, lone)
     if dx is not None and "navigation" in use and shown_again(p, o, pages, gap):
         return None, "repeat_page", False
     return dx, basis, resolved
@@ -583,7 +586,7 @@ def shown_again(p: Obs, o: Obs, pages, gap: float) -> bool:
 
 
 def pick_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float, usual: float | None = None,
-               confirmed: bool = True, beat: float | None = None):
+               confirmed: bool = True, beat: float | None = None, lone: float | None = None):
     """(dx or None, basis, resolved): whether o is p scrolled by one of the shifts, or a new page.
 
     The playhead decides when it was seen at both ends: after a scroll it carries on from where it was,
@@ -592,7 +595,9 @@ def pick_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float, 
     taken, unless the slide drawn between the two views lies within a gap of another of the shifts. Without either,
     a segment where nearly every pair lines up is taken to scroll, by a shift the playhead allows when it was seen;
     when it allows several, by the one a slide measured here points at, or else the one nearest `usual`. With no
-    `usual`, the best-lining-up shift stands whenever the playhead allows it. `confirmed` says the playhead
+    `usual`, the best-lining-up shift stands whenever the playhead allows it. Where the best-lining-up shift would
+    stand, the allowed shift nearest `lone` is taken among those tied with it (`TIED_SHIFT_MISMATCH`); `lone` is the
+    segment's median shift between views that line up under one shift only. `confirmed` says the playhead
     confirmed the slides `usual` was learned from; slides drawn in several steps can be measured a riff's length
     short, so then a drawn slide agreeing with it doesn't settle the pick. `beat` is the time the playhead
     spends on a measure.
@@ -654,7 +659,11 @@ def pick_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float, 
                 # The pick was a guess among shifts, so the page turn a slide drawn back says is left unsettled too
                 return None, "drawn_back", False
             return pick, "playhead", False
-        return shifts[0][0], "segment_scrolls", len(shifts) == 1
+        pick = shifts[0][0]
+        if lone is not None:
+            tied = [dx for dx, s in shifts if s <= shifts[0][1] + TIED_SHIFT_MISMATCH and (not fits or dx in fits)]
+            pick = min(tied, key=lambda dx: abs(dx - lone))
+        return pick, "segment_scrolls", len(shifts) == 1
     return None, "prior", False
 
 
@@ -1159,6 +1168,15 @@ def scroll_shares(obs: list[Obs], shift_cache: dict, track_joins: dict) -> dict:
     return {s: sum(v) / len(v) for s, v in pairs.items() if v}
 
 
+def lone_shifts(obs: list[Obs], shift_cache: dict) -> dict:
+    """{segment: px}: the median shift of the segment's view pairs that line up under one shift only."""
+    lone: dict = {}
+    for o in obs:
+        if len(shift_cache.get(o.index, [])) == 1:
+            lone.setdefault(o.seg, []).append(shift_cache[o.index][0][0])
+    return {s: float(np.median(v)) for s, v in lone.items()}
+
+
 def usual_slides(slides: dict, drawn_slides: dict, gap: float) -> dict:
     """{segment: (px, confirmed)}: the shift each segment's band was usually seen sliding by.
 
@@ -1173,16 +1191,17 @@ def usual_slides(slides: dict, drawn_slides: dict, gap: float) -> dict:
     return usual
 
 
-def existing_join(prev, o, gap, shift_cache, scroll_share, usual, use, A, pages=(), beat=None) -> dict:
+def existing_join(prev, o, gap, shift_cache, scroll_share, usual, use, A, pages=(), beat=None, lone=None) -> dict:
     """The join made without the band's measured movement: a registered shift, else an overlap of look-alike
-    cells. Its decisions go to A. `pages` are the views being placed; `beat` is the segment's time per measure."""
+    cells. Its decisions go to A. `pages` are the views being placed; `beat` is the segment's time per measure;
+    `lone` is `lone_shifts`' value for the segment."""
     links: dict = {}
     options = []
     shifts = shift_cache.get(o.index, [])
     if shifts:
         step, confirmed = usual.get(o.seg, (None, True))
         dx, basis, resolved = choose_shift(prev, o, shifts, scroll_share.get(o.seg, 0.0), use, gap, step, confirmed,
-                                           pages, beat)
+                                           pages, beat, lone)
         if dx is not None:
             links = scroll_links(prev, o, dx)
             # A page shown again whole can line up with itself one measure on; a riff scrolled on by its
@@ -1415,6 +1434,7 @@ class _Pairs:
     track_joins: dict
     scroll_share: dict
     usual: dict
+    lone: dict             # `lone_shifts`
     sliding: dict
     beats: dict
     held: dict
@@ -1457,7 +1477,8 @@ def view_pairs(obs: list[Obs], gap: float) -> _Pairs:
         moved = [o for o in obs if o.seg == sg and o.move is not None and o.move.kind in ("slide", "cut")]
         sliding[sg] = len(slides.get(sg, [])) >= 5 and len(slides.get(sg, [])) >= 0.7 * len(moved)
     beats = {s: measure_time([o for o in obs if o.seg == s and o.mosaic is None]) for s in {o.seg for o in obs}}
-    return _Pairs(moves, shift_cache, track_joins, scroll_share, usual, sliding, beats, held_lines(obs))
+    return _Pairs(moves, shift_cache, track_joins, scroll_share, usual, lone_shifts(obs, shift_cache), sliding, beats,
+                  held_lines(obs))
 
 
 def miscounted(p: Obs, j: int, number: int, slot_number: int) -> bool:
@@ -1479,7 +1500,7 @@ def place_views(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str]
     prev_slots: list = []
     last_end = None
     shift_cache, track_joins, scroll_share = pairs.shift_cache, pairs.track_joins, pairs.scroll_share
-    usual, beats, held = pairs.usual, pairs.beats, pairs.held
+    usual, beats, held, lone = pairs.usual, pairs.beats, pairs.held, pairs.lone
     # While views keep being placed by their numbers on earlier measures: the first such view, whether each measure
     # showed the earlier music, the stretch once most did not, and whether the first view came after a break
     watch = None
@@ -1547,7 +1568,7 @@ def place_views(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str]
                     # A slide the playhead didn't confirm only settles a pair the plates and overlaps left open
                     probe = Assembly()
                     plain = existing_join(prev, o, gap, shift_cache, scroll_share, usual, use, probe, obs,
-                                          beats.get(o.seg))
+                                          beats.get(o.seg), lone.get(o.seg))
                     if probe.decisions:
                         links, tj, probed = plain, None, True
                         A.decisions.extend(probe.decisions)
@@ -1562,7 +1583,8 @@ def place_views(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str]
                         resolved = "?" not in tj[1]
                     A.decisions.append(Decision(o.t0, "join", tj[1].replace("?", ""), [], "track", resolved))
                 elif not probed:
-                    links = existing_join(prev, o, gap, shift_cache, scroll_share, usual, use, A, obs, beats.get(o.seg))
+                    links = existing_join(prev, o, gap, shift_cache, scroll_share, usual, use, A, obs, beats.get(o.seg),
+                                          lone.get(o.seg))
                 pj = ((playhead_join(prev, o, beats.get(o.seg), gap) or turned_in_last(prev, o))
                       if not links and tj is None else None)
                 if pj is not None:

@@ -7,11 +7,12 @@ from test_numbering import band_view, music, run, view
 from youtabber import assemble as assemble_module
 from youtabber.assemble import (RESTART_GAP_SECONDS, Assembly, Decision, Obs, Slot, after_header, assemble, cell_at,
                                 borrow_numbers, choose_shift, closes_piece, compare_cells, cut_tails, drawn_near,
-                                find_run, forget_compared, jumped_back, keeps_widths, measure_time, page_flip_join,
-                                place_rest, playhead_at, playhead_join, playhead_restarts, playhead_track, register,
-                                register_marks, repeat_played, replay_evidence, rest_of, restart_before, same_cell,
-                                samples_on, scroll_shares, scroll_shifts, sequence_links, shown_again, split_measure,
-                                still_links, swept_again, track_join, turned_in_last, usual_slides, view_pairs)
+                                find_run, forget_compared, jumped_back, keeps_widths, lone_shifts, measure_time,
+                                page_flip_join, place_rest, playhead_at, playhead_join, playhead_restarts,
+                                playhead_track, register, register_marks, repeat_played, replay_evidence, rest_of,
+                                restart_before, same_cell, samples_on, scroll_shares, scroll_shifts, sequence_links,
+                                shown_again, split_measure, still_links, swept_again, track_join, turned_in_last,
+                                usual_slides, view_pairs)
 from youtabber.observe import unmatched
 from youtabber.parse import Cell
 from youtabber.pipeline import Measure, Notice, edge_notices, join_notices, readings, repeat_notices
@@ -355,6 +356,27 @@ def test_a_jump_whose_drawn_slide_lands_on_another_shift_skips_the_usual_slide()
 
 def test_with_no_usual_slide_a_jump_falls_back_on_the_segment_share():
     assert usual_pick(Move("slide", shifts=[400], drawn=[True], steps=5), usual=None) == (None, "prior", False)
+
+
+def test_a_scrolling_segment_takes_the_tied_shift_nearest_its_lone_shifts():
+    # Repeat signs line up at 498 and 733 alike, and the segment's pairs that line up one way only moved about 718
+    p, o = band_view(0, 1), band_view(1, 3)
+    shifts = [(498, 0.0), (733, 0.0), (591, 0.05)]
+    assert choose_shift(p, o, shifts, 0.9, set(), 10.0, lone=718.0) == (733, "segment_scrolls", False)
+    assert choose_shift(p, o, shifts, 0.9, set(), 10.0) == (498, "segment_scrolls", False)
+
+
+def test_a_shift_lining_up_clearly_worse_is_not_tied_however_near_the_lone_shifts():
+    p, o = band_view(0, 1), band_view(1, 3)
+    shifts = [(591, 0.0), (826, 0.054)]
+    assert choose_shift(p, o, shifts, 0.9, set(), 10.0, lone=800.0) == (591, "segment_scrolls", False)
+
+
+def test_lone_shifts_are_the_median_per_segment_of_pairs_lining_up_one_way_only():
+    obs = [band_view(i, 1) for i in range(5)]
+    obs[4].seg = 1
+    cache = {1: [(718, 0.0)], 2: [(498, 0.0), (733, 0.0)], 3: [(708, 0.01)], 4: [(300, 0.0)]}
+    assert lone_shifts(obs, cache) == {0: 713.0, 1: 300.0}
 
 
 def playhead_pick(o_start: int, usual: float | None, move: Move | None = None,
