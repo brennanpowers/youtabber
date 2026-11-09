@@ -237,6 +237,17 @@ def test_two_systems_of_5_string_tab_are_not_notation_and_tab():
         assert len(systems) == 2 and all(s.notation is None for s in systems), apart
 
 
+def test_notation_close_over_5_string_tab_pairs_with_it():
+    # A 5-line notation staff 5.5 gaps over a 5-line tab staff of the same spacing, with fret digits on the tab
+    top2 = int(60 + 4 * 14 + 5.5 * 14)
+    rows = [(60 + i * 14, 50, 750) for i in range(5)] + [(top2 + i * 14, 50, 750) for i in range(5)]
+    img = lined(rows, top2 + 120)
+    for k, x in enumerate(range(100, 700, 60)):
+        cv2.putText(img, str(k % 10), (x, top2 + (k % 5) * 14 + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, 0, 1)
+    (system,) = systems_in(img)
+    assert round(system.tab.top) == top2 and round(system.notation.top) == 60
+
+
 def test_tab_drawn_with_dashed_lines_is_kept_when_whole_lines_are_asked_for():
     # Dashes 13 px long every 28 px: each line covers under half the staff's width
     img = np.full((360, 800), 255, np.uint8)

@@ -58,6 +58,9 @@ BAR_GAPS = 2.0
 NOTATION_GAPS = 9
 # ...or up to this many when nothing but small marks (H, P, fingerings) lies between them
 NOTATION_FAR_GAPS = 12
+# Two 5-line staffs spaced alike and at least this many tab line gaps apart are two systems of 5-string tab; closer
+# than that, the upper one is the notation staff over a 5-string tab
+TWIN_GAPS = 7
 # A 6-line group above a tab staff with fewer lines is notation plus a row of ledger lines when its line gap is at
 # least LEDGER_GAP_SHARE of the tab's (and under 0.85 of it, as for any notation) and at least LEDGER_CLEAR_GAPS tab
 # line gaps of paper lie between them; strings drawn under a tab staff sit right against it
@@ -403,10 +406,11 @@ def systems_in(gray: np.ndarray, whole_lines: bool = False) -> list[System]:
         above = staffs[i - 1] if i > 0 and i - 1 not in used else None
         # Closer-spaced lines above are notation (a ledger line can add a sixth), unless they outnumber the lines
         # below: then the lower group is strings or frets under a tab staff, not a tab staff. Two 5-line staffs
-        # spaced alike are two systems of 5-string tab, and notation set far above its tab is spaced closer than it.
-        # Six lines spaced from half to 0.85 of the lines below are notation with a row of ledger lines.
+        # spaced alike and at least TWIN_GAPS apart are two systems of 5-string tab, and notation set far above its
+        # tab is spaced closer than it. Six lines spaced from half to 0.85 of the lines below are notation with a row
+        # of ledger lines.
         twin = (above is not None and len(above.lines) == len(s.lines) == 5
-                and abs(above.gap - s.gap) <= 0.1 * s.gap)
+                and abs(above.gap - s.gap) <= 0.1 * s.gap and s.top - above.bottom >= TWIN_GAPS * s.gap)
         if (above is not None and above.polarity == s.polarity and 0 < s.top - above.bottom
                 and (s.top - above.bottom < NOTATION_GAPS * s.gap
                      or s.top - above.bottom < NOTATION_FAR_GAPS * s.gap and above.gap < 0.85 * s.gap
