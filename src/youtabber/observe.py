@@ -63,6 +63,9 @@ SWEEP_HOLE = 2.0
 SWEEP_WIDTH = 0.4
 # Each side of the jump is judged on the median of this many samples, as one sample can land on a stray mark
 SWEEP_SAMPLES = 3
+# A playhead sample caught partway through a jump back lies at least JUMP_PART_GAPS line gaps from the samples on
+# each side of it, which come at most JUMP_PART_SECONDS before and after it
+JUMP_PART_GAPS, JUMP_PART_SECONDS = 3.0, 0.35
 # On dark paper a staff area can show too little ink to measure; the ink is then taken to be at least this share
 # of the way from the paper to white, so a see-through cursor bar a little lighter than the paper isn't ink
 DARK_INK_REACH = 0.6
@@ -715,6 +718,20 @@ def within(rect: tuple[int, int, int, int], bound: tuple[int, int, int, int] | N
     return x0, y0, max(x0 + 1, x1), max(y0 + 1, y1)
 
 
+def without_jump_parts(ph: list[tuple[float, float, float]], gap: float) -> list[tuple[float, float, float]]:
+    """The playhead samples (t, x, y) without those caught partway through a jump back: a lone sample between two
+    others, at least JUMP_PART_GAPS line gaps left of the one before it and right of the one after it. Such a sample
+    splits one jump from the page's end to its start into two shorter ones, neither of which reads as a jump back."""
+    keep = list(ph[:1])
+    for k in range(1, len(ph) - 1):
+        (ta, xa, _), (tb, xb, _), (tc, xc, _) = ph[k - 1], ph[k], ph[k + 1]
+        if (tb - ta <= JUMP_PART_SECONDS and tc - tb <= JUMP_PART_SECONDS
+                and min(xa - xb, xb - xc) >= JUMP_PART_GAPS * gap):
+            continue
+        keep.append(ph[k])
+    return keep + list(ph[-1:]) if len(ph) > 1 else keep
+
+
 def page_swept_again(ph: list[tuple[float, float, float]], gap: float, width: float) -> list[float]:
     """Times in a view's playhead samples (t, x, y) where it jumps from the page's end back to its start after
     sweeping the page, and the page held still while it did: the same page played again, or a page that looks the
@@ -879,7 +896,7 @@ def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: fl
         quarter of its sweep into its left half.
         """
         width = v.rect[2] - v.rect[0]
-        ph = v.playhead
+        ph = without_jump_parts(v.playhead, gap)
         out = []
         since = 0
         for k in range(len(ph) - 2):

@@ -1158,3 +1158,42 @@ def test_colored_digits_flipping_beside_gray_ink_are_compared_on_a_strip(monkeyp
     pages = [strip_page(two, mark=True), strip_page([(400, 16, 24), (550, 16, 24)], mark=True)]
     assert [round(v.t0, 1) for v in strip_views(monkeypatch, pages, strip=False)] == [0.0]
     assert [round(v.t0, 1) for v in strip_views(monkeypatch, pages, strip=True)] == [0.0, 3.0]
+
+
+def mid_jump_sweeps(n: int, sweep: int, mid: int):
+    """A fake `frames`: one page held for n frames, its cursor crossing x 20 to 1220 every `sweep` frames, and the
+    first frame of each later pass showing the cursor at x `mid`, caught partway through its jump back."""
+    swept = held_page(n, sweep, [])
+
+    def frames(path, fps, crop=None, start=0.0, length=None):
+        for i, (t, f) in enumerate(swept(path, fps)):
+            if i and i % sweep == 0:
+                f = PAGE.copy()
+                f[:, mid:mid + 8] = (f[:, mid:mid + 8] * 0.5 + np.array(SONG.cursor) * 0.5).astype(np.uint8)
+            yield t, f
+    return frames
+
+
+def test_a_cursor_caught_partway_through_its_jump_back_still_starts_a_new_view(monkeypatch):
+    monkeypatch.setattr(observe, "frames", mid_jump_sweeps(120, 60, 800))
+    observe.set_paper(PAPER)
+
+    def starts():
+        views = observe.views_in(None, (0, 0, 1280, 270), "dark", 18.0, PAPER, lambda t: STAFFS, 0.0, 20.0)[0]
+        return [(round(v.t0, 2), v.wrapped) for v in views]
+    # The page starts over at the first sample past the one caught mid-jump
+    assert starts() == [(0.0, False), (10.17, True)]
+    monkeypatch.setattr(observe, "JUMP_PART_GAPS", 50.0)
+    assert starts() == [(0.0, False)]
+
+
+def test_only_a_lone_sample_far_from_both_sides_of_a_jump_is_left_out():
+    ph = [(0.0, 1200.0, 100.0), (1 / 6, 800.0, 100.0), (2 / 6, 40.0, 100.0)]
+    assert observe.without_jump_parts(ph, 18.0) == [ph[0], ph[2]]
+    # Under 3 line gaps from the sample before it
+    near = [(0.0, 1200.0, 100.0), (1 / 6, 1160.0, 100.0), (2 / 6, 40.0, 100.0)]
+    assert observe.without_jump_parts(near, 18.0) == near
+    # Half a second after the sample before it
+    late = [(0.0, 1200.0, 100.0), (0.5, 800.0, 100.0), (4 / 6, 40.0, 100.0)]
+    assert observe.without_jump_parts(late, 18.0) == late
+
