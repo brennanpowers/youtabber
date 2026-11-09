@@ -208,6 +208,18 @@ def test_a_still_page_beside_a_still_photo_does_not_glide(monkeypatch):
     assert not glide.glides(None, (0, 0, 800, 130), "dark", paper, 0.0, 30.0, lambda t: [(20, 110)], GAP)
 
 
+def test_the_last_move_is_the_last_step_of_a_pixel_or_more():
+    # The band stops at 2 s, then creeps a quarter pixel a frame until it ends 1.25 px further on
+    crept = Mosaic(np.zeros((10, 1000, 3), np.uint8), 0, np.array([0.0, 100.0, 200.0, 200.25, 200.5, 200.75, 201.0,
+                                                                   201.25]),
+                   np.arange(8.0), 300.0, 50)
+    assert crept.last_move() == 2
+    assert crept.seen_at(300) == (2.5, 350.0)
+    moving = Mosaic(np.zeros((10, 1000, 3), np.uint8), 0, np.array([0.0, 100.0, 200.0, 300.0]), np.arange(4.0),
+                    300.0, 50)
+    assert moving.last_move() == 3
+
+
 def test_a_measure_still_ahead_when_the_band_stops_at_the_end_keeps_the_glide_time():
     m = Mosaic(np.zeros((10, 1000, 3), np.uint8), 0, np.array([0.0, 100.0, 200.0, 300.0]),
                np.array([0.0, 1.0, 2.0, 3.0]), 300.0, 50)

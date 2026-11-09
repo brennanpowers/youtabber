@@ -131,8 +131,10 @@ class Mosaic:
         return out + self.lead
 
     def last_move(self) -> int:
-        """The frame after which the band no longer moves (blank staff past the end, or the video holding still)."""
-        return int(np.argmax(self.offsets >= self.offsets[-1] - 1.0))
+        """The frame after which the band no longer moves (blank staff past the end, or the video holding still):
+        the frame ending its last step of at least a pixel, so sub-pixel creep on a still end screen doesn't count."""
+        moved = np.flatnonzero(np.diff(self.offsets) >= 1.0)
+        return int(moved[-1]) + 1 if len(moved) else 0
 
     def last_speed(self) -> float:
         """Pixels a second the band moved over its last LAST_SPEED_SECONDS of moving. Apps ease the speed within
