@@ -180,6 +180,11 @@ JOINED_COVER = 0.9
 JOINED_MIN_BARS, JOINED_SHARE = 2, 0.6
 # Barlines of the two staffs this close are one column
 JOINED_SLACK_PX = 3
+# A staff under a tab staff with its own barlines drawn apart (a drum or rhythm staff) belongs to the tab's system
+# when it is spaced under STACKED_GAP_SHARE of the tab, starts within STACKED_GAPS tab line gaps below it, and has a
+# barline within JOINED_SLACK_PX of at least STACKED_ALIGN of the tab's barlines. The next system's notation staff
+# can line up just as well, but it starts farther below
+STACKED_GAP_SHARE, STACKED_GAPS, STACKED_ALIGN = 0.85, 5.5, 0.8
 
 # A staff whose bottom line lies within this many line gaps of the plate's bottom edge, with fewer lines than the
 # view's other tab staffs, is cut by that edge
@@ -1077,8 +1082,25 @@ def joined_staffs(out: list, lone: list, struct: np.ndarray) -> tuple[list, list
             del out[k + 1]
             lone = lone[:k + 1] + lone[k + 2:]
             continue
+        if stacked_under(u, l):
+            # The tab's barlines mark the measures; the staff below only widens the printed band
+            out[k] = ParsedSystem(u.system, u.bars, u.y0, l.y1, repeat_end=u.repeat_end, band=(u.band[0], l.band[1]),
+                                  repeat_bars=u.repeat_bars, colored_bars=u.colored_bars, unsure_bars=u.unsure_bars)
+            del out[k + 1]
+            lone = lone[:k + 1] + lone[k + 2:]
+            continue
         k += 1
     return out, lone
+
+
+def stacked_under(u: ParsedSystem, l: ParsedSystem) -> bool:
+    """True when system `l` is a closer-spaced staff just under the tab staff of `u` with a barline at nearly every
+    one of the tab's barline columns: a drum or rhythm staff printed under the tab, one system with it."""
+    ug = u.system.tab.gap
+    cols = [b[0] for b in u.bars]
+    lined_up = sum(any(abs(x - b[0]) <= JOINED_SLACK_PX for b in l.bars) for x in cols)
+    return (len(cols) >= JOINED_MIN_BARS and l.system.tab.gap < STACKED_GAP_SHARE * ug
+            and 0 < l.system.top - u.system.tab.bottom < STACKED_GAPS * ug and lined_up >= STACKED_ALIGN * len(cols))
 
 
 def line_at_edge(g: np.ndarray, y: int, cols: slice) -> bool:

@@ -292,6 +292,27 @@ def test_joined_staffs_keep_both_staffs_unsure_columns():
     assert ps.unsure_bars == {120, 280}
 
 
+def drum_pair(gap: float, bars_below: list) -> list:
+    # A 4-line tab staff (gap 10) and a staff 35 px under it, whose barlines don't run through the space between
+    tab = System(Staff([20.0, 30.0, 40.0, 50.0], 0, 400, 10.0, "dark"), None)
+    drums = System(Staff([85.0 + i * gap for i in range(5)], 0, 400, gap, "dark"), None)
+    bars = [(50, 51), (200, 201), (350, 351)]
+    out, _ = joined_staffs([ParsedSystem(tab, bars, 0, 70, band=(0, 70)),
+                            ParsedSystem(drums, bars_below, 70, 140, band=(70, 140))],
+                           [False, False], np.zeros((140, 400), bool))
+    return out
+
+
+def test_a_closer_spaced_staff_with_the_tab_s_barlines_joins_the_tab_s_system():
+    (ps,) = drum_pair(6.5, [(48, 49), (120, 121), (201, 202), (290, 291), (352, 353)])
+    assert ps.bars == [(50, 51), (200, 201), (350, 351)] and ps.band == (0, 140) and ps.y1 == 140
+
+
+def test_a_staff_below_is_its_own_system_when_its_barlines_stand_elsewhere_or_it_is_spaced_like_the_tab():
+    assert len(drum_pair(6.5, [(48, 49), (120, 121), (290, 291)])) == 2
+    assert len(drum_pair(9.0, [(50, 51), (200, 201), (350, 351)])) == 2
+
+
 def screen(t0: float, t1: float, faint: bool) -> Obs:
     c = Cell(0, 0, 0, 100, 200, "full", np.zeros((10, 10), bool), np.zeros((10, 10), bool), 0)
     c.faint_bar = faint
