@@ -1197,3 +1197,32 @@ def test_only_a_lone_sample_far_from_both_sides_of_a_jump_is_left_out():
     late = [(0.0, 1200.0, 100.0), (0.5, 800.0, 100.0), (4 / 6, 40.0, 100.0)]
     assert observe.without_jump_parts(late, 18.0) == late
 
+
+def wrap_pair(second_plate: np.ndarray, xs: list[float], gap_s: float = 0.0):
+    """Two views of 1280 px wide panels, the second starting `gap_s` after the first ends with playhead samples at
+    `xs`, one every sixth of a second."""
+    p = observe.View(0.0, 5.0, PAGE.copy(), rect=(0, 0, 1280, 270))
+    v = observe.View(5.0 + gap_s, 10.0, second_plate, rect=(0, 0, 1280, 270))
+    v.playhead = [(v.t0 + k / 6, x, 100.0) for k, x in enumerate(xs)]
+    v.times = [t for t, _, _ in v.playhead]
+    return p, v
+
+
+def test_a_view_of_the_same_picture_opening_with_a_jump_back_starts_at_the_jump(monkeypatch):
+    p, v = wrap_pair(PAGE.copy(), [1180, 1220, 60, 90, 120])
+    observe.start_at_wraps([p, v], 18.0)
+    assert (round(v.t0, 2), v.wrapped, len(v.playhead), len(v.times)) == (5.33, True, 3, 3)
+    p, v = wrap_pair(PAGE.copy(), [1180, 1220, 60, 90, 120])
+    monkeypatch.setattr(observe, "WRAP_LEAD_SAMPLES", 1)
+    observe.start_at_wraps([p, v], 18.0)
+    assert (v.t0, v.wrapped) == (5.0, False)
+
+
+def test_a_view_opening_with_a_jump_back_keeps_its_start_after_another_picture_a_break_or_a_late_jump():
+    other = PAGE.copy()
+    other[:, :100] = 0
+    for p, v in (wrap_pair(other, [1180, 1220, 60, 90]), wrap_pair(PAGE.copy(), [1180, 1220, 60, 90], gap_s=0.5),
+                 wrap_pair(PAGE.copy(), [1100, 1150, 1220, 60, 90]), wrap_pair(PAGE.copy(), [1180, 1220, 600, 650])):
+        observe.start_at_wraps([p, v], 18.0)
+        assert not v.wrapped and v.t0 in (5.0, 5.5)
+
