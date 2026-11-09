@@ -356,7 +356,7 @@ def test_a_zero_step_on_evenly_spaced_notes_does_not_stall_the_band(monkeypatch)
     for x in range(1500, 2300, 40):
         cv2.putText(strip, "0", (x + 4, 30 + 5 * GAP + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
     m = mosaic_of(monkeypatch, fake_frames(strip, 120, step=40))
-    assert m.offsets[-1] >= 4700        # the true travel is 4760; holding still at every match loses 120
+    assert m.offsets[-1] >= 4700        # the true travel is 4760, and each zero step loses 40
     assert int((np.diff(m.offsets) < 0.5).sum()) == 1
 
 
