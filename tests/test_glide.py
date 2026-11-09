@@ -334,6 +334,32 @@ def test_a_smoothly_eased_glide_over_bars_of_rest_keeps_its_travel(monkeypatch):
 
 
 
+def test_a_zero_step_on_evenly_spaced_notes_does_not_stall_the_band(monkeypatch):
+    # A panel's width of bars holding a "0" every 40 px and no barline, gliding 40 px a frame: frame to frame it
+    # matches at no shift as well as at the true one
+    strip = sheet(6000)
+    strip[:, 1500:2300] = 255
+    for i in range(6):
+        cv2.line(strip, (1500, 30 + i * GAP), (2299, 30 + i * GAP), (60, 60, 60), 1)
+    for x in range(1500, 2300, 40):
+        cv2.putText(strip, "0", (x + 4, 30 + 5 * GAP + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+    m = mosaic_of(monkeypatch, fake_frames(strip, 120, step=40))
+    assert m.offsets[-1] >= 4700        # the true travel is 4760; holding still at every match loses 120
+    assert int((np.diff(m.offsets) < 0.5).sum()) == 1
+
+
+def test_a_band_that_stops_stays_still_after_its_last_moving_step(monkeypatch):
+    strip = sheet(4000)
+    xs = [min(k, 60) * 40 for k in range(90)]
+
+    def frames(path, fps, crop=None, start=0.0, length=None):
+        for k, x in enumerate(xs):
+            yield start + k / fps, strip[:, x:x + 800].copy()
+    m = mosaic_of(monkeypatch, frames)
+    assert abs(m.offsets[-1] - 2400) <= 2
+    assert m.last_move() == 60
+
+
 def test_staff_lines_are_thin_dark_rows_and_a_redraw_shares_few_of_them():
     plate = np.full((60, 400), 250, np.uint8)
     plate[[10, 24, 38]] = 120

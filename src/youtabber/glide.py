@@ -274,6 +274,7 @@ def build(path: Path, crop: tuple[int, int, int, int], rows: tuple[int, int], st
     slit = None
     last_int = 0
     last_step = 0.0
+    moving_step = 0.0            # the last step of at least MIN_SHIFT_PX
     lone = None                  # the step one pair of lines gave in the frame before, while the band was still
     fixed = fixed_columns(path, crop, staff_rows, polarity, thr, t0, t1)
     ref_lines = None
@@ -356,7 +357,10 @@ def build(path: Path, crop: tuple[int, int, int, int], rows: tuple[int, int], st
             if crossed is not None:
                 last_step = crossed[1]
             elif steps:
-                last_step = min(steps, key=lambda d: abs(d - last_step))
+                # Evenly spaced notes can match at no shift while the band moves, so after a zero step the step
+                # nearest the last moving one is taken
+                near = last_step if last_step >= MIN_SHIFT_PX else moving_step
+                last_step = min(steps, key=lambda d: abs(d - near))
                 # A step far off the recent speed may have dropped or doubled columns, unless both phase
                 # correlations agree on it; a run of such steps is marked once. A frame shown twice (a dropped
                 # frame in the video) truly doesn't move
@@ -368,6 +372,8 @@ def build(path: Path, crop: tuple[int, int, int, int], rows: tuple[int, int], st
                 if off and not was_off:
                     doubtful.append(k)
             recent = (recent + [last_step])[-SPEED_FRAMES:]
+            if last_step >= MIN_SHIFT_PX:
+                moving_step = last_step
             # No clear match (a bar of rests, a fade): the band keeps the speed it had
             step = last_step
             offset += step
