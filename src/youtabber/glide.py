@@ -77,6 +77,9 @@ MIN_SHIFT_PX = 0.5
 MOVING_PAIRS, MOVING_WINDOWS = 2 / 3, 0.5
 # A pixel inked in this share of a window's frames is fixed to the screen
 STILL_SHARE = 0.8
+# A pixel whose content (0-1) varies by less than this standard deviation through a window is fixed to the screen
+# too: a still photo beside the tab is mid-gray, never fully inked
+STEADY_STD = 0.05
 
 
 @dataclass
@@ -128,8 +131,10 @@ class Mosaic:
         return out + self.lead
 
     def last_move(self) -> int:
-        """The frame after which the band no longer moves (blank staff past the end, or the video holding still)."""
-        return int(np.argmax(self.offsets >= self.offsets[-1] - 1.0))
+        """The frame after which the band no longer moves (blank staff past the end, or the video holding still):
+        the frame ending its last step of at least a pixel, so sub-pixel creep on a still end screen doesn't count."""
+        moved = np.flatnonzero(np.diff(self.offsets) >= 1.0)
+        return int(moved[-1]) + 1 if len(moved) else 0
 
     def last_speed(self) -> float:
         """Pixels a second the band moved over its last LAST_SPEED_SECONDS of moving. Apps ease the speed within
@@ -188,9 +193,10 @@ def glides(path: Path, crop: tuple[int, int, int, int], polarity: str, paper: np
                 content[colored(band)] = 0
                 content[staff_lines(g, thr, gap)] = 0
                 contents.append(content)
-            # Ink in the same place in most of the window's frames is fixed to the screen (an uncolored playhead
-            # line, a clef) and would match at no shift
-            still = (np.stack(contents) > 0.5).mean(axis=0) >= STILL_SHARE
+            # Ink in the same place in most of the window's frames (an uncolored playhead line, a clef), and content
+            # that barely changes (a still photo), is fixed to the screen and would match at no shift
+            stack = np.stack(contents)
+            still = ((stack > 0.5).mean(axis=0) >= STILL_SHARE) | (stack.std(axis=0) < STEADY_STD)
             pairs = 0
             for prev, content in zip(contents, contents[1:]):
                 (dx, _), resp = cv2.phaseCorrelate(np.where(still, 0, prev).astype(np.float32),
@@ -270,6 +276,7 @@ def build(path: Path, crop: tuple[int, int, int, int], rows: tuple[int, int], st
     slit = None
     last_int = 0
     last_step = 0.0
+    moving_step = 0.0            # the last step of at least MIN_SHIFT_PX
     lone = None                  # the step one pair of lines gave in the frame before, while the band was still
     fixed = fixed_columns(path, crop, staff_rows, polarity, thr, t0, t1)
     ref_lines = None
@@ -352,7 +359,10 @@ def build(path: Path, crop: tuple[int, int, int, int], rows: tuple[int, int], st
             if crossed is not None:
                 last_step = crossed[1]
             elif steps:
-                last_step = min(steps, key=lambda d: abs(d - last_step))
+                # Evenly spaced notes can match at no shift while the band moves, so after a zero step the step
+                # nearest the last moving one is taken
+                near = last_step if last_step >= MIN_SHIFT_PX else moving_step
+                last_step = min(steps, key=lambda d: abs(d - near))
                 # A step far off the recent speed may have dropped or doubled columns, unless both phase
                 # correlations agree on it; a run of such steps is marked once. A frame shown twice (a dropped
                 # frame in the video) truly doesn't move
@@ -364,6 +374,8 @@ def build(path: Path, crop: tuple[int, int, int, int], rows: tuple[int, int], st
                 if off and not was_off:
                     doubtful.append(k)
             recent = (recent + [last_step])[-SPEED_FRAMES:]
+            if last_step >= MIN_SHIFT_PX:
+                moving_step = last_step
             # No clear match (a bar of rests, a fade): the band keeps the speed it had
             step = last_step
             offset += step

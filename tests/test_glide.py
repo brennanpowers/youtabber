@@ -177,7 +177,47 @@ def test_a_glide_behind_ink_fixed_to_the_screen_still_glides(monkeypatch):
     paper = np.array([255.0, 255.0, 255.0])
     assert glide.glides(None, (0, 0, 800, 130), "dark", paper, 0.0, 30.0, lambda t: [(20, 110)], GAP)
     monkeypatch.setattr(glide, "STILL_SHARE", 2.0)
+    monkeypatch.setattr(glide, "STEADY_STD", 0.0)
     assert not glide.glides(None, (0, 0, 800, 130), "dark", paper, 0.0, 30.0, lambda t: [(20, 110)], GAP)
+
+
+def photo_frames(moving):
+    """frames() of `moving` with a still patterned mid-gray picture over its left 400 columns."""
+    xs, ys = np.arange(400), np.arange(130)
+    photo = np.clip(160 + 40 * np.sin(xs / 23.0)[None, :] * np.cos(ys / 17.0)[:, None], 0, 255).astype(np.uint8)
+
+    def frames(path, fps, crop=None, start=0.0, length=None):
+        for t, f in moving(path, fps, crop, start, length):
+            f[:, :400] = photo[:, :, None]
+            yield t, f
+    return frames
+
+
+def test_bars_of_rest_gliding_beside_a_still_photo_glide(monkeypatch):
+    monkeypatch.setattr(glide, "frames", photo_frames(fake_frames(sheet(4000, notes_from=10**6), glide.MOTION_FRAMES)))
+    paper = np.array([255.0, 255.0, 255.0])
+    assert glide.glides(None, (0, 0, 800, 130), "dark", paper, 0.0, 30.0, lambda t: [(20, 110)], GAP)
+    monkeypatch.setattr(glide, "STEADY_STD", 0.0)
+    assert not glide.glides(None, (0, 0, 800, 130), "dark", paper, 0.0, 30.0, lambda t: [(20, 110)], GAP)
+
+
+def test_a_still_page_beside_a_still_photo_does_not_glide(monkeypatch):
+    still = fake_frames(sheet(4000), glide.MOTION_FRAMES, step=0)
+    monkeypatch.setattr(glide, "frames", photo_frames(still))
+    paper = np.array([255.0, 255.0, 255.0])
+    assert not glide.glides(None, (0, 0, 800, 130), "dark", paper, 0.0, 30.0, lambda t: [(20, 110)], GAP)
+
+
+def test_the_last_move_is_the_last_step_of_a_pixel_or_more():
+    # The band stops at 2 s, then creeps a quarter pixel a frame until it ends 1.25 px further on
+    crept = Mosaic(np.zeros((10, 1000, 3), np.uint8), 0, np.array([0.0, 100.0, 200.0, 200.25, 200.5, 200.75, 201.0,
+                                                                   201.25]),
+                   np.arange(8.0), 300.0, 50)
+    assert crept.last_move() == 2
+    assert crept.seen_at(300) == (2.5, 350.0)
+    moving = Mosaic(np.zeros((10, 1000, 3), np.uint8), 0, np.array([0.0, 100.0, 200.0, 300.0]), np.arange(4.0),
+                    300.0, 50)
+    assert moving.last_move() == 3
 
 
 def test_a_measure_still_ahead_when_the_band_stops_at_the_end_keeps_the_glide_time():
@@ -304,6 +344,32 @@ def test_a_smoothly_eased_glide_over_bars_of_rest_keeps_its_travel(monkeypatch):
     assert xs[-1] == 2346
     assert abs(m.offsets[-1] - 2346) <= 5
 
+
+
+def test_a_zero_step_on_evenly_spaced_notes_does_not_stall_the_band(monkeypatch):
+    # A panel's width of bars holding a "0" every 40 px and no barline, gliding 40 px a frame: frame to frame it
+    # matches at no shift as well as at the true one
+    strip = sheet(6000)
+    strip[:, 1500:2300] = 255
+    for i in range(6):
+        cv2.line(strip, (1500, 30 + i * GAP), (2299, 30 + i * GAP), (60, 60, 60), 1)
+    for x in range(1500, 2300, 40):
+        cv2.putText(strip, "0", (x + 4, 30 + 5 * GAP + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+    m = mosaic_of(monkeypatch, fake_frames(strip, 120, step=40))
+    assert m.offsets[-1] >= 4700        # the true travel is 4760, and each zero step loses 40
+    assert int((np.diff(m.offsets) < 0.5).sum()) == 1
+
+
+def test_a_band_that_stops_stays_still_after_its_last_moving_step(monkeypatch):
+    strip = sheet(4000)
+    xs = [min(k, 60) * 40 for k in range(90)]
+
+    def frames(path, fps, crop=None, start=0.0, length=None):
+        for k, x in enumerate(xs):
+            yield start + k / fps, strip[:, x:x + 800].copy()
+    m = mosaic_of(monkeypatch, frames)
+    assert abs(m.offsets[-1] - 2400) <= 2
+    assert m.last_move() == 60
 
 
 def test_staff_lines_are_thin_dark_rows_and_a_redraw_shares_few_of_them():
