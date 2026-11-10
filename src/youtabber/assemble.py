@@ -52,6 +52,9 @@ LONE_SHIFT_SHARE = 0.5
 # Shifts lining up within this much mismatch of the best one are taken as tied: look-alike measures, such as
 # one-bar repeat signs, line up about as well at several measure lengths
 TIED_SHIFT_MISMATCH = 0.02
+# A pick further than LONE_FAR of the segment's lone shift from it gives way to a shift within LONE_NEAR of the lone
+# shift whose mismatch is at most LONE_MISMATCH over the best one's
+LONE_FAR, LONE_NEAR, LONE_MISMATCH = 0.5, 0.1, 0.07
 # The width check allows this many line gaps of difference for a system's first measure, whose box starts at the
 # staff's start, and for a measure with a barline within KEEP_EDGE_GAPS of the columns both views show, where the
 # panel's edge may stand in for it
@@ -98,6 +101,8 @@ HELD_GAP_SECONDS = 5.0
 # Two views of a band that didn't move show the same music when at most this share of their marks finds no partner;
 # what is left is cursor residue
 STILL_MISMATCH = 0.2
+# Two views' barlines line up when they lie this many pixels apart or fewer
+BARLINE_MATCH_PX = 6
 # A held page the playhead started over, with at most this share of marks unmatched, is the same page played again;
 # a looser match can be a new page drawn on the same grid
 SAME_PAGE_MISMATCH = 0.1
@@ -603,7 +608,8 @@ def pick_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float, 
     when it allows several, by the one a slide measured here points at, or else the one nearest `usual`. With no
     `usual`, the best-lining-up shift stands whenever the playhead allows it. Where the best-lining-up shift would
     stand, the allowed shift nearest `lone` is taken among those tied with it (`TIED_SHIFT_MISMATCH`); `lone` is the
-    segment's median shift between views that line up under one shift only. `confirmed` says the playhead
+    segment's median shift between views that line up under one shift only; a pick far from `lone` gives way to an
+    allowed shift close to it that lines up nearly as well (`LONE_FAR`). `confirmed` says the playhead
     confirmed the slides `usual` was learned from; slides drawn in several steps can be measured a riff's length
     short, so then a drawn slide agreeing with it doesn't settle the pick. `beat` is the time the playhead
     spends on a measure.
@@ -667,8 +673,16 @@ def pick_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float, 
             return pick, "playhead", False
         pick = shifts[0][0]
         if lone is not None:
-            tied = [dx for dx, s in shifts if s <= shifts[0][1] + TIED_SHIFT_MISMATCH and (not fits or dx in fits)]
+            allowed = [(dx, s) for dx, s in shifts if not fits or dx in fits]
+            tied = [dx for dx, s in allowed if s <= shifts[0][1] + TIED_SHIFT_MISMATCH]
             pick = min(tied, key=lambda dx: abs(dx - lone))
+            if abs(pick - lone) > LONE_FAR * abs(lone):
+                # A riff that repeats lines up a period short too; when the pick is that far off the segment's lone
+                # shift, a shift near it that lines up almost as well is taken
+                near = [dx for dx, s in allowed
+                        if abs(dx - lone) <= LONE_NEAR * abs(lone) and s <= shifts[0][1] + LONE_MISMATCH]
+                if near:
+                    pick = min(near, key=lambda dx: abs(dx - lone))
         return pick, "segment_scrolls", len(shifts) == 1
     return None, "prior", False
 
@@ -1091,9 +1105,12 @@ def track_join(p: Obs, o: Obs, gap: float, cands=()) -> tuple[dict[int, int], st
     if m.kind == "slide" and abs(min(m.shifts, key=lambda d: abs(d + sum(m.moves)))) >= gap:
         return slide_join(p, o, gap, cands) if p.single and o.single else None
     r = register(p, o, 0, gap, 2)
-    if r is None or r[1] > STILL_MISMATCH:
-        return None
     restart = playhead_restarts(p, o, gap)
+    # An overlay drawn over a held page makes the plates differ; a band held still under a playhead that carries on,
+    # with every barline where it was, still shows the same page
+    held = m.kind == "still" and restart is False and not o.wrapped and same_barlines(p, o)
+    if (r is None or r[1] > STILL_MISMATCH) and not held:
+        return None
     # A view is cut where the playhead seemed to jump back; when its samples on the music carry on, it didn't
     if o.wrapped and restart is not False:
         return None
@@ -1109,6 +1126,13 @@ def track_join(p: Obs, o: Obs, gap: float, cands=()) -> tuple[dict[int, int], st
         links = {i: j + d for i, j in links.items() if 0 <= j + d < len(p.cells)}
         basis += f" {d:+d}"
     return links, basis
+
+
+def same_barlines(p: Obs, o: Obs) -> bool:
+    """Whether two views hold as many cells, each starting and ending within `BARLINE_MATCH_PX` of the other's."""
+    return (bool(p.cells) and len(p.cells) == len(o.cells)
+            and all(abs(a.x0 - b.x0) <= BARLINE_MATCH_PX and abs(a.x1 - b.x1) <= BARLINE_MATCH_PX
+                    for a, b in zip(p.cells, o.cells)))
 
 
 def slide_join(p: Obs, o: Obs, gap: float, cands) -> tuple[dict[int, int], str] | None:

@@ -121,6 +121,31 @@ def test_a_held_page_whose_playhead_starts_over_is_not_joined():
     assert o.restarted is True
 
 
+def overlaid(p_end: int | None = 300, o_start: int | None = 320):
+    """A held page whose second view has a banner drawn over the top half of its band."""
+    p, o = held(p_end=p_end, o_start=o_start)
+    o.band = o.band.copy()
+    o.band[:30] = True
+    o.tall = o.band
+    return p, o
+
+
+def test_a_held_page_under_an_overlay_joins_in_place_when_the_playhead_carries_on_and_the_barlines_match():
+    p, o = overlaid()
+    assert register(p, o, 0, 10.0, 2)[1] > 0.2
+    assert track_join(p, o, 10.0) == ({0: 0, 1: 1, 2: 2, 3: 3}, "still")
+
+
+def test_a_held_page_under_an_overlay_is_not_joined_when_a_barline_moved_or_the_playhead_is_unseen():
+    p, o = overlaid()
+    o.cells[2] = replace(o.cells[2], x0=o.cells[2].x0 + 7)
+    assert track_join(p, o, 10.0) is None
+    p, o = overlaid(p_end=None, o_start=None)
+    assert track_join(p, o, 10.0) is None
+    p, o = overlaid(p_end=700, o_start=20)
+    assert track_join(p, o, 10.0) is None
+
+
 def test_a_still_band_showing_other_music_is_not_joined():
     p, o = held(first=5)
     assert track_join(p, o, 10.0) is None
@@ -370,6 +395,23 @@ def test_a_shift_lining_up_clearly_worse_is_not_tied_however_near_the_lone_shift
     p, o = band_view(0, 1), band_view(1, 3)
     shifts = [(591, 0.0), (826, 0.054)]
     assert choose_shift(p, o, shifts, 0.9, set(), 10.0, lone=800.0) == (591, "segment_scrolls", False)
+
+
+def test_a_pick_far_from_the_lone_shifts_gives_way_to_a_shift_near_them_lining_up_nearly_as_well():
+    # A two-bar riff lines up 575 px short; the shift near the segment's lone shifts lines up 0.06 worse
+    p, o = band_view(0, 1), band_view(1, 3)
+    shifts = [(126, 0.1197), (701, 0.1797)]
+    assert choose_shift(p, o, shifts, 0.9, set(), 10.0, lone=688.0) == (701, "segment_scrolls", False)
+
+
+def test_a_pick_far_from_the_lone_shifts_stands_when_no_shift_near_them_lines_up_nearly_as_well():
+    p, o = band_view(0, 1), band_view(1, 3)
+    # 701 lines up 0.08 worse than the best
+    assert choose_shift(p, o, [(126, 0.10), (701, 0.18)], 0.9, set(), 10.0, lone=688.0) == (126, "segment_scrolls",
+                                                                                              False)
+    # 780 lies 92 px from the lone shifts, more than a tenth of them
+    assert choose_shift(p, o, [(126, 0.12), (780, 0.16)], 0.9, set(), 10.0, lone=688.0) == (126, "segment_scrolls",
+                                                                                              False)
 
 
 def test_lone_shifts_are_the_median_per_segment_of_pairs_lining_up_one_way_only():
