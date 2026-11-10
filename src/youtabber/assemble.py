@@ -52,8 +52,8 @@ LONE_SHIFT_SHARE = 0.5
 # Shifts lining up within this much mismatch of the best one are taken as tied: look-alike measures, such as
 # one-bar repeat signs, line up about as well at several measure lengths
 TIED_SHIFT_MISMATCH = 0.02
-# A pick further than LONE_FAR of the segment's lone shift from it gives way to a shift within LONE_NEAR of the lone
-# shift whose mismatch is at most LONE_MISMATCH over the best one's
+# A pick that differs from the segment's lone shift by more than LONE_FAR times that shift gives way to a shift
+# within LONE_NEAR times it whose mismatch is at most LONE_MISMATCH over the best one's
 LONE_FAR, LONE_NEAR, LONE_MISMATCH = 0.5, 0.1, 0.07
 # The width check allows this many line gaps of difference for a system's first measure, whose box starts at the
 # staff's start, and for a measure with a barline within KEEP_EDGE_GAPS of the columns both views show, where the
