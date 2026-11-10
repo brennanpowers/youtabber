@@ -70,6 +70,12 @@ JUMP_PART_GAPS, JUMP_PART_SECONDS = 3.0, 0.35
 # jump back from the right quarter of the panel to its left quarter within this many samples of the view's start
 # starts the page over
 WRAP_LEAD_SAMPLES = 2
+# Later in such a view the jump back still starts the page over while every sample before it carries the other's
+# sweep on: the jump comes within LEAD_WRAP_SECONDS of the view's start, from the right quarter of the other view's
+# playhead range to its left quarter, over at most LEAD_WRAP_HOLE seconds. The first sample carries the sweep on when
+# it comes within CARRY_SECONDS of the other's last sample and at most a line gap left of it; each later one when it
+# moves right by up to WRAP_GAPS line gaps. The other view needs LEAD_WRAP_SAMPLES samples to give a range
+LEAD_WRAP_SECONDS, LEAD_WRAP_HOLE, CARRY_SECONDS, LEAD_WRAP_SAMPLES = 2.0, 1.0, 0.5, 6
 # Two plates show the same picture when at most SAME_PLATE_SHARE of the panel differs by more than SAME_PLATE_DIFF
 # gray levels
 SAME_PLATE_SHARE, SAME_PLATE_DIFF = 0.02, 40
@@ -785,23 +791,59 @@ def same_plate(a: View, b: View) -> bool:
     return pa.size > 0 and pa.shape == pb.shape and (cv2.absdiff(pa, pb) > SAME_PLATE_DIFF).mean() <= SAME_PLATE_SHARE
 
 
+def panel_wrap(v: View, gap: float) -> float | None:
+    """The time of a playhead jump back from the right quarter of v's panel to its left quarter in v's first
+    WRAP_LEAD_SAMPLES samples, or None."""
+    ph = v.playhead
+    x0, width = v.rect[0], v.rect[2] - v.rect[0]
+    for (ta, xa, ya), (tb, xb, yb) in zip(ph[:WRAP_LEAD_SAMPLES], ph[1:WRAP_LEAD_SAMPLES + 1]):
+        if tb - v.t0 > WRAP_LEAD_SAMPLES / OBS_FPS + 0.01:
+            break
+        if xa >= x0 + 0.75 * width and xb <= x0 + 0.25 * width and yb < ya + 2 * gap:
+            return tb
+    return None
+
+
+def carried_wrap(p: View, v: View, gap: float) -> float | None:
+    """The time of a playhead jump back early in v from the right quarter of p's playhead range to its left quarter,
+    or None. Past v's first WRAP_LEAD_SAMPLES samples the jump counts only while v's samples before it carry p's
+    sweep on. The panel can be wider than the page the playhead sweeps, as when it holds a strip showing the next
+    page, so the range is taken from the playhead."""
+    ph = v.playhead
+    xs = [x for _, x, _ in p.playhead]
+    if len(xs) < LEAD_WRAP_SAMPLES or max(xs) - min(xs) < WRAP_GAPS * gap:
+        return None
+    lo, hi = min(xs), max(xs)
+    span = hi - lo
+    t_last, x_last, _ = p.playhead[-1]
+    carry = ph[0][0] - t_last <= CARRY_SECONDS and ph[0][1] >= x_last - gap
+    for k, ((ta, xa, ya), (tb, xb, yb)) in enumerate(zip(ph, ph[1:])):
+        if tb - v.t0 > LEAD_WRAP_SECONDS:
+            break
+        jump = xa >= hi - 0.25 * span and xb <= lo + 0.25 * span and yb < ya + 2 * gap and tb - ta <= LEAD_WRAP_HOLE
+        if jump and (k < WRAP_LEAD_SAMPLES or carry):
+            return tb
+        # A playhead standing still or stepping left, even by a pixel, isn't sweeping on
+        if not 0 < xb - xa <= WRAP_GAPS * gap:
+            carry = False
+    return None
+
+
 def start_at_wraps(views: list[View], gap: float) -> None:
-    """Start a view at a playhead jump back in its first WRAP_LEAD_SAMPLES samples, and mark it wrapped, when it
-    follows a view of the same picture without a break. The jump is too early in the view for `wraps` to count it,
-    and the samples before it finish the sweep of the view before."""
+    """Start a view at a playhead jump back early in it, and mark it wrapped, when it follows a view of the same
+    picture without a break. The jump is too early in the view for `wraps` to count it, and the samples before it
+    finish the sweep of the view before (see `panel_wrap` and `carried_wrap`)."""
     for p, v in zip(views, views[1:]):
         ph = v.playhead
         if abs(v.t0 - p.t1) > 0.01 or len(ph) <= WRAP_LEAD_SAMPLES or not same_plate(p, v):
             continue
-        x0, width = v.rect[0], v.rect[2] - v.rect[0]
-        for (ta, xa, ya), (tb, xb, yb) in zip(ph[:WRAP_LEAD_SAMPLES], ph[1:WRAP_LEAD_SAMPLES + 1]):
-            if tb - v.t0 > WRAP_LEAD_SAMPLES / OBS_FPS + 0.01:
-                break
-            if xa >= x0 + 0.75 * width and xb <= x0 + 0.25 * width and yb < ya + 2 * gap:
-                v.playhead = [q for q in ph if q[0] >= tb]
-                v.times = [t for t in v.times if t >= tb]
-                v.t0, v.wrapped = tb, True
-                break
+        tb = panel_wrap(v, gap)
+        if tb is None and not v.wrapped:
+            tb = carried_wrap(p, v, gap)
+        if tb is not None:
+            v.playhead = [q for q in ph if q[0] >= tb]
+            v.times = [t for t in v.times if t >= tb]
+            v.t0, v.wrapped = tb, True
 
 
 def views_in(path: Path, crop: tuple[int, int, int, int], polarity: str, gap: float, paper: np.ndarray,
