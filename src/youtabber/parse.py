@@ -500,14 +500,20 @@ def thin_closing(gray: np.ndarray, st, bar: tuple[int, int], fthr: float) -> boo
     return all(part.size == 0 or part.mean() < EDGE_OUTSIDE_INK for part in (above, below))
 
 
-def staff_extent(struct: np.ndarray, lines: list[float], x0: int, x1: int, gap: float) -> tuple[int, int]:
-    """Exact left and right ends of a staff: walk outward while most lines still have ink in the column,
-    stepping over gaps up to one line gap wide (digits sit on the lines)."""
+# A glide mosaic joins frames whose staff can sit a few pixels higher or lower, so its lines are looked for within
+# this share of a line gap of their rows
+MOSAIC_DRIFT_GAPS = 0.1
+
+
+def staff_extent(struct: np.ndarray, lines: list[float], x0: int, x1: int, gap: float,
+                 reach: int = 1) -> tuple[int, int]:
+    """Exact left and right ends of a staff: walk outward while most lines still have ink in the column within
+    `reach` rows of their own, stepping over gaps up to one line gap wide (digits sit on the lines)."""
     h, w = struct.shape
     rows = [int(round(y)) for y in lines]
 
     def present(x: int) -> bool:
-        hits = sum(struct[max(0, r - 1):r + 2, x].any() for r in rows)
+        hits = sum(struct[max(0, r - reach):r + reach + 1, x].any() for r in rows)
         return hits >= 0.6 * len(rows)
 
     def walk(x: int, step: int) -> int:
@@ -1176,7 +1182,9 @@ def parse_view(vi: int, plate: np.ndarray, rect: tuple[int, int, int, int], pola
             mid = int((syss[si - 1].tab.bottom + s.top) / 2)
             y0 = max(y0, mid)
             prev.y1 = min(prev.y1, mid)
-        st.x0, st.x1 = staff_extent(faint_struct, st.lines, max(st.x0, rx0), min(st.x1, rx1), st.gap)
+        # Only glide mosaics are read with hidden bars
+        reach = max(1, int(round(MOSAIC_DRIFT_GAPS * st.gap))) if hidden_bars else 1
+        st.x0, st.x1 = staff_extent(faint_struct, st.lines, max(st.x0, rx0), min(st.x1, rx1), st.gap, reach)
         notation = (s.notation.lines[1], s.notation.lines[-2]) if s.notation else None
         bars = barlines(sub, thr, fthr, st.top, st.bottom, st.gap, max(rx0, st.x0 - 2), min(rx1, st.x1 + 3), notation,
                         hidden_bars, plate)
