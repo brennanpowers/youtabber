@@ -1451,8 +1451,40 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
     Where numbers fold a stretch of views onto earlier measures and at least OTHER_PART_MEASURES of them, and most of
     those compared, hold other music, the stretch is another part or section numbered the same way: the views are
     placed again with its first view starting a numbering of its own, so its measures print as new and the earlier
-    ones are kept."""
+    ones are kept.
+
+    A brief last view in a video whose measures are numbered, that reads no number and places only measures no
+    earlier view showed, is a page fading out over the footage read as stray cells: its cells are dropped and the
+    views placed again."""
     numbers = [[c.number for c in o.cells] for o in obs]
+    A = place_parts(obs, gap, fold_unresolved, use, words_of, numbers)
+    o = faded_end(obs, A, numbers)
+    if o is None:
+        return A
+    o.cells = []
+    for v, ns in zip(obs, numbers):
+        for c, n in zip(v.cells, ns):
+            c.number = n
+    return place_parts(obs, gap, fold_unresolved, use, words_of, numbers)
+
+
+def faded_end(obs: list[Obs], A: Assembly, numbers: list) -> Obs | None:
+    """The last view with cells, when `assemble` should drop them: it is brief, reads no number in a video where
+    other views do (`numbers` holds each view's numbers as read), and none of its slots is one an earlier view
+    placed."""
+    shown = [(o, ns) for o, ns in zip(obs, numbers) if o.cells]
+    if not shown or not any(n is not None for _, ns in shown for n in ns):
+        return None
+    o, ns = shown[-1]
+    earlier = {s for v, _ in shown[:-1] for s in A.view_slots.get(v.index, []) if s is not None}
+    slots = A.view_slots.get(o.index, [])
+    if o.brief and all(n is None for n in ns) and slots and not earlier & set(slots):
+        return o
+    return None
+
+
+def place_parts(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], words_of, numbers: list) -> Assembly:
+    """`assemble`'s placing, repeated while it finds stretches numbered as another part."""
     pairs = view_pairs(obs, gap)
     others: set = set()
     while True:
