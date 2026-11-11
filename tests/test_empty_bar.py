@@ -109,9 +109,9 @@ def test_a_clef_cell_of_a_system_cut_by_the_panel_top_is_not_an_empty_bar():
 
 
 def tail(inked: int) -> Cell:
-    """A 300 px cell past the system's last barline holding `inked` pixels of ink."""
+    """A 300 px cell past the system's last barline holding `inked` pixels of ink, from row 70 on its tab staff."""
     ink = np.zeros((120, 316), bool)
-    ink.flat[:inked] = True
+    ink.flat[70 * 316:70 * 316 + inked] = True
     return Cell(0, 0, 5, 100, 400, "tail", ink, np.zeros_like(ink), 0, gap=GAP, ref_y=60, mid_y=85.0, top_y=15)
 
 
@@ -182,3 +182,72 @@ def test_a_narrow_glided_bar_played_briefly_or_seeded_from_the_first_frame_is_dr
     assert kept_cells(cells, typical=300, mosaic=mosaic) == [cells[0], cells[1], cells[3]]
     cells, mosaic = glided_bars(700, 1.5)
     assert kept_cells(cells, typical=300, mosaic=mosaic) == [cells[0], cells[1], cells[3]]
+
+
+def test_ink_over_two_line_gaps_above_a_blank_tail_s_top_staff_does_not_count():
+    # A tab staff alone, its top line at row 60 and the gap 10 px: rows above 40 hold a photo over the panel
+    photo = tail(0)
+    photo.top_y = 60
+    photo.ink[0:30, 50:200] = True
+    assert kept_cells([photo], typical=300) == []
+    # A measure number sits within two gaps of the top line
+    number = tail(0)
+    number.top_y = 60
+    number.ink[42:56, 50:60] = True
+    assert kept_cells([number], typical=300) == [number]
+    # Over a notation staff whose top line is row 15, notes on it count
+    notes = tail(0)
+    notes.ink[18:30, 50:60] = True
+    assert kept_cells([notes], typical=300) == [notes]
+
+
+def played_row(widths: list[int], counts: list[int]) -> tuple[list[Cell], list]:
+    """Whole cells side by side with fret digits, from x 100 on, each with `counts` playhead samples in its middle."""
+    cells, playhead, x = [], [], 100
+    for w, n in zip(widths, counts):
+        c = cell(w, marks=True)
+        c.x0, c.x1 = x, x + w
+        cells.append(c)
+        playhead += [(0.1 * k, x + w // 2, 85) for k in range(n)]
+        x += w
+    return in_system(cells), playhead
+
+
+def test_a_narrow_bar_the_playhead_stays_on_as_long_as_on_the_others_is_kept():
+    # 45 px is under a quarter of 300 and under five gaps; 12 samples against a median of 12
+    cells, playhead = played_row([300, 45, 300, 300], [12, 12, 13, 11])
+    assert kept_cells(cells, typical=300, playhead=playhead) == cells
+    # 9 and 15 samples lie within 0.75 and 1.33 of the median
+    cells, playhead = played_row([300, 45, 300, 300, 300], [12, 9, 12, 12, 12])
+    assert len(kept_cells(cells, typical=300, playhead=playhead)) == 5
+    cells, playhead = played_row([300, 45, 300, 300, 300], [12, 15, 12, 12, 12])
+    assert len(kept_cells(cells, typical=300, playhead=playhead)) == 5
+
+
+def test_a_narrow_bar_the_playhead_passes_quickly_or_rests_on_far_longer_is_dropped():
+    cells, playhead = played_row([300, 45, 300, 300, 300], [12, 8, 12, 12, 12])
+    assert kept_cells(cells, typical=300, playhead=playhead) == [cells[0]] + cells[2:]
+    cells, playhead = played_row([300, 45, 300, 300, 300], [12, 16, 12, 12, 12])
+    assert kept_cells(cells, typical=300, playhead=playhead) == [cells[0]] + cells[2:]
+    # A median under 4 samples is too few to judge, and a glided cell is judged by its glide
+    cells, playhead = played_row([300, 45, 300], [3, 3, 3])
+    assert kept_cells(cells, typical=300, playhead=playhead) == [cells[0], cells[2]]
+    cells, playhead = played_row([300, 45, 300], [12, 12, 12])
+    cells[1].glided = True
+    assert kept_cells(cells, typical=300, playhead=playhead) == [cells[0], cells[2]]
+
+
+def test_a_piece_of_staff_line_left_in_a_rest_bar_does_not_break_its_rest_run():
+    # One row of a staff line, 18 px of it past the barline, is 0.18 square gaps of tab ink, over EMPTY_BAR_INK, but
+    # lies on a line
+    residue = cell(30, marks=False)
+    residue.ink[70, 20:40] = True
+    run = in_system([cell(30, marks=False), cell(32, marks=False), residue])
+    assert not empty_bar(residue, min_gaps=0.0)
+    assert all(rest_run(run, i) for i in range(3))
+    # Standing alone, it still needs all its tab ink under the limit
+    assert not empty_bar(residue)
+    # A fret digit off the lines breaks the run
+    digit = cell(30, marks=False)
+    digit.ink[73:79, 24:30] = True
+    assert not rest_run(in_system([cell(30, marks=False), cell(32, marks=False), digit]), 2)

@@ -22,7 +22,7 @@ from youtabber.check import (DUP_RESEMBLE, dwell, empty_stretches, fmt, glide_fa
 from youtabber.match import resemble, resemble_scaled
 from youtabber.observe import (ABOVE_GAPS, BELOW_GAPS, OBS_FPS, PRINT_ABOVE_GAPS, ink_map, ink_threshold, panel_rect,
                                set_paper, to_gray, views_in)
-from youtabber.parse import Cell, bare_header, line_darkness, numbers_printed, parse_view, staff_ink
+from youtabber.parse import Cell, bare_header, line_darkness, numbers_printed, parse_view, staff_ink, tab_marks
 from youtabber.panel import panel_bounds
 from youtabber.parts import Part, find_parts, merge_order, stream_of
 from youtabber.scan import SCAN_FPS, Segment, System, scan
@@ -103,9 +103,16 @@ MOSAIC_OVERLAP = 8000
 # BLANK_TAIL_TALL square line gaps of marks at least TALL_MARK_GAPS line gaps (and 3 px) tall, is blank staff, not a
 # measure. What the staff lines leave behind is flat, while a lone fret digit stands tall
 BLANK_TAIL_INK, BLANK_TAIL_TALL, TALL_MARK_GAPS = 0.02, 0.02, 0.25
+# Ink more than this many line gaps above a system's top staff line doesn't count against a blank tail: it is
+# footage or a photo above the panel, while a measure number sits closer
+BLANK_TAIL_ABOVE_GAPS = 2.0
 # A blank tail the playhead was seen on in at least this many frames is played: a measure of rests cut by the panel
 # edge, not staff running on past the end
 TAIL_PLAYED_SAMPLES = 2
+# A whole cell on a still screen is a measure, however narrow, when the playhead stays on it between PLAYED_SHARE
+# times the median it stays on the screen's whole cells, that median being at least PLAYED_MIN_SAMPLES samples. Far
+# longer is footage past the music, not a bar
+PLAYED_SHARE, PLAYED_MIN_SAMPLES = (0.75, 1.33), 4
 # A part's last longer views whose paper is more than this many gray levels darker than its usual paper are
 # fading out, and a first brief view that much darker is fading in
 FADE_PAPER_DROP = 20
@@ -1153,10 +1160,11 @@ def new_page(o: Obs, group: list[Obs]) -> bool:
 
 def drop_fades(obs: list[Obs]) -> dict[int, str]:
     """Clear the cells of each brief screen (a segment's first or last, or one held before a cut) that is a page fading
-    or drawing in or out, or one its neighbour shows again: one with fewer than two whole measures, one whose measures
-    the screen next to it shows again (for a faded screen, its barlines or a neighbour with no measures left), or one
-    mostly slivers from misread barlines. Returns why each was cleared, by its id: "few", "shown_again", "misread", or
-    "faded" for a faded screen cleared as misread or for its barlines."""
+    or drawing in or out, or one its neighbour shows again: one with fewer than two whole measures (one is enough on
+    its part's last screen when it is all the screen holds), one whose measures the screen next to it shows again (for
+    a faded screen, its barlines or a neighbour with no measures left), or one mostly slivers from misread barlines.
+    Returns why each was cleared, by its id: "few", "shown_again", "misread", or "faded" for a faded screen cleared as
+    misread or for its barlines."""
     widths = [c.x1 - c.x0 for o in obs for c in o.all_cells if c.kind == "full"]
     typical = float(np.median(widths)) if widths else 0.0
 
@@ -1164,10 +1172,20 @@ def drop_fades(obs: list[Obs]) -> dict[int, str]:
         slivers = sum(c.x1 - c.x0 < EDGE_SHARE * typical for c in a.all_cells)
         return slivers > BRIEF_SLIVER_SHARE * len(a.all_cells)
 
+    last: dict[int, Obs] = {}
+    for o in obs:
+        if o.mosaic is None and (o.part not in last or o.t0 > last[o.part].t0):
+            last[o.part] = o
+
+    def few(a: Obs) -> bool:
+        # A part's last screen holding one whole measure and nothing else is a last page of one bar
+        lone = len(a.all_cells) == 1 and a.all_cells[0].kind == "full" and last.get(a.part) is a
+        return sum(c.kind == "full" for c in a.all_cells) < (1 if lone else 2)
+
     def gone(a: Obs, b: Obs) -> str | None:
         if not a.brief:
             return None
-        if sum(c.kind == "full" for c in a.all_cells) < 2:
+        if few(a):
             return "few"
         if measures_shown_again(a, b):
             return "shown_again"
@@ -1462,27 +1480,33 @@ def editor_screen(path: Path, seg: Segment) -> bool:
     return long_edges >= EDITOR_EDGES
 
 
-def empty_bar(c: Cell, min_gaps: float = EMPTY_MIN_GAPS) -> bool:
+def empty_bar(c: Cell, min_gaps: float = EMPTY_MIN_GAPS, off_lines: bool = False) -> bool:
     """True for a bar with nothing on its tab staff between its two barlines: a rest bar, count-in, closing empty
     bar or bar of notes tied over, which prints however short it is drawn. A measure number above it doesn't count.
     A system's first cell may be a clef and key signature standing alone before a start-repeat barline, so there only
-    a rest on the notation staff, smaller than a square line gap, is allowed."""
+    a rest on the notation staff, smaller than a square line gap, is allowed. With `off_lines`, only tab ink off the
+    staff lines counts, so a piece of staff line left by line removal isn't taken for a note."""
     # A notation staff whose tab is out of view says nothing about the tab
     if c.kind != "full" or not c.complete or c.notation_only or c.x1 - c.x0 < min_gaps * c.gap:
         return False
-    tab, notation = staff_ink(c, int(BAR_SKIP_GAPS * c.gap))
+    skip = int(BAR_SKIP_GAPS * c.gap)
+    tab, notation = staff_ink(c, skip)
+    if off_lines:
+        tab = tab_marks(c, skip)
     return tab < EMPTY_BAR_INK and (c.index > 0 or notation < EMPTY_NOTATION_INK)
 
 
 def rest_run(cells: list[Cell], i: int) -> bool:
     """True when cell i is one of at least REST_RUN empty bars in a row drawn alike wide: rest bars or a count-in,
-    which some players draw narrower than EMPTY_MIN_GAPS. A blank sliver beside a misread barline stands alone."""
+    which some players draw narrower than EMPTY_MIN_GAPS. A blank sliver beside a misread barline stands alone. Only
+    tab ink off the staff lines counts here, so a piece of staff line left in one rest bar doesn't break the run; a
+    narrow cell standing alone needs all its tab ink under the limit."""
     w = cells[i].x1 - cells[i].x0
 
     def alike(k: int) -> bool:
         c = cells[k]
         return (c.system == cells[i].system and abs((c.x1 - c.x0) - w) <= REST_RUN_WIDTH * w
-                and empty_bar(c, min_gaps=0.0))
+                and empty_bar(c, min_gaps=0.0, off_lines=True))
 
     if not alike(i):
         return False
@@ -1522,9 +1546,10 @@ def read_spans(obs: list[Obs]) -> list[tuple[float, float]]:
 
 def kept_cells(cells: list[Cell], typical: float, playhead: list = (), mosaic=None) -> list[Cell]:
     """The cells that are measures: those at least EDGE_SHARE of a typical measure wide, short bars on still screens,
-    and empty bars however short. A clef and key header standing alone is no measure, and neither is a blank tail
-    unless the view's `playhead` samples (t, x, y) show it played. A sample on the tail's left barline is the
-    playhead parked at the end of the last measure, so it doesn't count. In a glide's `mosaic`, a whole cell past
+    narrow bars the playhead stays on as long as on the others, and empty bars however short. A clef and key header
+    standing alone is no measure, and neither is a blank tail unless the view's `playhead` samples (t, x, y) show it
+    played. A sample on the tail's left barline is the playhead parked at the end of the last measure, so it doesn't
+    count. In a glide's `mosaic`, a whole cell past
     the columns seeded from its first frame that takes at least SLOW_BAR_SHARE of a typical measure's time to pass
     the playhead is a measure too, however narrow: a bar holding one tied note is drawn short but played in full."""
     slow = set()
@@ -1542,22 +1567,39 @@ def kept_cells(cells: list[Cell], typical: float, playhead: list = (), mosaic=No
 
 def measure_cell(cells: list[Cell], i: int, typical: float, playhead: list = ()) -> bool:
     """True when cell i is kept as a measure by kept_cells, leaving aside whether it is a header."""
-    def played(c: Cell) -> bool:
-        return sum(c.x0 + CELL_SLACK_PX < x <= c.x1 and on_system(c, y) for _, x, y in playhead) >= TAIL_PLAYED_SAMPLES
+    def samples(c: Cell) -> int:
+        return sum(c.x0 + CELL_SLACK_PX < x <= c.x1 and on_system(c, y) for _, x, y in playhead)
     c = cells[i]
-    return (not (blank_tail(c) and not played(c))
-            and (c.x1 - c.x0 >= EDGE_SHARE * typical or short_bar(c, typical) or empty_bar(c) or rest_run(cells, i)))
+    return (not (blank_tail(c) and samples(c) < TAIL_PLAYED_SAMPLES)
+            and (c.x1 - c.x0 >= EDGE_SHARE * typical or short_bar(c, typical) or empty_bar(c) or rest_run(cells, i)
+                 or played_through(cells, i, samples)))
+
+
+def played_through(cells: list[Cell], i: int, samples: Callable[[Cell], int]) -> bool:
+    """True when cell i is a whole cell between two barlines on a still screen that the playhead stays on about as
+    long as on the screen's other whole cells: a bar holding one long note, drawn narrow but played in full.
+    `samples` counts the playhead samples on a cell."""
+    c = cells[i]
+    if c.kind != "full" or not c.complete or c.glided:
+        return False
+    counts = [samples(d) for d in cells if d.kind == "full" and d.complete]
+    usual = float(np.median(counts))
+    return usual >= PLAYED_MIN_SAMPLES and PLAYED_SHARE[0] * usual <= samples(c) <= PLAYED_SHARE[1] * usual
 
 
 def blank_tail(c: Cell) -> bool:
     """True for a cell past a system's last barline with next to no ink and no tall marks: staff lines running on
     past the end, which hold no measure."""
-    if c.kind != "tail" or c.ink.sum() >= BLANK_TAIL_INK * (c.x1 - c.x0) * c.gap:
+    if c.kind != "tail":
+        return False
+    ink = c.ink.copy()
+    ink[:max(0, int(min(c.top_y, c.ref_y) - BLANK_TAIL_ABOVE_GAPS * c.gap))] = False
+    if ink.sum() >= BLANK_TAIL_INK * (c.x1 - c.x0) * c.gap:
         return False
     # Columns as in staff_ink: past what is left of the barline, up to the cell's right edge
-    start = max(0, c.x0 - (c.x1 + 1 - c.ink.shape[1]) + int(BAR_SKIP_GAPS * c.gap))
+    start = max(0, c.x0 - (c.x1 + 1 - ink.shape[1]) + int(BAR_SKIP_GAPS * c.gap))
     k = max(3, int(round(TALL_MARK_GAPS * c.gap)))
-    tall = cv2.morphologyEx(c.ink[:, start:c.ink.shape[1] - 2].astype(np.uint8), cv2.MORPH_OPEN,
+    tall = cv2.morphologyEx(ink[:, start:ink.shape[1] - 2].astype(np.uint8), cv2.MORPH_OPEN,
                             np.ones((k, 1), np.uint8))
     return int(tall.sum()) < BLANK_TAIL_TALL * c.gap * c.gap
 

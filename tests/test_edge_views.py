@@ -783,3 +783,19 @@ def test_a_brief_screen_on_darker_paper_after_its_parts_first_keeps_its_measures
         o.plate, o.rect = np.full((60, 600, 3), level, np.uint8), (0, 0, 600, 60)
     mark_fades(obs, parts, segments, 0)
     assert len(obs[3].all_cells) == 3
+
+
+def test_a_brief_last_screen_of_its_part_holding_one_whole_measure_alone_is_kept():
+    before, last = timed(screen(0, [5, 6, 7]), 0.0, 4.0), timed(screen(1, [8], brief=True), 4.0, 4.8)
+    drop_fades([before, last])
+    assert len(last.all_cells) == 1
+
+
+def test_a_brief_screen_of_one_whole_measure_is_cleared_unless_it_is_its_part_s_last_and_holds_nothing_else():
+    first, after = timed(screen(0, [8], brief=True), 0.0, 0.8), timed(screen(1, [5, 6, 7]), 0.8, 4.0)
+    drop_fades([first, after])
+    assert first.all_cells == []
+    # A cut measure beside it makes it a page caught on its way in or out
+    before, last = timed(screen(0, [5, 6, 7]), 0.0, 4.0), timed(screen(1, [8, None], brief=True), 4.0, 4.8)
+    drop_fades([before, last])
+    assert last.all_cells == []
