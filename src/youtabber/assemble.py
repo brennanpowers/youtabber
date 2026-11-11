@@ -1129,7 +1129,9 @@ def track_join(p: Obs, o: Obs, gap: float, cands=()) -> tuple[dict[int, int], st
         return None
     links, basis = still_links(p, o), "still" if restart is not None else "still?"
     d = o.start - p.start if o.start is not None and p.start is not None else None
-    if d:
+    # When one view lost a cut first cell the other has, the starts differ though the cells over the same columns
+    # carry the same numbers, and those cells stay linked
+    if d and any((o.start + i) - (p.start + j) for i, j in links.items()):
         # A page that jumped by whole periods of a riff looks held still, but its numbers moved on: each cell is the
         # measure d cells on in p, if p shows it
         links = {i: j + d for i, j in links.items() if 0 <= j + d < len(p.cells)}

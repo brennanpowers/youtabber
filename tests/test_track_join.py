@@ -167,6 +167,22 @@ def test_a_held_page_whose_voted_start_moved_on_joins_that_many_measures_on():
     assert track_join(p, o, 10.0) == ({0: 0, 1: 1, 2: 2, 3: 3}, "still")
 
 
+def test_a_held_page_whose_later_view_lost_its_first_cell_joins_the_cells_numbered_alike():
+    # The later view starts at measure 2 over the columns of the earlier view's second cell
+    p, o = held(p_end=300, o_start=320)
+    o.cells = o.cells[1:]
+    p.start, o.start = 1, 2
+    assert track_join(p, o, 10.0) == ({0: 1, 1: 2, 2: 3}, "still")
+
+
+def test_a_held_page_whose_later_view_lost_an_inner_barline_keeps_the_links_by_columns():
+    # The later view reads measures 2 and 3 as one cell, so its count calls measure 4 the third measure
+    p, o = held(p_end=300, o_start=320)
+    o.cells = [o.cells[0], replace(o.cells[1], x1=o.cells[2].x1), o.cells[3]]
+    p.start, o.start = 1, 1
+    assert track_join(p, o, 10.0) == ({0: 0, 1: 1, 2: 3}, "still")
+
+
 def test_a_held_page_joins_in_place_when_only_raw_reads_moved_on():
     # Numbers read on cells of views with no voted start may be chord names or fret digits
     p, o = held(p_end=300, o_start=320)
