@@ -1470,15 +1470,16 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
 
 def faded_end(obs: list[Obs], A: Assembly, numbers: list) -> Obs | None:
     """The last view with cells, when `assemble` should drop them: it is brief, reads no number in a video where
-    other views do (`numbers` holds each view's numbers as read), and none of its slots is one an earlier view
-    placed."""
+    other views do (`numbers` holds each view's numbers as read), none of its slots is one an earlier view placed, and
+    it is not one whole measure and nothing else, which is a last page of one bar."""
     shown = [(o, ns) for o, ns in zip(obs, numbers) if o.cells]
     if not shown or not any(n is not None for _, ns in shown for n in ns):
         return None
     o, ns = shown[-1]
     earlier = {s for v, _ in shown[:-1] for s in A.view_slots.get(v.index, []) if s is not None}
     slots = A.view_slots.get(o.index, [])
-    if o.brief and all(n is None for n in ns) and slots and not earlier & set(slots):
+    lone = len(o.all_cells) == 1 and o.all_cells[0].kind == "full"
+    if o.brief and not lone and all(n is None for n in ns) and slots and not earlier & set(slots):
         return o
     return None
 

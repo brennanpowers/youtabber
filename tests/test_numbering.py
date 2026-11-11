@@ -333,11 +333,12 @@ def test_a_look_alike_measure_far_from_the_page_end_lends_no_number_to_a_cell_fu
     assert second[4] not in first
 
 
-def last_screen(brief: bool) -> list[Obs]:
+def last_screen(brief: bool, measures: int = 3) -> list[Obs]:
     """Two numbered screens, then a last screen of other music that reads no number, held briefly when `brief`."""
-    obs = [view(0, run("a", 1, 4)), view(1, run("a", 5, 8)), view(2, run("b", 1, 3))]
+    obs = [view(0, run("a", 1, 4)), view(1, run("a", 5, 8)), view(2, run("b", 1, measures))]
     for c in obs[2].cells:
         c.number = None
+    obs[2].all_cells = list(obs[2].cells)
     obs[2].brief = brief
     return obs
 
@@ -353,3 +354,9 @@ def test_a_last_screen_held_longer_than_a_brief_one_keeps_its_cells():
     obs = last_screen(brief=False)
     A = assemble(obs, 10.0, False, {"numbers"}, lambda o: [])
     assert A.view_slots[2] == [8, 9, 10]
+
+
+def test_a_brief_last_screen_of_one_whole_measure_keeps_its_cell():
+    obs = last_screen(brief=True, measures=1)
+    A = assemble(obs, 10.0, False, {"numbers"}, lambda o: [])
+    assert A.view_slots[2] == [8]
