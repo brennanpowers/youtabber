@@ -109,6 +109,10 @@ BLANK_TAIL_ABOVE_GAPS = 2.0
 # A blank tail the playhead was seen on in at least this many frames is played: a measure of rests cut by the panel
 # edge, not staff running on past the end
 TAIL_PLAYED_SAMPLES = 2
+# A whole cell on a still screen is a measure, however narrow, when the playhead stays on it between PLAYED_SHARE
+# times the median it stays on the screen's whole cells, that median being at least PLAYED_MIN_SAMPLES samples. Far
+# longer is footage past the music, not a bar
+PLAYED_SHARE, PLAYED_MIN_SAMPLES = (0.75, 1.33), 4
 # A part's last longer views whose paper is more than this many gray levels darker than its usual paper are
 # fading out, and a first brief view that much darker is fading in
 FADE_PAPER_DROP = 20
@@ -1536,9 +1540,10 @@ def read_spans(obs: list[Obs]) -> list[tuple[float, float]]:
 
 def kept_cells(cells: list[Cell], typical: float, playhead: list = (), mosaic=None) -> list[Cell]:
     """The cells that are measures: those at least EDGE_SHARE of a typical measure wide, short bars on still screens,
-    and empty bars however short. A clef and key header standing alone is no measure, and neither is a blank tail
-    unless the view's `playhead` samples (t, x, y) show it played. A sample on the tail's left barline is the
-    playhead parked at the end of the last measure, so it doesn't count. In a glide's `mosaic`, a whole cell past
+    narrow bars the playhead stays on as long as on the others, and empty bars however short. A clef and key header
+    standing alone is no measure, and neither is a blank tail unless the view's `playhead` samples (t, x, y) show it
+    played. A sample on the tail's left barline is the playhead parked at the end of the last measure, so it doesn't
+    count. In a glide's `mosaic`, a whole cell past
     the columns seeded from its first frame that takes at least SLOW_BAR_SHARE of a typical measure's time to pass
     the playhead is a measure too, however narrow: a bar holding one tied note is drawn short but played in full."""
     slow = set()
@@ -1556,11 +1561,24 @@ def kept_cells(cells: list[Cell], typical: float, playhead: list = (), mosaic=No
 
 def measure_cell(cells: list[Cell], i: int, typical: float, playhead: list = ()) -> bool:
     """True when cell i is kept as a measure by kept_cells, leaving aside whether it is a header."""
-    def played(c: Cell) -> bool:
-        return sum(c.x0 + CELL_SLACK_PX < x <= c.x1 and on_system(c, y) for _, x, y in playhead) >= TAIL_PLAYED_SAMPLES
+    def samples(c: Cell) -> int:
+        return sum(c.x0 + CELL_SLACK_PX < x <= c.x1 and on_system(c, y) for _, x, y in playhead)
     c = cells[i]
-    return (not (blank_tail(c) and not played(c))
-            and (c.x1 - c.x0 >= EDGE_SHARE * typical or short_bar(c, typical) or empty_bar(c) or rest_run(cells, i)))
+    return (not (blank_tail(c) and samples(c) < TAIL_PLAYED_SAMPLES)
+            and (c.x1 - c.x0 >= EDGE_SHARE * typical or short_bar(c, typical) or empty_bar(c) or rest_run(cells, i)
+                 or played_through(cells, i, samples)))
+
+
+def played_through(cells: list[Cell], i: int, samples: Callable[[Cell], int]) -> bool:
+    """True when cell i is a whole cell between two barlines on a still screen that the playhead stays on about as
+    long as on the screen's other whole cells: a bar holding one long note, drawn narrow but played in full.
+    `samples` counts the playhead samples on a cell."""
+    c = cells[i]
+    if c.kind != "full" or not c.complete or c.glided:
+        return False
+    counts = [samples(d) for d in cells if d.kind == "full" and d.complete]
+    usual = float(np.median(counts))
+    return usual >= PLAYED_MIN_SAMPLES and PLAYED_SHARE[0] * usual <= samples(c) <= PLAYED_SHARE[1] * usual
 
 
 def blank_tail(c: Cell) -> bool:

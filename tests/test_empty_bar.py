@@ -199,3 +199,39 @@ def test_ink_over_two_line_gaps_above_a_blank_tail_s_top_staff_does_not_count():
     notes = tail(0)
     notes.ink[18:30, 50:60] = True
     assert kept_cells([notes], typical=300) == [notes]
+
+
+def played_row(widths: list[int], counts: list[int]) -> tuple[list[Cell], list]:
+    """Whole cells side by side with fret digits, from x 100 on, each with `counts` playhead samples in its middle."""
+    cells, playhead, x = [], [], 100
+    for w, n in zip(widths, counts):
+        c = cell(w, marks=True)
+        c.x0, c.x1 = x, x + w
+        cells.append(c)
+        playhead += [(0.1 * k, x + w // 2, 85) for k in range(n)]
+        x += w
+    return in_system(cells), playhead
+
+
+def test_a_narrow_bar_the_playhead_stays_on_as_long_as_on_the_others_is_kept():
+    # 45 px is under a quarter of 300 and under five gaps; 12 samples against a median of 12
+    cells, playhead = played_row([300, 45, 300, 300], [12, 12, 13, 11])
+    assert kept_cells(cells, typical=300, playhead=playhead) == cells
+    # 9 and 15 samples lie within 0.75 and 1.33 of the median
+    cells, playhead = played_row([300, 45, 300, 300, 300], [12, 9, 12, 12, 12])
+    assert len(kept_cells(cells, typical=300, playhead=playhead)) == 5
+    cells, playhead = played_row([300, 45, 300, 300, 300], [12, 15, 12, 12, 12])
+    assert len(kept_cells(cells, typical=300, playhead=playhead)) == 5
+
+
+def test_a_narrow_bar_the_playhead_passes_quickly_or_rests_on_far_longer_is_dropped():
+    cells, playhead = played_row([300, 45, 300, 300, 300], [12, 8, 12, 12, 12])
+    assert kept_cells(cells, typical=300, playhead=playhead) == [cells[0]] + cells[2:]
+    cells, playhead = played_row([300, 45, 300, 300, 300], [12, 16, 12, 12, 12])
+    assert kept_cells(cells, typical=300, playhead=playhead) == [cells[0]] + cells[2:]
+    # A median under 4 samples is too few to judge, and a glided cell is judged by its glide
+    cells, playhead = played_row([300, 45, 300], [3, 3, 3])
+    assert kept_cells(cells, typical=300, playhead=playhead) == [cells[0], cells[2]]
+    cells, playhead = played_row([300, 45, 300], [12, 12, 12])
+    cells[1].glided = True
+    assert kept_cells(cells, typical=300, playhead=playhead) == [cells[0], cells[2]]
