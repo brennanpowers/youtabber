@@ -1153,10 +1153,11 @@ def new_page(o: Obs, group: list[Obs]) -> bool:
 
 def drop_fades(obs: list[Obs]) -> dict[int, str]:
     """Clear the cells of each brief screen (a segment's first or last, or one held before a cut) that is a page fading
-    or drawing in or out, or one its neighbour shows again: one with fewer than two whole measures, one whose measures
-    the screen next to it shows again (for a faded screen, its barlines or a neighbour with no measures left), or one
-    mostly slivers from misread barlines. Returns why each was cleared, by its id: "few", "shown_again", "misread", or
-    "faded" for a faded screen cleared as misread or for its barlines."""
+    or drawing in or out, or one its neighbour shows again: one with fewer than two whole measures (one is enough on
+    its part's last screen when it is all the screen holds), one whose measures the screen next to it shows again (for
+    a faded screen, its barlines or a neighbour with no measures left), or one mostly slivers from misread barlines.
+    Returns why each was cleared, by its id: "few", "shown_again", "misread", or "faded" for a faded screen cleared as
+    misread or for its barlines."""
     widths = [c.x1 - c.x0 for o in obs for c in o.all_cells if c.kind == "full"]
     typical = float(np.median(widths)) if widths else 0.0
 
@@ -1164,10 +1165,20 @@ def drop_fades(obs: list[Obs]) -> dict[int, str]:
         slivers = sum(c.x1 - c.x0 < EDGE_SHARE * typical for c in a.all_cells)
         return slivers > BRIEF_SLIVER_SHARE * len(a.all_cells)
 
+    last: dict[int, Obs] = {}
+    for o in obs:
+        if o.mosaic is None and (o.part not in last or o.t0 > last[o.part].t0):
+            last[o.part] = o
+
+    def few(a: Obs) -> bool:
+        # A part's last screen holding one whole measure and nothing else is a last page of one bar
+        lone = len(a.all_cells) == 1 and a.all_cells[0].kind == "full" and last.get(a.part) is a
+        return sum(c.kind == "full" for c in a.all_cells) < (1 if lone else 2)
+
     def gone(a: Obs, b: Obs) -> str | None:
         if not a.brief:
             return None
-        if sum(c.kind == "full" for c in a.all_cells) < 2:
+        if few(a):
             return "few"
         if measures_shown_again(a, b):
             return "shown_again"
