@@ -235,3 +235,19 @@ def test_a_narrow_bar_the_playhead_passes_quickly_or_rests_on_far_longer_is_drop
     cells, playhead = played_row([300, 45, 300], [12, 12, 12])
     cells[1].glided = True
     assert kept_cells(cells, typical=300, playhead=playhead) == [cells[0], cells[2]]
+
+
+def test_a_piece_of_staff_line_left_in_a_rest_bar_does_not_break_its_rest_run():
+    # One row of a staff line, 18 px of it past the barline, is 0.18 square gaps of tab ink, over EMPTY_BAR_INK, but
+    # lies on a line
+    residue = cell(30, marks=False)
+    residue.ink[70, 20:40] = True
+    run = in_system([cell(30, marks=False), cell(32, marks=False), residue])
+    assert not empty_bar(residue, min_gaps=0.0)
+    assert all(rest_run(run, i) for i in range(3))
+    # Standing alone, it still needs all its tab ink under the limit
+    assert not empty_bar(residue)
+    # A fret digit off the lines breaks the run
+    digit = cell(30, marks=False)
+    digit.ink[73:79, 24:30] = True
+    assert not rest_run(in_system([cell(30, marks=False), cell(32, marks=False), digit]), 2)

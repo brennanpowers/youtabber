@@ -22,7 +22,7 @@ from youtabber.check import (DUP_RESEMBLE, dwell, empty_stretches, fmt, glide_fa
 from youtabber.match import resemble, resemble_scaled
 from youtabber.observe import (ABOVE_GAPS, BELOW_GAPS, OBS_FPS, PRINT_ABOVE_GAPS, ink_map, ink_threshold, panel_rect,
                                set_paper, to_gray, views_in)
-from youtabber.parse import Cell, bare_header, line_darkness, numbers_printed, parse_view, staff_ink
+from youtabber.parse import Cell, bare_header, line_darkness, numbers_printed, parse_view, staff_ink, tab_marks
 from youtabber.panel import panel_bounds
 from youtabber.parts import Part, find_parts, merge_order, stream_of
 from youtabber.scan import SCAN_FPS, Segment, System, scan
@@ -1480,27 +1480,33 @@ def editor_screen(path: Path, seg: Segment) -> bool:
     return long_edges >= EDITOR_EDGES
 
 
-def empty_bar(c: Cell, min_gaps: float = EMPTY_MIN_GAPS) -> bool:
+def empty_bar(c: Cell, min_gaps: float = EMPTY_MIN_GAPS, off_lines: bool = False) -> bool:
     """True for a bar with nothing on its tab staff between its two barlines: a rest bar, count-in, closing empty
     bar or bar of notes tied over, which prints however short it is drawn. A measure number above it doesn't count.
     A system's first cell may be a clef and key signature standing alone before a start-repeat barline, so there only
-    a rest on the notation staff, smaller than a square line gap, is allowed."""
+    a rest on the notation staff, smaller than a square line gap, is allowed. With `off_lines`, only tab ink off the
+    staff lines counts, so a piece of staff line left by line removal isn't taken for a note."""
     # A notation staff whose tab is out of view says nothing about the tab
     if c.kind != "full" or not c.complete or c.notation_only or c.x1 - c.x0 < min_gaps * c.gap:
         return False
-    tab, notation = staff_ink(c, int(BAR_SKIP_GAPS * c.gap))
+    skip = int(BAR_SKIP_GAPS * c.gap)
+    tab, notation = staff_ink(c, skip)
+    if off_lines:
+        tab = tab_marks(c, skip)
     return tab < EMPTY_BAR_INK and (c.index > 0 or notation < EMPTY_NOTATION_INK)
 
 
 def rest_run(cells: list[Cell], i: int) -> bool:
     """True when cell i is one of at least REST_RUN empty bars in a row drawn alike wide: rest bars or a count-in,
-    which some players draw narrower than EMPTY_MIN_GAPS. A blank sliver beside a misread barline stands alone."""
+    which some players draw narrower than EMPTY_MIN_GAPS. A blank sliver beside a misread barline stands alone. Only
+    tab ink off the staff lines counts here, so a piece of staff line left in one rest bar doesn't break the run; a
+    narrow cell standing alone needs all its tab ink under the limit."""
     w = cells[i].x1 - cells[i].x0
 
     def alike(k: int) -> bool:
         c = cells[k]
         return (c.system == cells[i].system and abs((c.x1 - c.x0) - w) <= REST_RUN_WIDTH * w
-                and empty_bar(c, min_gaps=0.0))
+                and empty_bar(c, min_gaps=0.0, off_lines=True))
 
     if not alike(i):
         return False
