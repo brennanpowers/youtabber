@@ -1226,3 +1226,34 @@ def test_a_view_opening_with_a_jump_back_keeps_its_start_after_another_picture_a
         observe.start_at_wraps([p, v], 18.0)
         assert not v.wrapped and v.t0 in (5.0, 5.5)
 
+
+
+def carried_pair(xs: list[float], first_s: float = 1 / 6):
+    """wrap_pair's views, the first with a playhead sweeping 100-1000 px over its last 3 s, ending 990 px at 4.9 s;
+    the second's samples `xs` start `first_s` after that."""
+    p, v = wrap_pair(PAGE.copy(), xs)
+    p.playhead = [(1.9 + k * 0.3, 100.0 + k * 90.0, 100.0) for k in range(10)] + [(4.9, 990.0, 100.0)]
+    t0 = 4.9 + first_s
+    v.playhead = [(t0 + k / 6, x, 100.0) for k, x in enumerate(xs)]
+    v.times = [t for t, _, _ in v.playhead]
+    return p, v
+
+
+def test_a_jump_back_after_samples_carrying_the_sweep_on_starts_the_view(monkeypatch):
+    # Past the panel's first two samples, and short of the panel's right quarter, but in the sweep's right quarter
+    p, v = carried_pair([1000, 1010, 1020, 150, 200])
+    observe.start_at_wraps([p, v], 18.0)
+    assert (round(v.t0, 2), v.wrapped, len(v.playhead)) == (5.57, True, 2)
+    p, v = carried_pair([1000, 1010, 1020, 150, 200])
+    monkeypatch.setattr(observe, "LEAD_WRAP_SECONDS", 0.0)
+    observe.start_at_wraps([p, v], 18.0)
+    assert (v.t0, v.wrapped) == (5.0, False)
+
+
+def test_a_jump_back_after_samples_that_stop_carrying_the_sweep_keeps_the_view_start():
+    # A step 1 px left, a sample standing still, a first sample a second late, a first sample far left of the sweep
+    for p, v in (carried_pair([1000, 999, 1020, 150, 200]), carried_pair([1000, 1000, 1020, 150, 200]),
+                 carried_pair([1000, 1010, 1020, 150, 200], first_s=1.0),
+                 carried_pair([900, 1010, 1020, 150, 200])):
+        observe.start_at_wraps([p, v], 18.0)
+        assert (v.t0, v.wrapped) == (5.0, False)

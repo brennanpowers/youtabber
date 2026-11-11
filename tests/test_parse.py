@@ -1031,3 +1031,31 @@ def test_a_line_at_the_staff_s_end_running_on_to_the_image_s_bottom_edge_stays_a
     gray = stroke_staff()[:180]
     gray[60:178, 370:372] = 0
     assert [p for p, _ in staff_bars(gray)] == [100]
+
+
+def drifted_staff() -> np.ndarray:
+    """Six lines (gap 30) from x 20 to 780 with barlines at 300 and 540; left of x 200 the staff sits 3 px lower, as
+    in a mosaic joined from frames where the band moved."""
+    img = np.full((260, 800, 3), 255, np.uint8)
+    for i in range(6):
+        cv2.line(img, (20, 60 + i * 30), (780, 60 + i * 30), (60, 60, 60), 1)
+    for x in (300, 540):
+        cv2.line(img, (x, 60), (x, 210), (0, 0, 0), 2)
+    img[63:, 20:200] = img[60:-3, 20:200].copy()
+    img[60:63, 20:200] = 255
+    return img
+
+
+def test_a_mosaic_staff_drifting_a_tenth_of_a_gap_keeps_its_left_end(monkeypatch):
+    (ps,) = parse_view(0, drifted_staff(), (0, 0, 800, 260), "dark", 140.0, 229.0, 30.0, hidden_bars=True,
+                       whole_lines=False)
+    assert (ps.system.tab.x0, ps.system.tab.x1) == (20, 781)
+    monkeypatch.setattr(parse, "MOSAIC_DRIFT_GAPS", 0.0)
+    (ps,) = parse_view(0, drifted_staff(), (0, 0, 800, 260), "dark", 140.0, 229.0, 30.0, hidden_bars=True,
+                       whole_lines=False)
+    assert (ps.system.tab.x0, ps.system.tab.x1) == (35, 781)
+
+
+def test_a_page_staff_is_followed_only_within_a_pixel_of_its_rows():
+    (ps,) = parse_view(0, drifted_staff(), (0, 0, 800, 260), "dark", 140.0, 229.0, 30.0)
+    assert (ps.system.tab.x0, ps.system.tab.x1) == (35, 781)
