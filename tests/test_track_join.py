@@ -488,6 +488,31 @@ def test_the_playhead_carries_on_in_the_measures_of_a_page_redrawn_wider():
     assert choose_shift(p, o, [(400, 0.0)], 0.9, {"playhead"}, 10.0) == (None, "playhead", True)
 
 
+def wide_bar(p_end: int, o_start: int):
+    """Two views of a band that slid 400 px, both drawn with measures 100, 100, 500 and 100 px wide, with the
+    playhead at p_end at the end of the first view and at o_start at the start of the second."""
+    p, o = slid(400, False, p_end=p_end, o_start=o_start)
+    for v in (p, o):
+        for k, (x0, x1) in enumerate([(0, 100), (100, 200), (200, 700), (700, 800)]):
+            v.cells[k] = replace(v.cells[k], x0=x0, x1=x1)
+    return p, o
+
+
+def test_a_playhead_inside_a_wide_measure_carries_on_by_that_measure_s_width():
+    # From 650 in p to 550 in o under a 400 px shift the playhead moved 300 px: over one and a half typical 100 px
+    # measures, but within one and a half of the 500 px measure it was in
+    p, o = wide_bar(650, 550)
+    assert choose_shift(p, o, [(400, 0.0)], 0.9, {"playhead"}, 10.0) == (400, "playhead", True)
+
+
+def test_a_playhead_inside_a_narrow_measure_or_carried_past_a_wide_one_rules_every_shift_out():
+    p, o = wide_bar(150, 50)
+    assert choose_shift(p, o, [(400, 0.0)], 0.9, {"playhead"}, 10.0) == (None, "playhead", True)
+    # Under a 900 px shift the playhead moved 800 px, past one and a half of the 500 px measure
+    p, o = wide_bar(650, 550)
+    assert choose_shift(p, o, [(900, 0.0)], 0.9, {"playhead"}, 10.0) == (None, "playhead", True)
+
+
 def test_drawn_near_needs_a_shift_drawn_in_several_steps_within_reach():
     assert drawn_near(Move("slide", shifts=[400], drawn=[True], steps=5), 402)
     assert not drawn_near(Move("slide", shifts=[400], drawn=[False], steps=5), 402)

@@ -639,6 +639,15 @@ def pick_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float, 
                 # time allows is taken but left unsettled
                 return fits[0], "playhead", extra < 1.0 or (b[0] + fits[0]) - a[0] <= CARRY_MEASURES * width
             if not fits:
+                # A page can mix narrow measures with much wider ones, so when nothing fits the typical width, the
+                # carry-on is counted in the width of the measure the playhead was in
+                i = cell_at(p, a)
+                if i is not None:
+                    w = p.cells[i].x1 - p.cells[i].x0
+                    fits = [dx for dx, _ in shifts if -gap <= (b[0] + dx) - a[0] <= CARRY_MEASURES * w
+                            and (one_system or abs(b[1] - a[1]) < 3 * gap)]
+                    if len(fits) == 1:
+                        return fits[0], "playhead", True
                 return None, "playhead", True
     if usual is not None:
         near = min(shifts, key=lambda s: abs(s[0] - usual))
