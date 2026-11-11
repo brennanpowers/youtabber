@@ -1855,3 +1855,18 @@ def test_a_page_whose_notes_are_gray_joins_the_page_before_whatever_its_plates()
     assert register(p, o, 0, 10.0, 2)[1] > assemble_module.STILL_MISMATCH
     A = assemble([p, o], 10.0, False, EVIDENCE, lambda v: [])
     assert A.view_slots[1] == [0, 1, 2, 3]
+
+
+def test_a_page_cut_to_whose_plates_differ_from_the_page_before_prints_as_new_music():
+    p, o = band_view(0, 1), band_view(1, 1)
+    o.tall = np.roll(p.tall, 5, axis=0)
+    o.move = Move("cut")
+    A = assemble([p, o], 10.0, False, EVIDENCE, lambda v: [])
+    assert A.view_slots[1] == [4, 5, 6, 7]
+
+
+def test_a_page_cut_to_with_the_same_plates_joins_the_page_before():
+    p, o = band_view(0, 1), band_view(1, 1)
+    o.move = Move("cut")
+    A = assemble([p, o], 10.0, False, EVIDENCE, lambda v: [])
+    assert A.view_slots[1] == [0, 1, 2, 3]

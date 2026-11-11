@@ -1259,11 +1259,12 @@ def existing_join(prev, o, gap, shift_cache, scroll_share, usual, use, A, pages=
     if not links and not o.wrapped and not same_page:
         options = [(f"overlap {len(lk)}", lk) for lk in sequence_links(prev, o, gap)]
         cells = prev.cells + o.cells
-        if (options and len(options[0][1]) == len(prev.cells) == len(o.cells)
-                and sum(int(c.tint.sum()) for c in cells if c.tint is not None) > sum(int(c.ink.sum()) for c in cells)):
+        colored = sum(int(c.tint.sum()) for c in cells if c.tint is not None) > sum(int(c.ink.sum()) for c in cells)
+        cut = o.move is not None and o.move.kind == "cut"
+        if options and len(options[0][1]) == len(prev.cells) == len(o.cells) and (colored or cut):
             # Cells leave colored marks out of their ink, so pages whose notes are colored leave cells that match at
-            # any overlap. When such a page sits cell for cell on the one before and the plates differ, it is a new
-            # page
+            # any overlap, and a page cut to can be a look-alike page of the same riff. When such a page sits cell
+            # for cell on the one before and the plates differ, it is a new page
             r = register(prev, o, 0, gap, 2)
             if r is not None and r[1] > STILL_MISMATCH:
                 options = []
