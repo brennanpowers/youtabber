@@ -331,3 +331,25 @@ def test_a_measure_near_the_page_end_lends_its_number_to_a_cell_further_right():
 def test_a_look_alike_measure_far_from_the_page_end_lends_no_number_to_a_cell_further_right():
     first, second = borrowing_pair(j=2, i=4)
     assert second[4] not in first
+
+
+def last_screen(brief: bool) -> list[Obs]:
+    """Two numbered screens, then a last screen of other music that reads no number, held briefly when `brief`."""
+    obs = [view(0, run("a", 1, 4)), view(1, run("a", 5, 8)), view(2, run("b", 1, 3))]
+    for c in obs[2].cells:
+        c.number = None
+    obs[2].brief = brief
+    return obs
+
+
+def test_a_brief_unnumbered_last_screen_of_new_cells_in_a_numbered_video_is_dropped():
+    obs = last_screen(brief=True)
+    A = assemble(obs, 10.0, False, {"numbers"}, lambda o: [])
+    assert len(A.slots) == 8
+    assert obs[2].cells == []
+
+
+def test_a_last_screen_held_longer_than_a_brief_one_keeps_its_cells():
+    obs = last_screen(brief=False)
+    A = assemble(obs, 10.0, False, {"numbers"}, lambda o: [])
+    assert A.view_slots[2] == [8, 9, 10]

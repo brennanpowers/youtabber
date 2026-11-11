@@ -639,6 +639,15 @@ def pick_shift(p: Obs, o: Obs, shifts, share: float, use: set[str], gap: float, 
                 # time allows is taken but left unsettled
                 return fits[0], "playhead", extra < 1.0 or (b[0] + fits[0]) - a[0] <= CARRY_MEASURES * width
             if not fits:
+                # A page can mix narrow measures with much wider ones, so when nothing fits the typical width, the
+                # carry-on is counted in the width of the measure the playhead was in
+                i = cell_at(p, a)
+                if i is not None:
+                    w = p.cells[i].x1 - p.cells[i].x0
+                    fits = [dx for dx, _ in shifts if -gap <= (b[0] + dx) - a[0] <= CARRY_MEASURES * w
+                            and (one_system or abs(b[1] - a[1]) < 3 * gap)]
+                    if len(fits) == 1:
+                        return fits[0], "playhead", True
                 return None, "playhead", True
     if usual is not None:
         near = min(shifts, key=lambda s: abs(s[0] - usual))
@@ -1120,7 +1129,9 @@ def track_join(p: Obs, o: Obs, gap: float, cands=()) -> tuple[dict[int, int], st
         return None
     links, basis = still_links(p, o), "still" if restart is not None else "still?"
     d = o.start - p.start if o.start is not None and p.start is not None else None
-    if d:
+    # When one view lost a cut first cell the other has, the starts differ though the cells over the same columns
+    # carry the same numbers, and those cells stay linked
+    if d and any((o.start + i) - (p.start + j) for i, j in links.items()):
         # A page that jumped by whole periods of a riff looks held still, but its numbers moved on: each cell is the
         # measure d cells on in p, if p shows it
         links = {i: j + d for i, j in links.items() if 0 <= j + d < len(p.cells)}
@@ -1248,11 +1259,12 @@ def existing_join(prev, o, gap, shift_cache, scroll_share, usual, use, A, pages=
     if not links and not o.wrapped and not same_page:
         options = [(f"overlap {len(lk)}", lk) for lk in sequence_links(prev, o, gap)]
         cells = prev.cells + o.cells
-        if (options and len(options[0][1]) == len(prev.cells) == len(o.cells)
-                and sum(int(c.tint.sum()) for c in cells if c.tint is not None) > sum(int(c.ink.sum()) for c in cells)):
+        colored = sum(int(c.tint.sum()) for c in cells if c.tint is not None) > sum(int(c.ink.sum()) for c in cells)
+        cut = o.move is not None and o.move.kind == "cut"
+        if options and len(options[0][1]) == len(prev.cells) == len(o.cells) and (colored or cut):
             # Cells leave colored marks out of their ink, so pages whose notes are colored leave cells that match at
-            # any overlap. When such a page sits cell for cell on the one before and the plates differ, it is a new
-            # page
+            # any overlap, and a page cut to can be a look-alike page of the same riff. When such a page sits cell
+            # for cell on the one before and the plates differ, it is a new page
             r = register(prev, o, 0, gap, 2)
             if r is not None and r[1] > STILL_MISMATCH:
                 options = []
@@ -1439,8 +1451,40 @@ def assemble(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], w
     Where numbers fold a stretch of views onto earlier measures and at least OTHER_PART_MEASURES of them, and most of
     those compared, hold other music, the stretch is another part or section numbered the same way: the views are
     placed again with its first view starting a numbering of its own, so its measures print as new and the earlier
-    ones are kept."""
+    ones are kept.
+
+    A brief last view in a video whose measures are numbered, that reads no number and places only measures no
+    earlier view showed, is a page fading out over the footage read as stray cells: its cells are dropped and the
+    views placed again."""
     numbers = [[c.number for c in o.cells] for o in obs]
+    A = place_parts(obs, gap, fold_unresolved, use, words_of, numbers)
+    o = faded_end(obs, A, numbers)
+    if o is None:
+        return A
+    o.cells = []
+    for v, ns in zip(obs, numbers):
+        for c, n in zip(v.cells, ns):
+            c.number = n
+    return place_parts(obs, gap, fold_unresolved, use, words_of, numbers)
+
+
+def faded_end(obs: list[Obs], A: Assembly, numbers: list) -> Obs | None:
+    """The last view with cells, when `assemble` should drop them: it is brief, reads no number in a video where
+    other views do (`numbers` holds each view's numbers as read), and none of its slots is one an earlier view
+    placed."""
+    shown = [(o, ns) for o, ns in zip(obs, numbers) if o.cells]
+    if not shown or not any(n is not None for _, ns in shown for n in ns):
+        return None
+    o, ns = shown[-1]
+    earlier = {s for v, _ in shown[:-1] for s in A.view_slots.get(v.index, []) if s is not None}
+    slots = A.view_slots.get(o.index, [])
+    if o.brief and all(n is None for n in ns) and slots and not earlier & set(slots):
+        return o
+    return None
+
+
+def place_parts(obs: list[Obs], gap: float, fold_unresolved: bool, use: set[str], words_of, numbers: list) -> Assembly:
+    """`assemble`'s placing, repeated while it finds stretches numbered as another part."""
     pairs = view_pairs(obs, gap)
     others: set = set()
     while True:

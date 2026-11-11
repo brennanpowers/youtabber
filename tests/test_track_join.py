@@ -167,6 +167,22 @@ def test_a_held_page_whose_voted_start_moved_on_joins_that_many_measures_on():
     assert track_join(p, o, 10.0) == ({0: 0, 1: 1, 2: 2, 3: 3}, "still")
 
 
+def test_a_held_page_whose_later_view_lost_its_first_cell_joins_the_cells_numbered_alike():
+    # The later view starts at measure 2 over the columns of the earlier view's second cell
+    p, o = held(p_end=300, o_start=320)
+    o.cells = o.cells[1:]
+    p.start, o.start = 1, 2
+    assert track_join(p, o, 10.0) == ({0: 1, 1: 2, 2: 3}, "still")
+
+
+def test_a_held_page_whose_later_view_lost_an_inner_barline_keeps_the_links_by_columns():
+    # The later view reads measures 2 and 3 as one cell, so its count calls measure 4 the third measure
+    p, o = held(p_end=300, o_start=320)
+    o.cells = [o.cells[0], replace(o.cells[1], x1=o.cells[2].x1), o.cells[3]]
+    p.start, o.start = 1, 1
+    assert track_join(p, o, 10.0) == ({0: 0, 1: 1, 2: 3}, "still")
+
+
 def test_a_held_page_joins_in_place_when_only_raw_reads_moved_on():
     # Numbers read on cells of views with no voted start may be chord names or fret digits
     p, o = held(p_end=300, o_start=320)
@@ -486,6 +502,31 @@ def test_the_playhead_carries_on_in_the_measures_of_a_page_redrawn_wider():
     assert choose_shift(p, o, [(400, 0.0)], 0.9, {"playhead"}, 10.0) == (400, "playhead", True)
     p, o = slid(400, False, p_end=700, o_start=750)
     assert choose_shift(p, o, [(400, 0.0)], 0.9, {"playhead"}, 10.0) == (None, "playhead", True)
+
+
+def wide_bar(p_end: int, o_start: int):
+    """Two views of a band that slid 400 px, both drawn with measures 100, 100, 500 and 100 px wide, with the
+    playhead at p_end at the end of the first view and at o_start at the start of the second."""
+    p, o = slid(400, False, p_end=p_end, o_start=o_start)
+    for v in (p, o):
+        for k, (x0, x1) in enumerate([(0, 100), (100, 200), (200, 700), (700, 800)]):
+            v.cells[k] = replace(v.cells[k], x0=x0, x1=x1)
+    return p, o
+
+
+def test_a_playhead_inside_a_wide_measure_carries_on_by_that_measure_s_width():
+    # From 650 in p to 550 in o under a 400 px shift the playhead moved 300 px: over one and a half typical 100 px
+    # measures, but within one and a half of the 500 px measure it was in
+    p, o = wide_bar(650, 550)
+    assert choose_shift(p, o, [(400, 0.0)], 0.9, {"playhead"}, 10.0) == (400, "playhead", True)
+
+
+def test_a_playhead_inside_a_narrow_measure_or_carried_past_a_wide_one_rules_every_shift_out():
+    p, o = wide_bar(150, 50)
+    assert choose_shift(p, o, [(400, 0.0)], 0.9, {"playhead"}, 10.0) == (None, "playhead", True)
+    # Under a 900 px shift the playhead moved 800 px, past one and a half of the 500 px measure
+    p, o = wide_bar(650, 550)
+    assert choose_shift(p, o, [(900, 0.0)], 0.9, {"playhead"}, 10.0) == (None, "playhead", True)
 
 
 def test_drawn_near_needs_a_shift_drawn_in_several_steps_within_reach():
@@ -1812,5 +1853,20 @@ def test_a_page_whose_notes_are_gray_joins_the_page_before_whatever_its_plates()
     p, o = band_view(0, 1), band_view(1, 1)
     o.tall = np.roll(p.tall, 5, axis=0)
     assert register(p, o, 0, 10.0, 2)[1] > assemble_module.STILL_MISMATCH
+    A = assemble([p, o], 10.0, False, EVIDENCE, lambda v: [])
+    assert A.view_slots[1] == [0, 1, 2, 3]
+
+
+def test_a_page_cut_to_whose_plates_differ_from_the_page_before_prints_as_new_music():
+    p, o = band_view(0, 1), band_view(1, 1)
+    o.tall = np.roll(p.tall, 5, axis=0)
+    o.move = Move("cut")
+    A = assemble([p, o], 10.0, False, EVIDENCE, lambda v: [])
+    assert A.view_slots[1] == [4, 5, 6, 7]
+
+
+def test_a_page_cut_to_with_the_same_plates_joins_the_page_before():
+    p, o = band_view(0, 1), band_view(1, 1)
+    o.move = Move("cut")
     A = assemble([p, o], 10.0, False, EVIDENCE, lambda v: [])
     assert A.view_slots[1] == [0, 1, 2, 3]
