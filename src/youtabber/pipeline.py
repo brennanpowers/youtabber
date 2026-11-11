@@ -103,6 +103,9 @@ MOSAIC_OVERLAP = 8000
 # BLANK_TAIL_TALL square line gaps of marks at least TALL_MARK_GAPS line gaps (and 3 px) tall, is blank staff, not a
 # measure. What the staff lines leave behind is flat, while a lone fret digit stands tall
 BLANK_TAIL_INK, BLANK_TAIL_TALL, TALL_MARK_GAPS = 0.02, 0.02, 0.25
+# Ink more than this many line gaps above a system's top staff line doesn't count against a blank tail: it is
+# footage or a photo above the panel, while a measure number sits closer
+BLANK_TAIL_ABOVE_GAPS = 2.0
 # A blank tail the playhead was seen on in at least this many frames is played: a measure of rests cut by the panel
 # edge, not staff running on past the end
 TAIL_PLAYED_SAMPLES = 2
@@ -1563,12 +1566,16 @@ def measure_cell(cells: list[Cell], i: int, typical: float, playhead: list = ())
 def blank_tail(c: Cell) -> bool:
     """True for a cell past a system's last barline with next to no ink and no tall marks: staff lines running on
     past the end, which hold no measure."""
-    if c.kind != "tail" or c.ink.sum() >= BLANK_TAIL_INK * (c.x1 - c.x0) * c.gap:
+    if c.kind != "tail":
+        return False
+    ink = c.ink.copy()
+    ink[:max(0, int(min(c.top_y, c.ref_y) - BLANK_TAIL_ABOVE_GAPS * c.gap))] = False
+    if ink.sum() >= BLANK_TAIL_INK * (c.x1 - c.x0) * c.gap:
         return False
     # Columns as in staff_ink: past what is left of the barline, up to the cell's right edge
-    start = max(0, c.x0 - (c.x1 + 1 - c.ink.shape[1]) + int(BAR_SKIP_GAPS * c.gap))
+    start = max(0, c.x0 - (c.x1 + 1 - ink.shape[1]) + int(BAR_SKIP_GAPS * c.gap))
     k = max(3, int(round(TALL_MARK_GAPS * c.gap)))
-    tall = cv2.morphologyEx(c.ink[:, start:c.ink.shape[1] - 2].astype(np.uint8), cv2.MORPH_OPEN,
+    tall = cv2.morphologyEx(ink[:, start:ink.shape[1] - 2].astype(np.uint8), cv2.MORPH_OPEN,
                             np.ones((k, 1), np.uint8))
     return int(tall.sum()) < BLANK_TAIL_TALL * c.gap * c.gap
 

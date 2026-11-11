@@ -109,9 +109,9 @@ def test_a_clef_cell_of_a_system_cut_by_the_panel_top_is_not_an_empty_bar():
 
 
 def tail(inked: int) -> Cell:
-    """A 300 px cell past the system's last barline holding `inked` pixels of ink."""
+    """A 300 px cell past the system's last barline holding `inked` pixels of ink, from row 70 on its tab staff."""
     ink = np.zeros((120, 316), bool)
-    ink.flat[:inked] = True
+    ink.flat[70 * 316:70 * 316 + inked] = True
     return Cell(0, 0, 5, 100, 400, "tail", ink, np.zeros_like(ink), 0, gap=GAP, ref_y=60, mid_y=85.0, top_y=15)
 
 
@@ -182,3 +182,20 @@ def test_a_narrow_glided_bar_played_briefly_or_seeded_from_the_first_frame_is_dr
     assert kept_cells(cells, typical=300, mosaic=mosaic) == [cells[0], cells[1], cells[3]]
     cells, mosaic = glided_bars(700, 1.5)
     assert kept_cells(cells, typical=300, mosaic=mosaic) == [cells[0], cells[1], cells[3]]
+
+
+def test_ink_over_two_line_gaps_above_a_blank_tail_s_top_staff_does_not_count():
+    # A tab staff alone, its top line at row 60 and the gap 10 px: rows above 40 hold a photo over the panel
+    photo = tail(0)
+    photo.top_y = 60
+    photo.ink[0:30, 50:200] = True
+    assert kept_cells([photo], typical=300) == []
+    # A measure number sits within two gaps of the top line
+    number = tail(0)
+    number.top_y = 60
+    number.ink[42:56, 50:60] = True
+    assert kept_cells([number], typical=300) == [number]
+    # Over a notation staff whose top line is row 15, notes on it count
+    notes = tail(0)
+    notes.ink[18:30, 50:60] = True
+    assert kept_cells([notes], typical=300) == [notes]
